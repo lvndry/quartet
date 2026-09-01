@@ -7,9 +7,9 @@
  * loopback. Keeping them in one file is fine — keeping them in one field would not be.
  */
 
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
+import { configPath } from "./paths";
 
 export interface DaemonSettings {
   /** Where jazz is listening. Loopback unless the operator deliberately moved it. */
@@ -25,13 +25,13 @@ export interface QuartetConfig {
   readonly agentToken?: string;
   readonly handle?: string;
   readonly daemon?: DaemonSettings;
+  /** Which port the app is served on. Remembered so a second agent keeps its own. */
+  readonly localPort?: number;
 }
 
 export const DEFAULT_HUB_URL = "http://localhost:8080";
 
-export function configPath(): string {
-  return join(process.env["QUARTET_HOME"] ?? join(homedir(), ".quartet"), "config.json");
-}
+export { configPath };
 
 export async function loadConfig(): Promise<QuartetConfig> {
   const file = Bun.file(configPath());

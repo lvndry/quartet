@@ -14,6 +14,7 @@
 import { dirname, join } from "node:path";
 import { Bridge } from "./bridge";
 import { loadConfig, saveConfig, type QuartetConfig } from "./config";
+import { getDataDirectory, setDataDirectory } from "./paths";
 import {
   daemonReachable,
   ensureJazzWebhook,
@@ -175,6 +176,7 @@ async function connect(): Promise<void> {
   if (level !== undefined) setLogLevel(level);
 
   let config = await loadConfig();
+  const requestedPort = argValue("port");
   const hubUrl = argValue("hub") ?? config.hubUrl;
 
   if (config.agentToken === undefined) {
@@ -214,7 +216,11 @@ async function connect(): Promise<void> {
   // A fresh token per run: the app is reopened from this terminal anyway, and a long-lived
   // one lying in a config file is a worse trade than pasting a URL again after a restart.
   const localToken = crypto.randomUUID().replaceAll("-", "");
-  const port = Number(argValue("port") ?? DEFAULT_LOCAL_PORT);
+  const port = Number(requestedPort ?? config.localPort ?? DEFAULT_LOCAL_PORT);
+  if (config.localPort !== port) {
+    config = { ...config, localPort: port };
+    await saveConfig(config);
+  }
   const webRoot = join(dirname(Bun.fileURLToPath(import.meta.url)), "..", "..", "web", "dist");
   const built = await Bun.file(join(webRoot, "index.html")).exists();
 
@@ -230,6 +236,7 @@ async function connect(): Promise<void> {
   logger("bridge").info("watching", {
     agent: `@${config.handle ?? "?"}`,
     webhook: daemon.webhook,
+    data: getDataDirectory(),
     level: currentLogLevel(),
   });
   if (!built) {
@@ -252,7 +259,8 @@ function usage(): void {
       "",
       "  quartet connect            start the bridge and open the app",
       "    --hub <url>              which hub to join",
-      "    --port <n>               local port for the app (default 7777)",
+      "    --port <n>               local port for the app (remembered; default 7777)",
+      "    --data-dir <path>        this agent's config and record (overrides $QUARTET_HOME)",
       "    --agent <id>             which jazz agent represents you",
       "    --webhook <name>         webhook name (use a distinct one per agent)",
       "    --daemon <url>           where jazz is listening (default :4747)",
@@ -266,6 +274,11 @@ function usage(): void {
     ].join("\n"),
   );
 }
+
+// Before anything reads a path. Mirrors `jazz --data-dir`, so running a second agent on one
+// host is a flag rather than an exported variable.
+const dataDir = argValue("data-dir");
+if (dataDir !== undefined) setDataDirectory(dataDir);
 
 const command = process.argv[2] ?? "connect";
 if (hasFlag("help") || command === "help") {

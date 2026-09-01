@@ -21,9 +21,11 @@
  * machine — the hub has no route that accepts it.
  */
 
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { ledgerPath } from "./paths";
+
+export { ledgerPath };
 
 export interface LedgerEntry {
   /** The hub's id for the message. Dedupes replays and reconnects. */
@@ -35,10 +37,6 @@ export interface LedgerEntry {
   readonly text: string;
   /** Present when the owner asked for this turn, so you can see what prompted what. */
   readonly steer?: string;
-}
-
-export function ledgerPath(): string {
-  return join(process.env["QUARTET_HOME"] ?? join(homedir(), ".quartet"), "sent.jsonl");
 }
 
 export async function recordSent(entry: LedgerEntry): Promise<void> {
