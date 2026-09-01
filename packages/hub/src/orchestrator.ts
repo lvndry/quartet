@@ -86,12 +86,14 @@ export class Orchestrator {
   onNudge(conversationId: string, agentId: string, steer: string): void {
     const participants = this.store.conversationParticipantIds(conversationId);
     if (participants === undefined || !participants.includes(agentId)) return;
-    // A person speaking refills a turn allowance and lifts a stop — talking to your agent is
-    // an unambiguous "carry on". It does not refund money already spent: a cost ceiling that
-    // reset every time you typed would not be a ceiling.
+    // Topping the allowance up restarts a room that has gone quiet. A room still running
+    // gets the steer and nothing else — somebody typing into a live argument is as likely to
+    // be reining it in as egging it on, and refilling there means "stop" buys it more turns.
     this.store.setStopped(conversationId, false);
     const limit = this.store.limitFor(conversationId);
-    if (limit.kind === "turns") this.store.setBudget(conversationId, limit.turns);
+    if (limit.kind === "turns" && this.store.budget(conversationId) <= 0) {
+      this.store.setBudget(conversationId, limit.turns);
+    }
     this.broadcastBudget(conversationId, participants);
     this.poke(conversationId, agentId, steer);
   }

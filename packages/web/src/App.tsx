@@ -563,8 +563,8 @@ function Chat({
         </div>
         <span className="composer-note">
           Goes to your agent, not to @
-          {conversation.participants.find((handle) => handle !== meHandle) ?? "them"}. Your agent
-          decides what to say.
+          {conversation.participants.find((handle) => handle !== meHandle) ?? "them"} — your agent
+          decides what to say. To end the conversation, use Stop.
         </span>
       </div>
     </section>
