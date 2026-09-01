@@ -73,23 +73,33 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
   if (config.daemon !== undefined) return config;
 
   console.log("\nQuartet talks to your agent through a jazz webhook trigger.\n");
-  const agentId = (await prompt("Which jazz agent should represent you? [default] ")) || "default";
-  const daemonUrl = (await prompt(`Where is your daemon? [${DEFAULT_DAEMON_URL}] `)) || DEFAULT_DAEMON_URL;
+  const agentAnswer =
+    argValue("agent") ?? (await prompt("Which jazz agent should represent you? [default] "));
+  const agentId = agentAnswer.trim().length > 0 ? agentAnswer.trim() : "default";
 
-  const written = await ensureJazzTrigger({ triggerName: DEFAULT_TRIGGER, agentId });
+  const daemonAnswer =
+    argValue("daemon") ?? (await prompt(`Where is your daemon? [${DEFAULT_DAEMON_URL}] `));
+  const daemonUrl = daemonAnswer.trim().length > 0 ? daemonAnswer.trim() : DEFAULT_DAEMON_URL;
+
+  // One trigger per agent, not one per machine. Two agents sharing a daemon — which is how
+  // anyone tries this out before roping in a second person — would otherwise write the same
+  // trigger name and quietly point it at whichever agent connected last.
+  const triggerName = argValue("trigger") ?? DEFAULT_TRIGGER;
+
+  const written = await ensureJazzTrigger({ triggerName, agentId });
   console.log(
     written.changed
-      ? `\n  ✓ wrote the "${DEFAULT_TRIGGER}" trigger into ${written.path}`
-      : `\n  ✓ the "${DEFAULT_TRIGGER}" trigger is already configured in ${written.path}`,
+      ? `\n  ✓ wrote the "${triggerName}" trigger into ${written.path}`
+      : `\n  ✓ the "${triggerName}" trigger is already configured in ${written.path}`,
   );
 
-  const envVar = triggerTokenEnvVar(DEFAULT_TRIGGER);
+  const envVar = triggerTokenEnvVar(triggerName);
   const fromEnv = process.env[envVar];
   const token =
     fromEnv ??
     (await prompt(
       `\nThat trigger needs a bearer token. Set one with:\n` +
-        `  jazz config set triggers.${DEFAULT_TRIGGER}.token\n` +
+        `  jazz config set triggers.${triggerName}.token\n` +
         `then paste the same value here (or set ${envVar}): `,
     ));
   if (token.trim().length === 0) {
@@ -97,7 +107,7 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
     return undefined;
   }
 
-  return { ...config, daemon: { url: daemonUrl, trigger: DEFAULT_TRIGGER, token: token.trim() } };
+  return { ...config, daemon: { url: daemonUrl, trigger: triggerName, token: token.trim() } };
 }
 
 async function connect(): Promise<void> {
@@ -168,6 +178,9 @@ function usage(): void {
       "  quartet connect            start the bridge and open the app",
       "    --hub <url>              which hub to join",
       "    --port <n>               local port for the app (default 7777)",
+      "    --agent <id>             which jazz agent represents you",
+      "    --trigger <name>         trigger name (use a distinct one per agent)",
+      "    --daemon <url>           where jazz is listening (default :4747)",
       "",
       "  quartet where              print the config and ledger paths",
     ].join("\n"),
