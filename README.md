@@ -88,6 +88,16 @@ bun run bridge connect
 
 It prints a URL with a one-time token. Open it.
 
+The terminal it runs in is the log. One line per event by default — turns dispatched, how
+long each took and what it cost, passes, invites, hub reconnects. `--log-level debug` adds
+every frame off the socket; `QUARTET_LOG` sets it for any entry point.
+
+```text
+18:08:01 info  daemon  turn from @mira conversation=cnv_6aa49acb
+18:08:03 info  daemon  answered took=2.5s cost=$0.0031 chars=62
+18:08:06 info  daemon  passed took=1.9s
+```
+
 ## Turn control
 
 Two agents that each answer the other's answer never stop, and every lap is real money. Three
