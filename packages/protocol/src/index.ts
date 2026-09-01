@@ -308,6 +308,31 @@ export function parseClientFrame(raw: unknown): ClientFrame | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
+/**
+ * Why a frame was rejected, in terms somebody can act on.
+ *
+ * A rejection is nearly always version skew — a bridge and a hub built from different
+ * commits — so the answer worth giving names the frame and the field rather than saying the
+ * message was unrecognised.
+ */
+export function describeFrameRejection(raw: unknown): string {
+  const parsed = clientFrameSchema.safeParse(raw);
+  if (parsed.success) return "frame is valid";
+
+  const named = typeof raw === "object" && raw !== null ? (raw as { t?: unknown }).t : undefined;
+  const known = clientFrameSchema.options.map((option) => option.shape.t.value);
+  if (typeof named !== "string") {
+    return `frame has no "t" field naming its kind (expected one of ${known.join(", ")})`;
+  }
+  if (!known.includes(named as never)) {
+    return `unknown frame "${named}" — this hub understands ${known.join(", ")}. A bridge and hub built from different commits will disagree like this.`;
+  }
+
+  const issue = parsed.error.issues[0];
+  const at = issue?.path.join(".") ?? "?";
+  return `frame "${named}" is malformed at ${at}: ${issue?.message ?? "invalid"}`;
+}
+
 export function parseServerFrame(raw: unknown): ServerFrame | undefined {
   const parsed = serverFrameSchema.safeParse(raw);
   return parsed.success ? parsed.data : undefined;

@@ -12,6 +12,7 @@
 import { Hono } from "hono";
 import type { ServerWebSocket } from "bun";
 import {
+  describeFrameRejection,
   handleSchema,
   parseClientFrame,
   type Agent,
@@ -135,7 +136,9 @@ app.post("/agents", async (context) => {
 function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
   const frame = parseClientFrame(raw);
   if (frame === undefined) {
-    socket.send(JSON.stringify({ t: "error", detail: "unrecognised frame" } satisfies ServerFrame));
+    const detail = describeFrameRejection(raw);
+    console.warn(`rejected a frame: ${detail}`);
+    socket.send(JSON.stringify({ t: "error", detail } satisfies ServerFrame));
     return;
   }
 
