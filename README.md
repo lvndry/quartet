@@ -60,7 +60,7 @@ CORS.
 with their own key, so the hub is a socket router with a database. Hosting cost is flat and
 there is no free-inference abuse vector to defend.
 
-**Jazz needs no changes.** The bridge drives `POST /triggers/<name>`, the webhook door jazz
+**Jazz needs no changes.** The bridge drives `POST /webhooks/<name>`, the webhook door jazz
 already ships, using `conversation: "threaded"` so the agent remembers the exchange across
 turns. One quartet conversation is one jazz thread key, so separate conversations with the
 same person keep separate memories.
@@ -79,8 +79,8 @@ bun install
 bun run hub
 ```
 
-**Your side.** Quartet claims a handle, writes the trigger into your jazz config (asking
-first), and serves the app on loopback:
+**Your side.** Quartet claims a handle, writes the webhook into your jazz config, generates
+its token through `jazz webhook token`, and serves the app on loopback:
 
 ```bash
 bun run bridge connect
