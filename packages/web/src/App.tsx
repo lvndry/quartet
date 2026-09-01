@@ -1,5 +1,5 @@
 import type React from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Conversation, Message } from "@quartet/protocol";
 import { MAX_SPEND_USD, MAX_TURN_BUDGET } from "@quartet/protocol";
 import { call, useBridge, useSocketLive, type Activity, type Aside, type Limit } from "./store";
@@ -28,6 +28,36 @@ function Elapsed({ since }: { since: number }): React.JSX.Element {
   );
 }
 
+/**
+ * The same warning the agents are given, shown to the people watching.
+ *
+ * They are the ones who would raise the limit, so knowing the room is nearly out matters
+ * before it goes quiet rather than after.
+ */
+function nearingLimit(conversation: Conversation): string | undefined {
+  const { limit, budgetRemaining, spentUSD, spendIncomplete } = conversation;
+  if (conversation.stopped) return undefined;
+  if (limit.kind === "turns") {
+    if (budgetRemaining === 0) return undefined;
+    return budgetRemaining <= 1 ? "last turn" : undefined;
+  }
+  if (limit.kind === "cost" && !spendIncomplete) {
+    const left = limit.usd - spentUSD;
+    return left > 0 && left / limit.usd <= 0.2 ? "nearly spent" : undefined;
+  }
+  return undefined;
+}
+
+/** The header keeps a purpose to a glance; a brief can now run to several paragraphs. */
+const PURPOSE_HEADER_CHARS = 30;
+
+function shortPurpose(purpose: string): string {
+  const flat = purpose.replace(/\s+/g, " ").trim();
+  return flat.length <= PURPOSE_HEADER_CHARS
+    ? flat
+    : `${flat.slice(0, PURPOSE_HEADER_CHARS).trimEnd()}…`;
+}
+
 function money(usd: number): string {
   return usd < 0.01 && usd > 0 ? "<$0.01" : `$${usd.toFixed(2)}`;
 }
@@ -40,6 +70,7 @@ function money(usd: number): string {
  */
 function Budget({ conversation }: { conversation: Conversation }): React.JSX.Element {
   const { limit, budgetRemaining, spentUSD, spendIncomplete } = conversation;
+  const warning = nearingLimit(conversation);
 
   if (limit.kind === "turns") {
     return (
@@ -58,6 +89,7 @@ function Budget({ conversation }: { conversation: Conversation }): React.JSX.Ele
             {money(spentUSD)}
           </span>
         )}
+        {warning !== undefined && <span className="budget-label warn">{warning}</span>}
       </span>
     );
   }
@@ -74,6 +106,7 @@ function Budget({ conversation }: { conversation: Conversation }): React.JSX.Ele
           {spendIncomplete ? "≥" : ""}
           {money(spentUSD)} / {money(limit.usd)}
         </span>
+        {warning !== undefined && <span className="budget-label warn">{warning}</span>}
       </span>
     );
   }
@@ -434,19 +467,58 @@ function Chat({
     [messages, asides],
   );
 
+  // Following the conversation only while you are actually at the bottom. Yanking somebody
+  // back down mid-read is how a chat loses an argument you were halfway through.
+  const scroller = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+  const seen = useRef(timeline.length);
+  const [unread, setUnread] = useState(0);
+
+  const toBottom = useCallback(() => {
+    bottom.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    pinned.current = true;
+    setUnread(0);
+  }, []);
+
   useEffect(() => {
-    bottom.current?.scrollIntoView({ block: "end" });
-  }, [timeline.length, activity?.state]);
+    // A different conversation starts pinned, with nothing unread carried over.
+    pinned.current = true;
+    seen.current = 0;
+    setUnread(0);
+  }, [conversation.id]);
+
+  useEffect(() => {
+    const added = timeline.length - seen.current;
+    seen.current = timeline.length;
+    if (added <= 0) return;
+    if (pinned.current) bottom.current?.scrollIntoView({ block: "end" });
+    else setUnread((count) => count + added);
+  }, [timeline.length]);
+
+  useEffect(() => {
+    if (pinned.current) bottom.current?.scrollIntoView({ block: "end" });
+  }, [activity?.state]);
+
+  function onScroll(): void {
+    const element = scroller.current;
+    if (element === null) return;
+    // A few pixels of slack: a browser mid-smooth-scroll rarely lands exactly on the end.
+    const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 24;
+    pinned.current = atBottom;
+    if (atBottom) setUnread(0);
+  }
 
   return (
     <section className="pane">
       <div className="chat-head">
-        <span className="chat-purpose">{conversation.purpose}</span>
+        <span className="chat-purpose" title={conversation.purpose}>
+          {shortPurpose(conversation.purpose)}
+        </span>
         <Budget conversation={conversation} />
         <LimitPicker conversation={conversation} onAct={onAct} />
       </div>
 
-      <div className="pane-scroll">
+      <div className="pane-scroll" ref={scroller} onScroll={onScroll}>
         <div className="thread">
           {timeline.map((item, index) => {
             if ("aside" in item) {
@@ -531,6 +603,12 @@ function Chat({
 
           <div ref={bottom} />
         </div>
+
+        {unread > 0 && (
+          <button className="unread" type="button" onClick={toBottom}>
+            {unread} new message{unread === 1 ? "" : "s"} ↓
+          </button>
+        )}
       </div>
 
       <div className="composer">
@@ -563,8 +641,8 @@ function Chat({
         </div>
         <span className="composer-note">
           Goes to your agent, not to @
-          {conversation.participants.find((handle) => handle !== meHandle) ?? "them"}. Your agent
-          decides what to say.
+          {conversation.participants.find((handle) => handle !== meHandle) ?? "them"} — your agent
+          decides what to say. To end the conversation, use Stop.
         </span>
       </div>
     </section>

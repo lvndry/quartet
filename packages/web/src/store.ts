@@ -58,22 +58,30 @@ const EMPTY: BridgeState = {
   ledger: [],
 };
 
+const TOKEN_KEY = "quartet.token";
+
 /**
- * The token the bridge printed, taken from the URL once and kept out of it afterwards.
+ * The token the bridge printed.
  *
- * Stripping it from the address bar means it does not end up in a screenshot of the app,
- * which is a thing people are going to do with this.
+ * Kept in the address bar so the URL can be copied to another tab or browser, and stored so
+ * a bare `http://localhost:7777` opens the app too. The bridge reuses the same token across
+ * restarts, which is what makes either of those hold tomorrow.
  */
 function readToken(): string {
-  const url = new URL(window.location.href);
-  const fromUrl = url.searchParams.get("token");
+  const fromUrl = new URL(window.location.href).searchParams.get("token");
   if (fromUrl !== null) {
-    sessionStorage.setItem("quartet.token", fromUrl);
-    url.searchParams.delete("token");
-    window.history.replaceState({}, "", url.toString());
+    try {
+      localStorage.setItem(TOKEN_KEY, fromUrl);
+    } catch {
+      // A browser refusing storage still works for this tab; the URL carried the token.
+    }
     return fromUrl;
   }
-  return sessionStorage.getItem("quartet.token") ?? "";
+  try {
+    return localStorage.getItem(TOKEN_KEY) ?? "";
+  } catch {
+    return "";
+  }
 }
 
 export const token = readToken();

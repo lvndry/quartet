@@ -64,11 +64,26 @@ export const DEFAULT_LIMIT: Limit = { kind: "turns", turns: DEFAULT_TURN_BUDGET 
  */
 export const PASS_SENTINEL = "<pass>";
 
-/** Longest purpose line accepted when opening a conversation. */
-export const MAX_PURPOSE_LENGTH = 280;
+/**
+ * Ends the conversation after one last message.
+ *
+ * Distinct from a pass: a pass is "nothing to add" and says nothing, while this is a
+ * goodbye. Bowing out of an argument without a word leaves the other agent talking to an
+ * empty room, so the closing line is delivered and the conversation closes with it.
+ */
+export const CLOSE_SENTINEL = "<end>";
 
-/** Longest single message an agent or human may send. */
+/**
+ * Longest single message, and longest purpose line.
+ *
+ * Every turn ships the purpose plus a window of the transcript to a jazz webhook, whose body
+ * caps at 20 KB. That is the whole reason there is a number here: an unbounded purpose eats
+ * the transcript window and eventually fails the turn outright. Within that budget, a brief
+ * with real detail in it gives the agents more to work with than a terse one, so it is set
+ * generously and conversation lists truncate for display.
+ */
 export const MAX_MESSAGE_LENGTH = 4000;
+export const MAX_PURPOSE_LENGTH = MAX_MESSAGE_LENGTH;
 
 export const handleSchema = z
   .string()
@@ -207,6 +222,8 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     t: z.literal("say"),
     conversationId: z.string(),
     text: z.string().min(1).max(MAX_MESSAGE_LENGTH),
+    /** The agent's last word. Delivered, then the conversation closes without a reply. */
+    closing: z.boolean().optional(),
     /** What this turn cost, when the daemon could tell. Fed into the conversation's spend. */
     costUSD: z.number().nonnegative().optional(),
     costIncomplete: z.boolean().optional(),
@@ -270,6 +287,13 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
     transcript: z.array(messageSchema),
     /** Present when the owner asked for this turn. Trusted, unlike everything else here. */
     steer: z.string().optional(),
+    /**
+     * How much room is left, when it is nearly gone.
+     *
+     * From the room rather than from either owner, so an agent can wind up its own point
+     * instead of being cut off mid-sentence when the allowance runs out.
+     */
+    notice: z.string().optional(),
   }),
   /** The conversation's spending position changed — turns left, money spent, or the rule. */
   z.object({
@@ -288,6 +312,31 @@ export type ServerFrame = z.infer<typeof serverFrameSchema>;
 export function parseClientFrame(raw: unknown): ClientFrame | undefined {
   const parsed = clientFrameSchema.safeParse(raw);
   return parsed.success ? parsed.data : undefined;
+}
+
+/**
+ * Why a frame was rejected, in terms somebody can act on.
+ *
+ * A rejection is nearly always version skew — a bridge and a hub built from different
+ * commits — so the answer worth giving names the frame and the field rather than saying the
+ * message was unrecognised.
+ */
+export function describeFrameRejection(raw: unknown): string {
+  const parsed = clientFrameSchema.safeParse(raw);
+  if (parsed.success) return "frame is valid";
+
+  const named = typeof raw === "object" && raw !== null ? (raw as { t?: unknown }).t : undefined;
+  const known = clientFrameSchema.options.map((option) => option.shape.t.value);
+  if (typeof named !== "string") {
+    return `frame has no "t" field naming its kind (expected one of ${known.join(", ")})`;
+  }
+  if (!known.includes(named as never)) {
+    return `unknown frame "${named}" — this hub understands ${known.join(", ")}. A bridge and hub built from different commits will disagree like this.`;
+  }
+
+  const issue = parsed.error.issues[0];
+  const at = issue?.path.join(".") ?? "?";
+  return `frame "${named}" is malformed at ${at}: ${issue?.message ?? "invalid"}`;
 }
 
 export function parseServerFrame(raw: unknown): ServerFrame | undefined {

@@ -11,7 +11,11 @@ import { limitSchema } from "@quartet/protocol";
 import type { Bridge, BridgeState } from "./bridge";
 import type { ServerWebSocket } from "bun";
 
+/** How many ports above the preferred one to try before giving up. */
+const PORT_SCAN_ATTEMPTS = 20;
+
 export interface LocalServerOptions {
+  /** Preferred port. The next free one above it is used when this is taken. */
   readonly port: number;
   readonly token: string;
   readonly bridge: Bridge;
@@ -57,6 +61,13 @@ function presentedToken(request: Request): string {
   return new URL(request.url).searchParams.get("token") ?? "";
 }
 
+/**
+ * Serve the app on the first free port at or above the preferred one.
+ *
+ * Scanning means a second agent on the same host needs no port flag: it finds 7778 on its
+ * own and remembers it. The `Origin` check reads the bound port rather than the requested
+ * one, so a page served from 7778 is still recognised as ours.
+ */
 export function startLocalServer(options: LocalServerOptions): { port: number; stop: () => void } {
   const browsers = new Set<ServerWebSocket<BrowserSocket>>();
 
@@ -67,13 +78,15 @@ export function startLocalServer(options: LocalServerOptions): { port: number; s
     }
   });
 
-  const server = Bun.serve<BrowserSocket, never>({
-    port: options.port,
+  let boundPort = options.port;
+
+  const serve = (port: number) => Bun.serve<BrowserSocket, never>({
+    port,
     hostname: "127.0.0.1",
     async fetch(request, bunServer) {
       const url = new URL(request.url);
 
-      if (!originAllowed(request, options.port)) {
+      if (!originAllowed(request, boundPort)) {
         return json({ error: "cross-origin requests are not accepted here" }, 403);
       }
 
@@ -120,11 +133,25 @@ export function startLocalServer(options: LocalServerOptions): { port: number; s
     },
   });
 
+  let server: ReturnType<typeof serve> | undefined;
+  for (let attempt = 0; attempt < PORT_SCAN_ATTEMPTS; attempt += 1) {
+    boundPort = options.port + attempt;
+    try {
+      server = serve(boundPort);
+      break;
+    } catch (error) {
+      const inUse = (error as { code?: string }).code === "EADDRINUSE";
+      if (!inUse || attempt === PORT_SCAN_ATTEMPTS - 1) throw error;
+    }
+  }
+  if (server === undefined) throw new Error("could not find a free port for the app");
+
+  const running = server;
   return {
-    port: Number(server.port),
+    port: Number(running.port),
     stop: () => {
       unsubscribe();
-      server.stop(true);
+      running.stop(true);
     },
   };
 }

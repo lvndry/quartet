@@ -12,6 +12,7 @@
 import { Hono } from "hono";
 import type { ServerWebSocket } from "bun";
 import {
+  describeFrameRejection,
   handleSchema,
   parseClientFrame,
   type Agent,
@@ -135,7 +136,9 @@ app.post("/agents", async (context) => {
 function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
   const frame = parseClientFrame(raw);
   if (frame === undefined) {
-    socket.send(JSON.stringify({ t: "error", detail: "unrecognised frame" } satisfies ServerFrame));
+    const detail = describeFrameRejection(raw);
+    console.warn(`rejected a frame: ${detail}`);
+    socket.send(JSON.stringify({ t: "error", detail } satisfies ServerFrame));
     return;
   }
 
@@ -279,7 +282,13 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       });
       if (message === undefined) return;
       orchestrator.onSpend(frame.conversationId, frame.costUSD, frame.costIncomplete === true);
-      orchestrator.onTurnSettled(frame.conversationId, agentId);
+      if (frame.closing === true) {
+        // Delivered and closed in one step: fanning out first would dispatch a reply, and
+        // the goodbye would be answered.
+        orchestrator.closeWith(frame.conversationId, agentId, message);
+        return;
+      }
+      orchestrator.onTurnSettled(frame.conversationId, agentId, "spoke");
       orchestrator.onMessage(frame.conversationId, agentId, message);
       return;
     }
@@ -292,8 +301,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       }
       // Either participant may set it. The rule caps what their own agent is asked to do as
       // much as the other's, so there is no side here to protect from the other.
-      store.setLimit(frame.conversationId, frame.limit);
-      orchestrator.announceBudget(frame.conversationId);
+      orchestrator.setLimit(frame.conversationId, frame.limit);
       return;
     }
 
@@ -335,7 +343,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       });
       // A pass ran a model, so it cost something and is charged like any other turn.
       orchestrator.onSpend(frame.conversationId, frame.costUSD, frame.costIncomplete === true);
-      orchestrator.onTurnSettled(frame.conversationId, agentId);
+      orchestrator.onTurnSettled(frame.conversationId, agentId, "passed");
       if (message === undefined) return;
       const participants = store.conversationParticipantIds(frame.conversationId) ?? [];
       // A pass is recorded and shown, but it deliberately does not wake the other agent:
@@ -351,7 +359,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         kind: "system",
         text: frame.reason,
       });
-      orchestrator.onTurnSettled(frame.conversationId, agentId);
+      orchestrator.onTurnSettled(frame.conversationId, agentId, "failed");
       if (message === undefined) return;
       const participants = store.conversationParticipantIds(frame.conversationId) ?? [];
       for (const participant of participants) send(participant, { t: "appended", message });

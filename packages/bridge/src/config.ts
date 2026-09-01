@@ -27,6 +27,12 @@ export interface QuartetConfig {
   readonly daemon?: DaemonSettings;
   /** Which port the app is served on. Remembered so a second agent keeps its own. */
   readonly localPort?: number;
+  /**
+   * Guards the local app. Kept so the URL stays the same across restarts, which is what
+   * makes it bookmarkable — and this file already holds the daemon and agent tokens, both of
+   * which reach further than a loopback page does.
+   */
+  readonly localToken?: string;
 }
 
 export const DEFAULT_HUB_URL = "http://localhost:8080";

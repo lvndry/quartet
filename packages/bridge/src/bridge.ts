@@ -285,7 +285,13 @@ export class Bridge {
         return;
 
       case "turn":
-        await this.takeTurn(frame.conversationId, frame.purpose, frame.transcript, frame.steer);
+        await this.takeTurn(
+      frame.conversationId,
+      frame.purpose,
+      frame.transcript,
+      frame.steer,
+      frame.notice,
+    );
         return;
 
       case "error":
@@ -341,6 +347,7 @@ export class Bridge {
     purpose: string,
     transcript: readonly Message[],
     steer: string | undefined,
+    notice: string | undefined,
   ): Promise<void> {
     const me = this.me;
     if (me === undefined) return;
@@ -362,6 +369,7 @@ export class Bridge {
         purpose,
         transcript,
         ...(steer !== undefined ? { steer } : {}),
+        ...(notice !== undefined ? { notice } : {}),
       }),
     );
 
@@ -378,10 +386,12 @@ export class Bridge {
         // `recordOutgoing`. The steer is parked so that confirmation can say what prompted it.
         if (steer !== undefined) this.pendingSteer.set(conversationId, steer);
         this.activity.set(conversationId, { state: "idle" });
+        if (result.closing) daemonLog.info("closing the conversation");
         this.send({
           t: "say",
           conversationId,
           text: result.text,
+          ...(result.closing ? { closing: true } : {}),
           ...(result.cost.costUSD !== undefined ? { costUSD: result.cost.costUSD } : {}),
           ...(result.cost.incomplete ? { costIncomplete: true } : {}),
         });

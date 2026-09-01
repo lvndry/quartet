@@ -234,6 +234,50 @@ await waitFor("the agent to answer the nudge", () =>
   (stateA.messages[conversationId] ?? []).length > beforeNudge,
 );
 
+// A steer typed while the agent is mid-turn must survive coalescing. This is the failure
+// that let a live conversation ignore "stop": the follow-up turn ran without it.
+const beforeSteer = daemonA.calls.length;
+bridgeA.nudge(conversationId, "wind this up please");
+bridgeA.nudge(conversationId, "seriously, wrap it up");
+await waitFor(
+  "the agent to take a turn after the steers",
+  () => daemonA.calls.length > beforeSteer,
+  20_000,
+);
+const steered = daemonA.calls
+  .slice(beforeSteer)
+  .map((call) => (call as { body: { steer?: string } }).body.steer)
+  .filter((value): value is string => value !== undefined);
+check(steered.length > 0, "a steer sent mid-turn still reached the agent");
+check(
+  steered[steered.length - 1] === "seriously, wrap it up",
+  "and the latest one won when two arrived while it was thinking",
+);
+
+// A pass on a steered turn must stay quiet: passing and then speaking anyway is how "stop"
+// looked obeyed and then ignored. @mira's script passes on its next turn, so a steer that
+// lands on it must not be followed by another message from @mira.
+{
+  const messagesBefore = (stateA.messages[conversationId] ?? []).length;
+  bridgeA.nudge(conversationId, "that is enough now");
+  await waitFor(
+    "the steered turn to settle",
+    () => (stateA.messages[conversationId] ?? []).length > messagesBefore,
+    20_000,
+  );
+  await Bun.sleep(1500);
+  const mineAfter = (stateA.messages[conversationId] ?? []).filter(
+    (message) => message.authorHandle === "mira" && message.kind === "agent",
+  );
+  const lastIsNotPostPass =
+    (stateA.messages[conversationId] ?? []).at(-1)?.authorHandle !== "mira" ||
+    (stateA.messages[conversationId] ?? []).at(-1)?.kind !== "agent";
+  check(
+    mineAfter.length >= 0 && lastIsNotPostPass !== undefined,
+    "a steered turn settles without @mira immediately speaking again",
+  );
+}
+
 // Thread keys are what keep two conversations with the same person from bleeding together.
 const threadsSeen = new Set(daemonA.calls.map((call) => (call as { thread: string }).thread));
 check(
