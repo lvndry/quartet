@@ -11,6 +11,7 @@
  * configuration; a tool that silently rewrites it has not earned the access.
  */
 
+import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { Bridge } from "./bridge";
 import { loadConfig, saveConfig, type QuartetConfig } from "./config";
@@ -31,21 +32,38 @@ function hasFlag(name: string): boolean {
   return process.argv.includes(`--${name}`);
 }
 
+/**
+ * One reader for the whole session, not one per question.
+ *
+ * `for await (const line of console)` opens a fresh reader over stdin each time it is
+ * evaluated, so a second prompt races the first one's buffer and the answers land against
+ * the wrong questions. Holding a single iterator is the fix.
+ */
+const lines: AsyncIterator<string> = console[Symbol.asyncIterator]();
+
 async function prompt(question: string): Promise<string> {
   process.stdout.write(question);
-  for await (const line of console) return line.trim();
-  return "";
+  const next = await lines.next();
+  return next.done === true ? "" : next.value.trim();
 }
 
 async function claimHandle(hubUrl: string): Promise<{ token: string; handle: string } | undefined> {
-  console.log("\nYou do not have a quartet identity on this hub yet.\n");
-  const handle = await prompt("Pick a handle (lowercase, e.g. mira): ");
-  const displayName = (await prompt("Display name: ")) || handle;
+  const fromFlag = argValue("handle");
+  if (fromFlag === undefined) {
+    console.log("\nYou do not have a quartet identity on this hub yet.\n");
+  }
+  const handle = fromFlag ?? (await prompt("Pick a handle (lowercase, e.g. mira): "));
+  if (handle.trim().length < 2) {
+    console.error("\nA handle needs at least two characters.");
+    return undefined;
+  }
+  const nameAnswer = argValue("name") ?? (await prompt("Display name: "));
+  const displayName = nameAnswer.trim().length > 0 ? nameAnswer.trim() : handle.trim();
 
   const response = await fetch(new URL("/agents", hubUrl), {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ handle, displayName }),
+    body: JSON.stringify({ handle: handle.trim(), displayName: displayName.trim() }),
   }).catch(() => undefined);
 
   if (response === undefined) {
@@ -59,7 +77,7 @@ async function claimHandle(hubUrl: string): Promise<{ token: string; handle: str
     console.error(`\n${body?.error ?? "the hub refused that handle"}`);
     return undefined;
   }
-  return { token: body.token, handle };
+  return { token: body.token, handle: handle.trim() };
 }
 
 /**
@@ -89,25 +107,67 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
   const written = await ensureJazzTrigger({ triggerName, agentId });
   console.log(
     written.changed
-      ? `\n  ✓ wrote the "${triggerName}" trigger into ${written.path}`
-      : `\n  ✓ the "${triggerName}" trigger is already configured in ${written.path}`,
+      ? `\n  ✓ wrote the "${triggerName}" webhook into ${written.path}`
+      : `\n  ✓ the "${triggerName}" webhook is already configured in ${written.path}`,
   );
+
+  const token = await resolveOrMintToken(triggerName);
+  if (token === undefined) return undefined;
+
+  // The daemon reads its webhook list once, at startup. The token is resolved per request,
+  // so only a newly *added* webhook needs the restart — but saying nothing here means the
+  // first conversation silently 404s and there is no clue why.
+  if (written.changed) {
+    console.log(
+      `\n  ! Restart \`jazz daemon\` before talking — it reads its webhooks at startup,\n` +
+        `    so the one just added is not live yet.`,
+    );
+  }
+
+  return { ...config, daemon: { url: daemonUrl, trigger: triggerName, token } };
+}
+
+/**
+ * Get a bearer token for this webhook without ever asking a person to invent one.
+ *
+ * Humans asked to make up a secret produce `test`, and then it stays. So quartet mints
+ * `randomBytes(24)` and hands it to jazz, which is the only party that can put it somewhere
+ * the daemon will look. An explicit `--token` still wins, for CI and containers where there
+ * is no keyring to write to.
+ *
+ * Storing it means shelling out to jazz rather than writing its keyring directly: the backend
+ * differs per platform and has a fallback file, and a second implementation of that would go
+ * stale the first time jazz changed it.
+ */
+async function resolveOrMintToken(triggerName: string): Promise<string | undefined> {
+  const explicit = argValue("token");
+  if (explicit !== undefined && explicit.trim().length > 0) return explicit.trim();
 
   const envVar = triggerTokenEnvVar(triggerName);
   const fromEnv = process.env[envVar];
-  const token =
-    fromEnv ??
-    (await prompt(
-      `\nThat trigger needs a bearer token. Set one with:\n` +
-        `  jazz config set triggers.${triggerName}.token\n` +
-        `then paste the same value here (or set ${envVar}): `,
-    ));
-  if (token.trim().length === 0) {
-    console.error("\nWithout the trigger token quartet cannot wake your agent.");
+  if (fromEnv !== undefined && fromEnv.trim().length > 0) return fromEnv.trim();
+
+  const minted = randomBytes(24).toString("hex");
+  const jazzCli = argValue("jazz") ?? "jazz";
+  const stored = await Bun.spawn({
+    cmd: [jazzCli, "config", "set", `triggers.${triggerName}.token`, minted],
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+    .exited.then((code) => code === 0)
+    .catch(() => false);
+
+  if (!stored) {
+    console.error(
+      `\n  ! Could not run \`${jazzCli}\` to store the webhook token.\n` +
+        `    Either put jazz on your PATH, pass --jazz "<command>", or supply a token\n` +
+        `    yourself with --token or ${envVar}.`,
+    );
     return undefined;
   }
 
-  return { ...config, daemon: { url: daemonUrl, trigger: triggerName, token: token.trim() } };
+  console.log(`  ✓ generated a webhook token and stored it in jazz's keyring`);
+  return minted;
 }
 
 async function connect(): Promise<void> {
@@ -181,6 +241,10 @@ function usage(): void {
       "    --agent <id>             which jazz agent represents you",
       "    --trigger <name>         trigger name (use a distinct one per agent)",
       "    --daemon <url>           where jazz is listening (default :4747)",
+      "    --handle <name>          claim this handle without being asked",
+      "    --name <text>            display name",
+      "    --token <secret>         supply the webhook token instead of generating one",
+      "    --jazz <command>         how to invoke jazz (default: jazz)",
       "",
       "  quartet where              print the config and ledger paths",
     ].join("\n"),
