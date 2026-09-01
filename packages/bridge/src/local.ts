@@ -7,6 +7,7 @@
  * check is what stops a site you happen to be visiting from driving your agent.
  */
 
+import { limitSchema } from "@quartet/protocol";
 import type { Bridge, BridgeState } from "./bridge";
 import type { ServerWebSocket } from "bun";
 
@@ -171,6 +172,27 @@ async function handleApi(pathname: string, request: Request, bridge: Bridge): Pr
         return json({ error: "a conversation and some text are both required" }, 400);
       }
       bridge.nudge(conversationId, message);
+      return json({ ok: true });
+    }
+
+    case "/api/limit": {
+      const conversationId = text("conversationId");
+      const limit = body["limit"];
+      if (conversationId.length === 0 || typeof limit !== "object" || limit === null) {
+        return json({ error: "a conversation and a limit are both required" }, 400);
+      }
+      const parsed = limitSchema.safeParse(limit);
+      if (!parsed.success) {
+        return json({ error: parsed.error.issues[0]?.message ?? "invalid limit" }, 400);
+      }
+      bridge.send({ t: "limit.set", conversationId, limit: parsed.data });
+      return json({ ok: true });
+    }
+
+    case "/api/stop": {
+      const conversationId = text("conversationId");
+      if (conversationId.length === 0) return json({ error: "conversationId is required" }, 400);
+      bridge.send({ t: "conversation.stop", conversationId });
       return json({ ok: true });
     }
 

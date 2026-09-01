@@ -243,7 +243,14 @@ export class Bridge {
       case "budget":
         this.conversations = this.conversations.map((conversation) =>
           conversation.id === frame.conversationId
-            ? { ...conversation, budgetRemaining: frame.remaining }
+            ? {
+                ...conversation,
+                budgetRemaining: frame.remaining,
+                limit: frame.limit,
+                spentUSD: frame.spentUSD,
+                spendIncomplete: frame.spendIncomplete,
+                stopped: frame.stopped,
+              }
             : conversation,
         );
         this.publish();
@@ -333,14 +340,25 @@ export class Bridge {
         // `recordOutgoing`. The steer is parked so that confirmation can say what prompted it.
         if (steer !== undefined) this.pendingSteer.set(conversationId, steer);
         this.activity.set(conversationId, { state: "idle" });
-        this.send({ t: "say", conversationId, text: result.text });
+        this.send({
+          t: "say",
+          conversationId,
+          text: result.text,
+          ...(result.cost.costUSD !== undefined ? { costUSD: result.cost.costUSD } : {}),
+          ...(result.cost.incomplete ? { costIncomplete: true } : {}),
+        });
         this.publish();
         return;
       }
 
       case "passed":
         this.activity.set(conversationId, { state: "idle" });
-        this.send({ t: "pass", conversationId });
+        this.send({
+          t: "pass",
+          conversationId,
+          ...(result.cost.costUSD !== undefined ? { costUSD: result.cost.costUSD } : {}),
+          ...(result.cost.incomplete ? { costIncomplete: true } : {}),
+        });
         this.publish();
         return;
 

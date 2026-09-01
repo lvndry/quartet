@@ -18,9 +18,15 @@ import { PASS_SENTINEL } from "@quartet/protocol";
 import type { DaemonSettings } from "./config";
 import { triggerPromptTemplate } from "./prompt";
 
+/** What a turn cost, when the daemon could tell. `incomplete` means the figure is a floor. */
+export interface TurnCost {
+  readonly costUSD?: number;
+  readonly incomplete: boolean;
+}
+
 export type TurnResult =
-  | { readonly kind: "said"; readonly text: string }
-  | { readonly kind: "passed" }
+  | { readonly kind: "said"; readonly text: string; readonly cost: TurnCost }
+  | { readonly kind: "passed"; readonly cost: TurnCost }
   | { readonly kind: "needs-you"; readonly runId: string }
   | { readonly kind: "failed"; readonly reason: string };
 
@@ -64,11 +70,19 @@ export async function runTurn(
     return { kind: "failed", reason: detail?.error ?? `jazz answered ${String(response.status)}` };
   }
 
-  const body = (await response.json().catch(() => null)) as { answer?: string } | null;
+  const body = (await response.json().catch(() => null)) as
+    | { answer?: string; costUSD?: number; costIncomplete?: boolean }
+    | null;
   const answer = body?.answer?.trim() ?? "";
+  // An unpriced run is marked rather than assumed free: a local model reports no cost, and
+  // treating that as zero would let a spend ceiling sit at zero forever.
+  const cost: TurnCost = {
+    ...(typeof body?.costUSD === "number" ? { costUSD: body.costUSD } : {}),
+    incomplete: body?.costIncomplete === true || typeof body?.costUSD !== "number",
+  };
   if (answer.length === 0) return { kind: "failed", reason: "jazz returned an empty answer" };
-  if (answer === PASS_SENTINEL || answer.startsWith(PASS_SENTINEL)) return { kind: "passed" };
-  return { kind: "said", text: answer };
+  if (answer === PASS_SENTINEL || answer.startsWith(PASS_SENTINEL)) return { kind: "passed", cost };
+  return { kind: "said", text: answer, cost };
 }
 
 export async function daemonReachable(daemon: DaemonSettings): Promise<boolean> {

@@ -1,7 +1,7 @@
 import type React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Conversation, Message } from "@quartet/protocol";
-import { call, useBridge, useSocketLive, type Activity, type Aside } from "./store";
+import { call, useBridge, useSocketLive, type Activity, type Aside, type Limit } from "./store";
 
 function monogram(handle: string): string {
   return handle.slice(0, 2).toUpperCase();
@@ -27,15 +27,117 @@ function Elapsed({ since }: { since: number }): React.JSX.Element {
   );
 }
 
-function Budget({ remaining, total = 6 }: { remaining: number; total?: number }): React.JSX.Element {
+function money(usd: number): string {
+  return usd < 0.01 && usd > 0 ? "<$0.01" : `$${usd.toFixed(2)}`;
+}
+
+/**
+ * What this conversation is allowed to spend, and how much of it is gone.
+ *
+ * Turn dots stop meaning anything under a cost or unlimited rule, so each rule gets the
+ * readout that actually tracks it — a row of dots, a running total, or nothing but a count.
+ */
+function Budget({ conversation }: { conversation: Conversation }): React.JSX.Element {
+  const { limit, budgetRemaining, spentUSD, spendIncomplete } = conversation;
+
+  if (limit.kind === "turns") {
+    return (
+      <span className="budget">
+        <span className="budget-label">turns</span>
+        <span className="budget-dots">
+          {Array.from({ length: Math.min(limit.turns, 20) }, (_, index) => (
+            <i key={index} className={index >= budgetRemaining ? "spent" : undefined} />
+          ))}
+        </span>
+        {spentUSD > 0 && (
+          <span className="budget-label">
+            {spendIncomplete ? "≥" : ""}
+            {money(spentUSD)}
+          </span>
+        )}
+      </span>
+    );
+  }
+
+  if (limit.kind === "cost") {
+    const fraction = Math.min(1, spentUSD / limit.usd);
+    return (
+      <span className="budget">
+        <span className="budget-label">spend</span>
+        <span className="meter">
+          <i style={{ width: `${String(Math.round(fraction * 100))}%` }} />
+        </span>
+        <span className="budget-label">
+          {spendIncomplete ? "≥" : ""}
+          {money(spentUSD)} / {money(limit.usd)}
+        </span>
+      </span>
+    );
+  }
+
   return (
     <span className="budget">
-      <span className="budget-label">turns</span>
-      <span className="budget-dots">
-        {Array.from({ length: total }, (_, index) => (
-          <i key={index} className={index >= remaining ? "spent" : undefined} />
-        ))}
+      <span className="budget-label warn">unlimited</span>
+      <span className="budget-label">
+        {spendIncomplete ? "≥" : ""}
+        {money(spentUSD)} spent
       </span>
+    </span>
+  );
+}
+
+const LIMIT_CHOICES: { label: string; limit: Limit }[] = [
+  { label: "6 turns", limit: { kind: "turns", turns: 6 } },
+  { label: "20 turns", limit: { kind: "turns", turns: 20 } },
+  { label: "60 turns", limit: { kind: "turns", turns: 60 } },
+  { label: "$0.25", limit: { kind: "cost", usd: 0.25 } },
+  { label: "$1.00", limit: { kind: "cost", usd: 1 } },
+  { label: "$5.00", limit: { kind: "cost", usd: 5 } },
+  { label: "Unlimited", limit: { kind: "none" } },
+];
+
+function limitLabel(limit: Limit): string {
+  if (limit.kind === "turns") return `${String(limit.turns)} turns`;
+  if (limit.kind === "cost") return money(limit.usd);
+  return "Unlimited";
+}
+
+function LimitPicker({
+  conversation,
+  onAct,
+}: {
+  conversation: Conversation;
+  onAct: (path: string, body: Record<string, unknown>) => Promise<void>;
+}): React.JSX.Element {
+  const current = limitLabel(conversation.limit);
+  return (
+    <span className="limit">
+      <select
+        className="limit-select"
+        value={LIMIT_CHOICES.some((choice) => choice.label === current) ? current : ""}
+        onChange={(event) => {
+          const choice = LIMIT_CHOICES.find((candidate) => candidate.label === event.target.value);
+          if (choice !== undefined) {
+            void onAct("limit", { conversationId: conversation.id, limit: choice.limit });
+          }
+        }}
+      >
+        {!LIMIT_CHOICES.some((choice) => choice.label === current) && (
+          <option value="">{current}</option>
+        )}
+        {LIMIT_CHOICES.map((choice) => (
+          <option key={choice.label} value={choice.label}>
+            {choice.label}
+          </option>
+        ))}
+      </select>
+      <button
+        className="btn stop"
+        type="button"
+        onClick={() => void onAct("stop", { conversationId: conversation.id })}
+      >
+        Stop
+      </button>
     </span>
   );
 }
@@ -173,7 +275,7 @@ function Sidebar({
               <span className="row-main">
                 <span className="row-title">{conversation.purpose}</span>
                 <span className="row-sub">
-                  @{other} · {String(conversation.budgetRemaining)} turns left
+                  @{other} · {limitLabel(conversation.limit)}
                 </span>
               </span>
             </button>
@@ -282,7 +384,8 @@ function Chat({
     <section className="pane">
       <div className="chat-head">
         <span className="chat-purpose">{conversation.purpose}</span>
-        <Budget remaining={conversation.budgetRemaining} />
+        <Budget conversation={conversation} />
+        <LimitPicker conversation={conversation} onAct={onAct} />
       </div>
 
       <div className="pane-scroll">
@@ -353,9 +456,20 @@ function Chat({
             </div>
           )}
 
-          {conversation.budgetRemaining === 0 && activity?.state !== "thinking" && (
-            <span className="line">Room quiet — turns used up. Say something to continue.</span>
+          {conversation.stopped && activity?.state !== "thinking" && (
+            <span className="line">Stopped. Change the limit or say something to continue.</span>
           )}
+
+          {!conversation.stopped &&
+            conversation.limit.kind !== "none" &&
+            conversation.budgetRemaining === 0 &&
+            activity?.state !== "thinking" && (
+              <span className="line">
+                {conversation.limit.kind === "cost"
+                  ? "Room quiet — spend limit reached. Raise it or say something to continue."
+                  : "Room quiet — turns used up. Say something to continue."}
+              </span>
+            )}
 
           <div ref={bottom} />
         </div>

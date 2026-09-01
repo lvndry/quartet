@@ -11,10 +11,13 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const HUB_PORT = 8080;
+// Deliberately off the defaults: the demo must never fight a hub or bridge somebody is
+// already running for real. Override with DEMO_HUB_PORT / DEMO_WEB_PORT if even these clash.
+const HUB_PORT = Number(process.env["DEMO_HUB_PORT"] ?? 8390);
+const FIRST_WEB_PORT = Number(process.env["DEMO_WEB_PORT"] ?? 7787);
 const CAST = [
-  { handle: "mira", name: "Mira", daemonPort: 8501, webPort: 7777 },
-  { handle: "otto", name: "Otto", daemonPort: 8502, webPort: 7778 },
+  { handle: "mira", name: "Mira", daemonPort: 8501, webPort: FIRST_WEB_PORT },
+  { handle: "otto", name: "Otto", daemonPort: 8502, webPort: FIRST_WEB_PORT + 1 },
 ];
 
 /** Canned replies so the demo is watchable without burning tokens on a real model. */
@@ -99,8 +102,8 @@ for (const member of CAST) {
 console.log(`
   quartet demo
 
-    @mira   http://localhost:7777/?token=demo-mira
-    @otto   http://localhost:7778/?token=demo-otto
+    @mira   http://localhost:${String(CAST[0]?.webPort)}/?token=demo-mira
+    @otto   http://localhost:${String(CAST[1]?.webPort)}/?token=demo-otto
 
   Invite @otto from @mira's window, accept it in @otto's, and watch.
   Ctrl-C to stop.

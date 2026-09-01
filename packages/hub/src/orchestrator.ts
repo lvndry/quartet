@@ -22,7 +22,7 @@
 
 import type { HubStore } from "./db";
 import type { Message, ServerFrame } from "@quartet/protocol";
-import { DEFAULT_TURN_BUDGET } from "@quartet/protocol";
+import type { Limit } from "@quartet/protocol";
 
 /** How much of the conversation an agent is shown. The agent is stateless between turns. */
 const TRANSCRIPT_WINDOW = 40;
@@ -86,9 +86,30 @@ export class Orchestrator {
   onNudge(conversationId: string, agentId: string, steer: string): void {
     const participants = this.store.conversationParticipantIds(conversationId);
     if (participants === undefined || !participants.includes(agentId)) return;
-    this.store.setBudget(conversationId, DEFAULT_TURN_BUDGET);
+    // A person speaking refills a turn allowance and lifts a stop — talking to your agent is
+    // an unambiguous "carry on". It does not refund money already spent: a cost ceiling that
+    // reset every time you typed would not be a ceiling.
+    this.store.setStopped(conversationId, false);
+    const limit = this.store.limitFor(conversationId);
+    if (limit.kind === "turns") this.store.setBudget(conversationId, limit.turns);
     this.broadcastBudget(conversationId, participants);
     this.poke(conversationId, agentId, steer);
+  }
+
+  /** Push the current spending position to both sides. */
+  announceBudget(conversationId: string): void {
+    const participants = this.store.conversationParticipantIds(conversationId);
+    if (participants !== undefined) this.broadcastBudget(conversationId, participants);
+  }
+
+  /** Record what a turn cost, when the daemon could tell us. */
+  onSpend(conversationId: string, costUSD: number | undefined, incomplete: boolean): void {
+    // An unpriced turn still latches the flag: a total that silently omits some spend is
+    // worse than one openly marked as a floor.
+    if (costUSD === undefined && !incomplete) return;
+    this.store.addSpend(conversationId, costUSD ?? 0, incomplete);
+    const participants = this.store.conversationParticipantIds(conversationId);
+    if (participants !== undefined) this.broadcastBudget(conversationId, participants);
   }
 
   /** A turn settled — the agent spoke, passed, or failed. Run any follow-up that queued up. */
@@ -99,6 +120,22 @@ export class Orchestrator {
     clearTimeout(entry.timer);
     this.inFlight.delete(key);
     if (entry.pending) this.poke(conversationId, agentId);
+  }
+
+  /**
+   * Stop a conversation now.
+   *
+   * Drops the remaining budget to zero and forgets any queued follow-up, so an in-flight turn
+   * finishes and nothing new is dispatched. The kill switch that makes an unlimited ceiling
+   * something other than a way to spend money unattended.
+   */
+  stop(conversationId: string): void {
+    this.store.setStopped(conversationId, true);
+    for (const [key, entry] of this.inFlight) {
+      if (key.startsWith(`${conversationId}::`)) entry.pending = false;
+    }
+    const participants = this.store.conversationParticipantIds(conversationId);
+    if (participants !== undefined) this.broadcastBudget(conversationId, participants);
   }
 
   /** A bridge went away. Nothing it was thinking about is coming back. */
@@ -130,13 +167,17 @@ export class Orchestrator {
 
     if (!this.isOnline(agentId)) return;
 
-    const remaining = this.store.budget(conversationId);
-    if (remaining <= 0) return;
+    const limit = this.store.limitFor(conversationId);
+    if (!this.canSpend(conversationId, limit)) return;
 
     const conversation = this.store.conversation(conversationId);
     if (conversation === undefined) return;
 
-    this.store.setBudget(conversationId, remaining - 1);
+    // Only a turn rule counts down. Under a cost rule the meter is the money, and under no
+    // rule there is nothing to count — the pass gate and the stop control end it instead.
+    if (limit.kind === "turns") {
+      this.store.setBudget(conversationId, this.store.budget(conversationId) - 1);
+    }
     const participants = this.store.conversationParticipantIds(conversationId);
     if (participants !== undefined) this.broadcastBudget(conversationId, participants);
 
@@ -167,9 +208,43 @@ export class Orchestrator {
   }
 
   private broadcastBudget(conversationId: string, participants: readonly string[]): void {
-    const remaining = this.store.budget(conversationId);
-    for (const agentId of participants) {
-      this.deliver(agentId, { t: "budget", conversationId, remaining });
+    const spend = this.store.spend(conversationId);
+    const frame = {
+      t: "budget" as const,
+      conversationId,
+      remaining: this.store.budget(conversationId),
+      limit: this.store.limitFor(conversationId),
+      spentUSD: spend.usd,
+      spendIncomplete: spend.incomplete,
+      stopped: this.store.isStopped(conversationId),
+    };
+    for (const agentId of participants) this.deliver(agentId, frame);
+  }
+
+  /**
+   * Whether this conversation may spend another turn.
+   *
+   * Each rule answers a different question, and none of them substitutes for the others: a
+   * turn of a local model is free, and a turn of a frontier model with tool calls is not.
+   *
+   * An unpriced run is deliberately *not* treated as free under a cost rule — `spentUSD`
+   * would then be a floor that never rises, and the ceiling would never be reached. Such a
+   * conversation falls back to the turn ceiling so it still ends somewhere.
+   */
+  private canSpend(conversationId: string, limit: Limit): boolean {
+    if (this.store.isStopped(conversationId)) return false;
+    switch (limit.kind) {
+      case "turns":
+        return this.store.budget(conversationId) > 0;
+      case "cost": {
+        const spend = this.store.spend(conversationId);
+        if (spend.incomplete) return this.store.budget(conversationId) > 0;
+        return spend.usd < limit.usd;
+      }
+      case "none":
+        return true;
+      default:
+        return false;
     }
   }
 }

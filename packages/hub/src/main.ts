@@ -250,7 +250,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         send(agentId, { t: "error", detail: "you are not part of that connection" });
         return;
       }
-      const conversation = store.createConversation(frame.connectionId, frame.purpose);
+      const conversation = store.createConversation(frame.connectionId, frame.purpose, frame.limit);
       if (conversation === undefined) return;
       for (const participant of participants) {
         send(participant, { t: "conversation", conversation });
@@ -278,8 +278,41 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         text: frame.text,
       });
       if (message === undefined) return;
+      orchestrator.onSpend(frame.conversationId, frame.costUSD, frame.costIncomplete === true);
       orchestrator.onTurnSettled(frame.conversationId, agentId);
       orchestrator.onMessage(frame.conversationId, agentId, message);
+      return;
+    }
+
+    case "limit.set": {
+      const participants = store.conversationParticipantIds(frame.conversationId);
+      if (participants === undefined || !participants.includes(agentId)) {
+        send(agentId, { t: "error", detail: "you are not in that conversation" });
+        return;
+      }
+      // Either participant may set it. The rule caps what their own agent is asked to do as
+      // much as the other's, so there is no side here to protect from the other.
+      store.setLimit(frame.conversationId, frame.limit);
+      orchestrator.announceBudget(frame.conversationId);
+      return;
+    }
+
+    case "conversation.stop": {
+      const participants = store.conversationParticipantIds(frame.conversationId);
+      if (participants === undefined || !participants.includes(agentId)) {
+        send(agentId, { t: "error", detail: "you are not in that conversation" });
+        return;
+      }
+      orchestrator.stop(frame.conversationId);
+      const stopped = store.appendMessage({
+        conversationId: frame.conversationId,
+        authorAgentId: agentId,
+        kind: "system",
+        text: "stopped",
+      });
+      if (stopped !== undefined) {
+        for (const participant of participants) send(participant, { t: "appended", message: stopped });
+      }
       return;
     }
 
@@ -300,6 +333,8 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         kind: "pass",
         text: "",
       });
+      // A pass ran a model, so it cost something and is charged like any other turn.
+      orchestrator.onSpend(frame.conversationId, frame.costUSD, frame.costIncomplete === true);
       orchestrator.onTurnSettled(frame.conversationId, agentId);
       if (message === undefined) return;
       const participants = store.conversationParticipantIds(frame.conversationId) ?? [];

@@ -9,6 +9,7 @@
 
 import { useSyncExternalStore } from "react";
 import type { Agent, Connection, Conversation, DirectoryEntry, Invite, Message } from "@quartet/protocol";
+export type { Limit } from "@quartet/protocol";
 
 export interface Activity {
   state: "idle" | "thinking" | "needs-you";

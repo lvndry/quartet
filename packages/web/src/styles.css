@@ -140,6 +140,21 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
 .budget-dots { display: flex; gap: 4px; }
 .budget-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--signal); transition: background 240ms ease; }
 .budget-dots i.spent { background: var(--rule); }
+.budget-label.warn { color: var(--vermilion); }
+
+/* A meter, because a cost rule has no discrete units to draw as dots. */
+.meter { width: 72px; height: 4px; background: var(--rule); display: inline-block; }
+.meter i { display: block; height: 100%; background: var(--signal); transition: width 240ms ease; }
+
+.limit { display: flex; align-items: center; gap: 0.5rem; }
+.limit-select {
+  font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.06em;
+  background: var(--ink-sunk); color: var(--cream-dim);
+  border: 1px solid var(--rule); padding: 0.28rem 0.4rem;
+}
+/* Vermilion is reserved for "needs you" — stopping a run is exactly that. */
+.btn.stop { border-color: var(--vermilion-dim); color: var(--vermilion); padding: 0.28rem 0.55rem; }
+.btn.stop:hover { background: var(--vermilion); color: var(--ink); }
 
 .thread { padding: 1.1rem 1.2rem; display: flex; flex-direction: column; justify-content: flex-end; gap: 0.9rem; min-height: 100%; }
 

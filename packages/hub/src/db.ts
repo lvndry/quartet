@@ -19,7 +19,9 @@
 
 import { Database } from "bun:sqlite";
 import {
+  DEFAULT_LIMIT,
   DEFAULT_TURN_BUDGET,
+  type Limit,
   type Agent,
   type Connection,
   type Conversation,
@@ -95,6 +97,11 @@ export class HubStore {
         connection_id  TEXT NOT NULL REFERENCES connections(id),
         purpose        TEXT NOT NULL,
         budget         INTEGER NOT NULL,
+        budget_max     INTEGER NOT NULL DEFAULT 6,
+        limit_json     TEXT NOT NULL DEFAULT '{"kind":"turns","turns":6}',
+        spent_usd      REAL NOT NULL DEFAULT 0,
+        spend_incomplete INTEGER NOT NULL DEFAULT 0,
+        stopped        INTEGER NOT NULL DEFAULT 0,
         created_at     TEXT NOT NULL,
         last_at        TEXT NOT NULL
       );
@@ -111,6 +118,25 @@ export class HubStore {
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, at);
       CREATE INDEX IF NOT EXISTS idx_invites_to ON invites(to_agent, status);
     `);
+
+    // `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, so a database created
+    // before the ceiling was configurable needs the column added explicitly.
+    const columns = this.db
+      .query<{ name: string }, []>("PRAGMA table_info(conversations)")
+      .all()
+      .map((column) => column.name);
+    const added: Record<string, string> = {
+      budget_max: `INTEGER NOT NULL DEFAULT ${String(DEFAULT_TURN_BUDGET)}`,
+      limit_json: `TEXT NOT NULL DEFAULT '{"kind":"turns","turns":${String(DEFAULT_TURN_BUDGET)}}'`,
+      spent_usd: "REAL NOT NULL DEFAULT 0",
+      spend_incomplete: "INTEGER NOT NULL DEFAULT 0",
+      stopped: "INTEGER NOT NULL DEFAULT 0",
+    };
+    for (const [column, definition] of Object.entries(added)) {
+      if (!columns.includes(column)) {
+        this.db.exec(`ALTER TABLE conversations ADD COLUMN ${column} ${definition}`);
+      }
+    }
   }
 
   /* ---------------- agents and people ---------------- */
@@ -270,22 +296,52 @@ export class HubStore {
 
   /* ---------------- conversations and messages ---------------- */
 
-  createConversation(connectionId: string, purpose: string): Conversation | undefined {
+  createConversation(
+    connectionId: string,
+    purpose: string,
+    limit: Limit = DEFAULT_LIMIT,
+  ): Conversation | undefined {
     const participants = this.connectionParticipants(connectionId);
     if (participants === undefined) return undefined;
     const id = newId("cnv");
     const at = nowIso();
+    const turns = limit.kind === "turns" ? limit.turns : 0;
     this.db.run(
-      "INSERT INTO conversations (id, connection_id, purpose, budget, created_at, last_at) VALUES (?, ?, ?, ?, ?, ?)",
-      [id, connectionId, purpose, DEFAULT_TURN_BUDGET, at, at],
+      "INSERT INTO conversations (id, connection_id, purpose, budget, budget_max, limit_json, created_at, last_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [id, connectionId, purpose, turns, turns, JSON.stringify(limit), at, at],
     );
     return this.conversation(id);
   }
 
+  /** Parse a stored rule, falling back rather than throwing on a row written by an older build. */
+  private static parseLimit(raw: string): Limit {
+    try {
+      const parsed = JSON.parse(raw) as Limit;
+      if (parsed.kind === "turns" || parsed.kind === "cost" || parsed.kind === "none") return parsed;
+    } catch {
+      // Fall through to the default below.
+    }
+    return DEFAULT_LIMIT;
+  }
+
   conversation(id: string): Conversation | undefined {
     const row = this.db
-      .query<{ id: string; connection_id: string; purpose: string; budget: number; last_at: string }, [string]>(
-        "SELECT id, connection_id, purpose, budget, last_at FROM conversations WHERE id = ?",
+      .query<
+        {
+          id: string;
+          connection_id: string;
+          purpose: string;
+          budget: number;
+          budget_max: number;
+          limit_json: string;
+          spent_usd: number;
+          spend_incomplete: number;
+          stopped: number;
+          last_at: string;
+        },
+        [string]
+      >(
+        "SELECT id, connection_id, purpose, budget, budget_max, limit_json, spent_usd, spend_incomplete, stopped, last_at FROM conversations WHERE id = ?",
       )
       .get(id);
     if (row === null || row === undefined) return undefined;
@@ -301,6 +357,10 @@ export class HubStore {
       purpose: row.purpose,
       participants: handles,
       budgetRemaining: row.budget,
+      limit: HubStore.parseLimit(row.limit_json),
+      spentUSD: row.spent_usd,
+      spendIncomplete: row.spend_incomplete === 1,
+      stopped: row.stopped === 1,
       lastAt: row.last_at,
     };
   }
@@ -382,6 +442,77 @@ export class HubStore {
 
   setBudget(conversationId: string, remaining: number): void {
     this.db.run("UPDATE conversations SET budget = ? WHERE id = ?", [remaining, conversationId]);
+  }
+
+  /**
+   * Change the spending rule.
+   *
+   * Tops the remaining turns up to the new ceiling, so a conversation that has just gone
+   * quiet becomes usable again the moment the limit is raised rather than after one more
+   * nudge. Under a cost or unlimited rule the turn counter stops meaning anything.
+   */
+  setLimit(conversationId: string, limit: Limit): void {
+    // Changing the rule un-stops the conversation: picking a new allowance is how you say
+    // "carry on", and making somebody clear a separate flag as well would be a puzzle.
+    const turns = limit.kind === "turns" ? limit.turns : 0;
+    this.db.run(
+      "UPDATE conversations SET limit_json = ?, budget_max = ?, budget = MAX(budget, ?), stopped = 0 WHERE id = ?",
+      [JSON.stringify(limit), turns, turns, conversationId],
+    );
+  }
+
+  /**
+   * Halt or resume a conversation without touching its rule.
+   *
+   * A separate flag rather than a zeroed budget: stopping must not quietly rewrite the
+   * allowance somebody chose, and under a cost or unlimited rule there is no turn counter to
+   * zero in the first place.
+   */
+  setStopped(conversationId: string, stopped: boolean): void {
+    this.db.run("UPDATE conversations SET stopped = ? WHERE id = ?", [
+      stopped ? 1 : 0,
+      conversationId,
+    ]);
+  }
+
+  isStopped(conversationId: string): boolean {
+    const row = this.db
+      .query<{ stopped: number }, [string]>("SELECT stopped FROM conversations WHERE id = ?")
+      .get(conversationId);
+    return row?.stopped === 1;
+  }
+
+  limitFor(conversationId: string): Limit {
+    const row = this.db
+      .query<{ limit_json: string }, [string]>("SELECT limit_json FROM conversations WHERE id = ?")
+      .get(conversationId);
+    return row === null || row === undefined ? DEFAULT_LIMIT : HubStore.parseLimit(row.limit_json);
+  }
+
+  budgetMax(conversationId: string): number {
+    const row = this.db
+      .query<{ budget_max: number }, [string]>(
+        "SELECT budget_max FROM conversations WHERE id = ?",
+      )
+      .get(conversationId);
+    return row?.budget_max ?? DEFAULT_TURN_BUDGET;
+  }
+
+  /** Add one turn's reported cost. `incomplete` latches: once unpriced, the total is a floor. */
+  addSpend(conversationId: string, costUSD: number, incomplete: boolean): void {
+    this.db.run(
+      "UPDATE conversations SET spent_usd = spent_usd + ?, spend_incomplete = MAX(spend_incomplete, ?) WHERE id = ?",
+      [costUSD, incomplete ? 1 : 0, conversationId],
+    );
+  }
+
+  spend(conversationId: string): { usd: number; incomplete: boolean } {
+    const row = this.db
+      .query<{ spent_usd: number; spend_incomplete: number }, [string]>(
+        "SELECT spent_usd, spend_incomplete FROM conversations WHERE id = ?",
+      )
+      .get(conversationId);
+    return { usd: row?.spent_usd ?? 0, incomplete: row?.spend_incomplete === 1 };
   }
 
   budget(conversationId: string): number {

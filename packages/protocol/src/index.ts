@@ -17,6 +17,44 @@ import { z } from "zod";
 export const DEFAULT_TURN_BUDGET = 6;
 
 /**
+ * The largest ceiling a conversation may be given.
+ *
+ * A cap rather than a limit anyone should hit: the point of the budget is that a runaway
+ * cannot spend without bound, and "unlimited" would give that away. Raising the ceiling is
+ * cheaper than it looks — a pass does not wake the other agent, so a conversation with
+ * nothing left to say still stops well short of its allowance.
+ */
+export const MAX_TURN_BUDGET = 60;
+
+/**
+ * The ceiling value meaning "no ceiling".
+ *
+ * Zero rather than null so it survives SQLite and JSON without a special case. Unlimited is
+ * only safe because a pass does not wake the other agent and either owner can stop a
+ * conversation outright — without a stop control this would be a way to spend money in your
+ * sleep, so the two belong together.
+ */
+export const UNLIMITED_TURN_BUDGET = 0;
+
+/**
+ * How a conversation is allowed to spend.
+ *
+ * Three shapes rather than one number, because "six turns" and "twenty cents" answer
+ * different questions and neither substitutes for the other: a turn of a local model is free
+ * and a turn of a frontier model with tool calls is not.
+ *
+ * `none` is only defensible next to a stop control — see `conversation.stop`.
+ */
+export const limitSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("turns"), turns: z.number().int().min(1).max(MAX_TURN_BUDGET) }),
+  z.object({ kind: z.literal("cost"), usd: z.number().positive().max(100) }),
+  z.object({ kind: z.literal("none") }),
+]);
+export type Limit = z.infer<typeof limitSchema>;
+
+export const DEFAULT_LIMIT: Limit = { kind: "turns", turns: DEFAULT_TURN_BUDGET };
+
+/**
  * What an agent replies with when it has nothing worth adding.
  *
  * A sentinel rather than an empty string: an empty reply is indistinguishable from a model
@@ -97,6 +135,14 @@ export const conversationSchema = z.object({
   purpose: z.string(),
   participants: z.array(z.string()),
   budgetRemaining: z.number(),
+  /** How this conversation may spend. Set by either owner, at any time. */
+  limit: limitSchema,
+  /** Cost reported so far, in USD. A floor when any turn ran on a model without pricing. */
+  spentUSD: z.number(),
+  /** True when some spend was unpriced, so `spentUSD` understates the real total. */
+  spendIncomplete: z.boolean(),
+  /** Halted by a person. Cleared by changing the limit or by speaking to your agent. */
+  stopped: z.boolean(),
   lastAt: z.string(),
 });
 export type Conversation = z.infer<typeof conversationSchema>;
@@ -139,12 +185,29 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     t: z.literal("conversation.open"),
     connectionId: z.string(),
     purpose: z.string().min(1).max(MAX_PURPOSE_LENGTH),
+    limit: limitSchema.optional(),
   }),
+  /**
+   * Change how long this conversation may run unattended.
+   *
+   * Either participant may set it: it caps what *their own* agent will be asked to do as
+   * much as the other's, so there is no side to protect from the other here.
+   */
+  z.object({
+    t: z.literal("limit.set"),
+    conversationId: z.string(),
+    limit: limitSchema,
+  }),
+  /** End a conversation's current run. The kill switch that makes unlimited defensible. */
+  z.object({ t: z.literal("conversation.stop"), conversationId: z.string() }),
   /** The agent's answer to a turn. The only way anything reaches the other party. */
   z.object({
     t: z.literal("say"),
     conversationId: z.string(),
     text: z.string().min(1).max(MAX_MESSAGE_LENGTH),
+    /** What this turn cost, when the daemon could tell. Fed into the conversation's spend. */
+    costUSD: z.number().nonnegative().optional(),
+    costIncomplete: z.boolean().optional(),
   }),
   /**
    * The owner said something to their own agent.
@@ -158,7 +221,12 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     conversationId: z.string(),
     steer: z.string().min(1).max(MAX_MESSAGE_LENGTH),
   }),
-  z.object({ t: z.literal("pass"), conversationId: z.string() }),
+  z.object({
+    t: z.literal("pass"),
+    conversationId: z.string(),
+    costUSD: z.number().nonnegative().optional(),
+    costIncomplete: z.boolean().optional(),
+  }),
   /** The run failed. Recorded so the room shows why it went quiet rather than just stopping. */
   z.object({
     t: z.literal("trouble"),
@@ -201,10 +269,15 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
     /** Present when the owner asked for this turn. Trusted, unlike everything else here. */
     steer: z.string().optional(),
   }),
+  /** The conversation's spending position changed — turns left, money spent, or the rule. */
   z.object({
     t: z.literal("budget"),
     conversationId: z.string(),
     remaining: z.number(),
+    limit: limitSchema,
+    spentUSD: z.number(),
+    spendIncomplete: z.boolean(),
+    stopped: z.boolean(),
   }),
   z.object({ t: z.literal("error"), detail: z.string() }),
 ]);
