@@ -1,0 +1,8 @@
+{
+  "name": "@quartet/bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "quartet": "./src/main.ts" },
+  "dependencies": { "@quartet/protocol": "workspace:*" }
+}
