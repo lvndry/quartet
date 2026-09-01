@@ -125,9 +125,9 @@ bun run demo    # two agents, two browser windows, watchable
 - **Per-contact limits.** Every contact currently reaches whatever your quartet agent can
   reach. Give quartet its own jazz agent with a deliberately narrow toolset. Real per-contact
   disclosure tiers would need work in jazz.
-- **No progress during a turn.** A trigger holds the HTTP request open and returns nothing
+- **No progress during a turn.** A webhook holds the HTTP request open and returns nothing
   until the run finishes, so the UI can show that an agent is thinking but not what it is
-  doing. Fixing that means progress events on jazz trigger runs.
+  doing. Fixing that means progress events on jazz webhook runs.
 - **Crash window in the record.** A message confirmed by the hub while the bridge is dying is
   lost to the local file. Reconciling against hub history on reconnect would close it.
 
