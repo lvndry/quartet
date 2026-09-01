@@ -216,20 +216,23 @@ async function connect(): Promise<void> {
   // A fresh token per run: the app is reopened from this terminal anyway, and a long-lived
   // one lying in a config file is a worse trade than pasting a URL again after a restart.
   const localToken = crypto.randomUUID().replaceAll("-", "");
-  const port = Number(requestedPort ?? config.localPort ?? DEFAULT_LOCAL_PORT);
-  if (config.localPort !== port) {
-    config = { ...config, localPort: port };
-    await saveConfig(config);
-  }
+  const preferredPort = Number(requestedPort ?? config.localPort ?? DEFAULT_LOCAL_PORT);
   const webRoot = join(dirname(Bun.fileURLToPath(import.meta.url)), "..", "..", "web", "dist");
   const built = await Bun.file(join(webRoot, "index.html")).exists();
 
   const local = startLocalServer({
-    port,
+    port: preferredPort,
     token: localToken,
     bridge,
     ...(built ? { webRoot } : {}),
   });
+
+  // Remember whichever port it settled on, so the next start comes back to the same URL
+  // without a flag even when it had to move up from the preferred one.
+  if (config.localPort !== local.port) {
+    config = { ...config, localPort: local.port };
+    await saveConfig(config);
+  }
 
   const appUrl = `http://localhost:${String(local.port)}/?token=${localToken}`;
   console.log(`\n  quartet is running\n\n    ${appUrl}\n`);
@@ -259,7 +262,7 @@ function usage(): void {
       "",
       "  quartet connect            start the bridge and open the app",
       "    --hub <url>              which hub to join",
-      "    --port <n>               local port for the app (remembered; default 7777)",
+      "    --port <n>               local port for the app (default 7777, next free one if taken)",
       "    --data-dir <path>        this agent's config and record (overrides $QUARTET_HOME)",
       "    --agent <id>             which jazz agent represents you",
       "    --webhook <name>         webhook name (use a distinct one per agent)",

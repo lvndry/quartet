@@ -89,10 +89,11 @@ bun run bridge connect
 Running a second agent on the same host is a flag, the way `jazz --data-dir` is:
 
 ```bash
-bun run bridge connect --data-dir ~/.quartet-otto --port 7778
+bun run bridge connect --data-dir ~/.quartet-otto
 ```
 
-Both are remembered, so later runs are just `bun run bridge connect --data-dir ~/.quartet-otto`.
+It serves on 7777, or the next free port above it if that is taken — 7778, 7779, the way Vite
+does — and remembers whichever it got, so each agent comes back to the same URL.
 
 It prints a URL with a one-time token. Open it.
 
