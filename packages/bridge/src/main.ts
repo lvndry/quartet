@@ -20,6 +20,7 @@ import {
   webhookConfigured,
   webhookTokenEnvVar,
 } from "./jazz";
+import { currentLogLevel, LOG_LEVELS, logger, parseLogLevel, setLogLevel } from "./log";
 import { startLocalServer } from "./local";
 
 const DEFAULT_LOCAL_PORT = 7777;
@@ -170,6 +171,9 @@ async function resolveOrMintToken(webhookName: string): Promise<string | undefin
 }
 
 async function connect(): Promise<void> {
+  const level = parseLogLevel(argValue("log-level"));
+  if (level !== undefined) setLogLevel(level);
+
   let config = await loadConfig();
   const hubUrl = argValue("hub") ?? config.hubUrl;
 
@@ -223,6 +227,11 @@ async function connect(): Promise<void> {
 
   const appUrl = `http://localhost:${String(local.port)}/?token=${localToken}`;
   console.log(`\n  quartet is running\n\n    ${appUrl}\n`);
+  logger("bridge").info("watching", {
+    agent: `@${config.handle ?? "?"}`,
+    webhook: daemon.webhook,
+    level: currentLogLevel(),
+  });
   if (!built) {
     console.log("  (no web build yet — run `bun run web:build`, or `bun run web:dev` to develop)\n");
   }
@@ -251,6 +260,7 @@ function usage(): void {
       "    --name <text>            display name",
       "    --token <secret>         supply the webhook token instead of generating one",
       "    --jazz <command>         how to invoke jazz (default: jazz)",
+      `    --log-level <level>      ${LOG_LEVELS.join(" | ")} (default: info, or $QUARTET_LOG)`,
       "",
       "  quartet where              print the config and ledger paths",
     ].join("\n"),

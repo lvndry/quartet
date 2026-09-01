@@ -26,6 +26,7 @@ import {
 import type { DaemonSettings } from "./config";
 import { runTurn } from "./jazz";
 import { recordSent, readLedger, type LedgerEntry } from "./ledger";
+import { logger } from "./log";
 import { buildPayload } from "./prompt";
 
 /** What your own agent is doing right now, per conversation. Drives the UI's live states. */
@@ -54,6 +55,10 @@ export interface BridgeState {
   readonly ledger: LedgerEntry[];
   readonly lastError?: string;
 }
+
+const log = logger("bridge");
+const hubLog = logger("hub");
+const daemonLog = logger("daemon");
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
@@ -141,6 +146,7 @@ export class Bridge {
   nudge(conversationId: string, text: string): void {
     const aside: Aside = { at: new Date().toISOString(), conversationId, text };
     this.asides.set(conversationId, [...(this.asides.get(conversationId) ?? []), aside]);
+    log.info("you → your agent", { conversation: conversationId, chars: text.length });
     this.publish();
     this.send({ t: "nudge", conversationId, steer: text });
   }
@@ -155,6 +161,7 @@ export class Bridge {
       this.reconnectDelay = RECONNECT_MIN_MS;
       this.connectedToHub = true;
       this.lastError = undefined;
+      hubLog.info("connected", { url: this.hubUrl });
       socket.send(JSON.stringify({ t: "hello", agentToken: this.agentToken } satisfies ClientFrame));
       this.publish();
     });
@@ -167,7 +174,12 @@ export class Bridge {
         return;
       }
       const frame = parseServerFrame(raw);
-      if (frame !== undefined) void this.onFrame(frame);
+      if (frame === undefined) {
+        hubLog.debug("unparsed frame");
+        return;
+      }
+      hubLog.debug(`← ${frame.t}`);
+      void this.onFrame(frame);
     });
 
     socket.addEventListener("close", () => {
@@ -176,6 +188,7 @@ export class Bridge {
       if (this.closing) return;
       // Backoff, because a hub that is down stays down for a while and hammering it helps
       // nobody. Capped so a laptop that slept overnight still rejoins within half a minute.
+      hubLog.warn("disconnected, retrying", { in: `${String(this.reconnectDelay)}ms` });
       setTimeout(() => this.open(), this.reconnectDelay);
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS);
     });
@@ -189,6 +202,10 @@ export class Bridge {
   private async onFrame(frame: ReturnType<typeof parseServerFrame> & object): Promise<void> {
     switch (frame.t) {
       case "welcome":
+        hubLog.info(`signed in as @${frame.me.handle}`, {
+          conversations: frame.conversations.length,
+          invites: frame.invites.length,
+        });
         this.me = frame.me;
         this.connections = frame.connections;
         this.conversations = frame.conversations;
@@ -202,11 +219,16 @@ export class Bridge {
         return;
 
       case "invite":
+        hubLog.info(`invite ${frame.invite.status}`, {
+          from: `@${frame.invite.fromHandle}`,
+          to: `@${frame.invite.toHandle}`,
+        });
         this.invites = [frame.invite, ...this.invites.filter((i) => i.id !== frame.invite.id)];
         this.publish();
         return;
 
       case "connected":
+        hubLog.info(`connected with @${frame.connection.withAgent.handle}`);
         this.connections = [
           frame.connection,
           ...this.connections.filter((c) => c.id !== frame.connection.id),
@@ -241,6 +263,12 @@ export class Bridge {
       }
 
       case "budget":
+        hubLog.debug("budget", {
+          conversation: frame.conversationId,
+          left: frame.remaining,
+          spent: frame.spentUSD.toFixed(4),
+          stopped: frame.stopped ? "yes" : undefined,
+        });
         this.conversations = this.conversations.map((conversation) =>
           conversation.id === frame.conversationId
             ? {
@@ -261,7 +289,7 @@ export class Bridge {
         return;
 
       case "error":
-        console.error(`  ! hub: ${frame.detail}`);
+        hubLog.error(frame.detail);
         this.lastError = frame.detail;
         this.publish();
         return;
@@ -320,7 +348,9 @@ export class Bridge {
     const conversation = this.conversations.find((candidate) => candidate.id === conversationId);
     const other = conversation?.participants.find((handle) => handle !== me.handle) ?? "them";
 
-    this.activity.set(conversationId, { state: "thinking", since: Date.now() });
+    const startedAt = Date.now();
+    daemonLog.info(`turn from @${other}`, { conversation: conversationId, steered: steer !== undefined ? "yes" : undefined });
+    this.activity.set(conversationId, { state: "thinking", since: startedAt });
     this.publish();
 
     const result = await runTurn(
@@ -335,8 +365,15 @@ export class Bridge {
       }),
     );
 
+    const took = `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+
     switch (result.kind) {
       case "said": {
+        daemonLog.info("answered", {
+          took,
+          cost: result.cost.costUSD !== undefined ? `$${result.cost.costUSD.toFixed(4)}` : "unpriced",
+          chars: result.text.length,
+        });
         // The ledger is written when the hub confirms this message, not here — see
         // `recordOutgoing`. The steer is parked so that confirmation can say what prompted it.
         if (steer !== undefined) this.pendingSteer.set(conversationId, steer);
@@ -353,6 +390,7 @@ export class Bridge {
       }
 
       case "passed":
+        daemonLog.info("passed", { took });
         this.activity.set(conversationId, { state: "idle" });
         this.send({
           t: "pass",
@@ -364,7 +402,7 @@ export class Bridge {
         return;
 
       case "needs-you":
-        console.warn(`  ! ${me.handle} is waiting for you to approve a tool (run ${result.runId})`);
+        daemonLog.warn("waiting for you to approve a tool", { run: result.runId, took });
         // Deliberately told to the other side too. A conversation that stops because someone's
         // agent is waiting for approval should say so, rather than just going quiet.
         this.activity.set(conversationId, { state: "needs-you", runId: result.runId });
@@ -377,9 +415,7 @@ export class Bridge {
         return;
 
       case "failed":
-        // The terminal running the bridge is where somebody watches it work, so a failed turn
-        // is reported there as well as to the other participant.
-        console.error(`  ! turn failed: ${result.reason}`);
+        daemonLog.error(result.reason, { took });
         this.activity.set(conversationId, { state: "idle" });
         this.send({ t: "trouble", conversationId, reason: result.reason });
         this.publish();
