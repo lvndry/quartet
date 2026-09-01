@@ -49,6 +49,8 @@ interface InFlight {
    * latest wins — somebody typing twice means the second thing.
    */
   steer?: string;
+  /** Whether the turn now running was asked for by its owner. */
+  readonly steered: boolean;
 }
 
 export type Deliver = (agentId: string, frame: ServerFrame) => void;
@@ -136,13 +138,21 @@ export class Orchestrator {
     if (participants !== undefined) this.broadcastBudget(conversationId, participants);
   }
 
-  /** A turn settled — the agent spoke, passed, or failed. Run any follow-up that queued up. */
-  onTurnSettled(conversationId: string, agentId: string): void {
+  /**
+   * A turn settled — the agent spoke, passed, or failed. Run any follow-up that queued up.
+   *
+   * A pass on a turn its owner asked for runs no follow-up, unless the owner has since asked
+   * for something else. Typing "stop" and watching the agent fall silent and then speak
+   * anyway is being ignored twice over; a newer instruction is the one case where speaking
+   * again is what was actually wanted.
+   */
+  onTurnSettled(conversationId: string, agentId: string, passed = false): void {
     const key = Orchestrator.key(conversationId, agentId);
     const entry = this.inFlight.get(key);
     if (entry === undefined) return;
     clearTimeout(entry.timer);
     this.inFlight.delete(key);
+    if (passed && entry.steered && entry.steer === undefined) return;
     if (entry.pending) this.poke(conversationId, agentId, entry.steer);
   }
 
@@ -221,7 +231,7 @@ export class Orchestrator {
       }
     }, TURN_DEADLINE_MS);
 
-    this.inFlight.set(key, { timer, pending: false });
+    this.inFlight.set(key, { timer, pending: false, steered: steer !== undefined });
 
     this.deliver(agentId, {
       t: "turn",

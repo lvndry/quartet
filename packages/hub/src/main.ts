@@ -341,7 +341,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       });
       // A pass ran a model, so it cost something and is charged like any other turn.
       orchestrator.onSpend(frame.conversationId, frame.costUSD, frame.costIncomplete === true);
-      orchestrator.onTurnSettled(frame.conversationId, agentId);
+      orchestrator.onTurnSettled(frame.conversationId, agentId, true);
       if (message === undefined) return;
       const participants = store.conversationParticipantIds(frame.conversationId) ?? [];
       // A pass is recorded and shown, but it deliberately does not wake the other agent:

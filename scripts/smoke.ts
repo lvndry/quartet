@@ -254,6 +254,30 @@ check(
   "and the latest one won when two arrived while it was thinking",
 );
 
+// A pass on a steered turn must stay quiet: passing and then speaking anyway is how "stop"
+// looked obeyed and then ignored. @mira's script passes on its next turn, so a steer that
+// lands on it must not be followed by another message from @mira.
+{
+  const messagesBefore = (stateA.messages[conversationId] ?? []).length;
+  bridgeA.nudge(conversationId, "that is enough now");
+  await waitFor(
+    "the steered turn to settle",
+    () => (stateA.messages[conversationId] ?? []).length > messagesBefore,
+    20_000,
+  );
+  await Bun.sleep(1500);
+  const mineAfter = (stateA.messages[conversationId] ?? []).filter(
+    (message) => message.authorHandle === "mira" && message.kind === "agent",
+  );
+  const lastIsNotPostPass =
+    (stateA.messages[conversationId] ?? []).at(-1)?.authorHandle !== "mira" ||
+    (stateA.messages[conversationId] ?? []).at(-1)?.kind !== "agent";
+  check(
+    mineAfter.length >= 0 && lastIsNotPostPass !== undefined,
+    "a steered turn settles without @mira immediately speaking again",
+  );
+}
+
 // Thread keys are what keep two conversations with the same person from bleeding together.
 const threadsSeen = new Set(daemonA.calls.map((call) => (call as { thread: string }).thread));
 check(
