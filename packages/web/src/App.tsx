@@ -48,6 +48,16 @@ function nearingLimit(conversation: Conversation): string | undefined {
   return undefined;
 }
 
+/** The header keeps a purpose to a glance; a brief can now run to several paragraphs. */
+const PURPOSE_HEADER_CHARS = 30;
+
+function shortPurpose(purpose: string): string {
+  const flat = purpose.replace(/\s+/g, " ").trim();
+  return flat.length <= PURPOSE_HEADER_CHARS
+    ? flat
+    : `${flat.slice(0, PURPOSE_HEADER_CHARS).trimEnd()}…`;
+}
+
 function money(usd: number): string {
   return usd < 0.01 && usd > 0 ? "<$0.01" : `$${usd.toFixed(2)}`;
 }
@@ -501,7 +511,9 @@ function Chat({
   return (
     <section className="pane">
       <div className="chat-head">
-        <span className="chat-purpose">{conversation.purpose}</span>
+        <span className="chat-purpose" title={conversation.purpose}>
+          {shortPurpose(conversation.purpose)}
+        </span>
         <Budget conversation={conversation} />
         <LimitPicker conversation={conversation} onAct={onAct} />
       </div>
