@@ -152,6 +152,16 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
   background: var(--ink-sunk); color: var(--cream-dim);
   border: 1px solid var(--rule); padding: 0.28rem 0.4rem;
 }
+.limit-value { display: inline-flex; align-items: center; border: 1px solid var(--rule); background: var(--ink-sunk); }
+.limit-prefix { font-family: var(--mono); font-size: 0.66rem; color: var(--slate); padding-left: 0.4rem; }
+.limit-input {
+  font-family: var(--mono); font-size: 0.66rem; color: var(--cream);
+  background: transparent; border: none; width: 3.6rem; padding: 0.28rem 0.4rem;
+  font-variant-numeric: tabular-nums;
+}
+.limit-input:focus { outline: none; }
+.limit-value:focus-within { border-color: var(--signal); }
+
 /* Vermilion is reserved for "needs you" — stopping a run is exactly that. */
 .btn.stop { border-color: var(--vermilion-dim); color: var(--vermilion); padding: 0.28rem 0.55rem; }
 .btn.stop:hover { background: var(--vermilion); color: var(--ink); }

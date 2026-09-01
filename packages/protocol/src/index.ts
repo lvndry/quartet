@@ -19,12 +19,12 @@ export const DEFAULT_TURN_BUDGET = 6;
 /**
  * The largest ceiling a conversation may be given.
  *
- * A cap rather than a limit anyone should hit: the point of the budget is that a runaway
- * cannot spend without bound, and "unlimited" would give that away. Raising the ceiling is
- * cheaper than it looks — a pass does not wake the other agent, so a conversation with
- * nothing left to say still stops well short of its allowance.
+ * A sanity bound on a typed number rather than a real constraint — anyone who genuinely
+ * wants no ceiling picks "unlimited", so a low cap here would only be an annoyance. Raising
+ * it is cheaper than it looks: a pass does not wake the other agent, so a conversation with
+ * nothing left to say stops well short of its allowance.
  */
-export const MAX_TURN_BUDGET = 60;
+export const MAX_TURN_BUDGET = 500;
 
 /**
  * The ceiling value meaning "no ceiling".
@@ -45,9 +45,11 @@ export const UNLIMITED_TURN_BUDGET = 0;
  *
  * `none` is only defensible next to a stop control — see `conversation.stop`.
  */
+export const MAX_SPEND_USD = 1000;
+
 export const limitSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("turns"), turns: z.number().int().min(1).max(MAX_TURN_BUDGET) }),
-  z.object({ kind: z.literal("cost"), usd: z.number().positive().max(100) }),
+  z.object({ kind: z.literal("cost"), usd: z.number().positive().max(MAX_SPEND_USD) }),
   z.object({ kind: z.literal("none") }),
 ]);
 export type Limit = z.infer<typeof limitSchema>;

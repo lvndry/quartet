@@ -1,6 +1,7 @@
 import type React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Conversation, Message } from "@quartet/protocol";
+import { MAX_SPEND_USD, MAX_TURN_BUDGET } from "@quartet/protocol";
 import { call, useBridge, useSocketLive, type Activity, type Aside, type Limit } from "./store";
 
 function monogram(handle: string): string {
@@ -43,7 +44,9 @@ function Budget({ conversation }: { conversation: Conversation }): React.JSX.Ele
   if (limit.kind === "turns") {
     return (
       <span className="budget">
-        <span className="budget-label">turns</span>
+        <span className="budget-label">
+          {budgetRemaining} / {limit.turns}
+        </span>
         <span className="budget-dots">
           {Array.from({ length: Math.min(limit.turns, 20) }, (_, index) => (
             <i key={index} className={index >= budgetRemaining ? "spent" : undefined} />
@@ -86,20 +89,21 @@ function Budget({ conversation }: { conversation: Conversation }): React.JSX.Ele
   );
 }
 
-const LIMIT_CHOICES: { label: string; limit: Limit }[] = [
-  { label: "6 turns", limit: { kind: "turns", turns: 6 } },
-  { label: "20 turns", limit: { kind: "turns", turns: 20 } },
-  { label: "60 turns", limit: { kind: "turns", turns: 60 } },
-  { label: "$0.25", limit: { kind: "cost", usd: 0.25 } },
-  { label: "$1.00", limit: { kind: "cost", usd: 1 } },
-  { label: "$5.00", limit: { kind: "cost", usd: 5 } },
-  { label: "Unlimited", limit: { kind: "none" } },
-];
-
-function limitLabel(limit: Limit): string {
+/**
+ * Choosing what a conversation may spend.
+ *
+ * A kind, then a number you type. Presets were a guess at what somebody would want, and the
+ * right ceiling depends entirely on whose model is answering — a hundred turns of a local
+ * model and five turns of a frontier model with tool calls cost about the same.
+ *
+ * The typed value commits on blur or Enter rather than per keystroke, because each commit is
+ * a round trip both participants see: applying "1", then "12", then "125" while somebody
+ * types would flap the other side's ceiling three times.
+ */
+function describeLimit(limit: Limit): string {
   if (limit.kind === "turns") return `${String(limit.turns)} turns`;
-  if (limit.kind === "cost") return money(limit.usd);
-  return "Unlimited";
+  if (limit.kind === "cost") return `${money(limit.usd)} cap`;
+  return "unlimited";
 }
 
 function LimitPicker({
@@ -109,28 +113,83 @@ function LimitPicker({
   conversation: Conversation;
   onAct: (path: string, body: Record<string, unknown>) => Promise<void>;
 }): React.JSX.Element {
-  const current = limitLabel(conversation.limit);
+  const { limit } = conversation;
+  const committed =
+    limit.kind === "turns" ? String(limit.turns) : limit.kind === "cost" ? String(limit.usd) : "";
+  const [draft, setDraft] = useState(committed);
+  const [editing, setEditing] = useState(false);
+
+  // While somebody is typing their own value, leave it alone; otherwise follow the
+  // conversation, which the other participant may have changed.
+  useEffect(() => {
+    if (!editing) setDraft(committed);
+  }, [committed, editing]);
+
+  function apply(raw: string): void {
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value <= 0) {
+      setDraft(committed);
+      return;
+    }
+    const next: Limit =
+      limit.kind === "cost"
+        ? { kind: "cost", usd: Math.min(value, MAX_SPEND_USD) }
+        : { kind: "turns", turns: Math.min(Math.round(value), MAX_TURN_BUDGET) };
+    void onAct("limit", { conversationId: conversation.id, limit: next });
+  }
+
+  function changeKind(kind: Limit["kind"]): void {
+    const next: Limit =
+      kind === "none"
+        ? { kind: "none" }
+        : kind === "cost"
+          ? { kind: "cost", usd: 1 }
+          : { kind: "turns", turns: 20 };
+    void onAct("limit", { conversationId: conversation.id, limit: next });
+  }
+
   return (
     <span className="limit">
       <select
         className="limit-select"
-        value={LIMIT_CHOICES.some((choice) => choice.label === current) ? current : ""}
-        onChange={(event) => {
-          const choice = LIMIT_CHOICES.find((candidate) => candidate.label === event.target.value);
-          if (choice !== undefined) {
-            void onAct("limit", { conversationId: conversation.id, limit: choice.limit });
-          }
-        }}
+        aria-label="Limit this conversation by"
+        value={limit.kind}
+        onChange={(event) => changeKind(event.target.value as Limit["kind"])}
       >
-        {!LIMIT_CHOICES.some((choice) => choice.label === current) && (
-          <option value="">{current}</option>
-        )}
-        {LIMIT_CHOICES.map((choice) => (
-          <option key={choice.label} value={choice.label}>
-            {choice.label}
-          </option>
-        ))}
+        <option value="turns">turns</option>
+        <option value="cost">spend</option>
+        <option value="none">unlimited</option>
       </select>
+
+      {limit.kind !== "none" && (
+        <span className="limit-value">
+          {limit.kind === "cost" && <span className="limit-prefix">$</span>}
+          <input
+            className="limit-input"
+            aria-label={limit.kind === "cost" ? "Spend limit in dollars" : "Turn limit"}
+            inputMode="decimal"
+            value={draft}
+            onFocus={() => setEditing(true)}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={(event) => {
+              // Read the value off the element rather than the draft state: the two are the
+              // same for anyone typing, but taking it from the event means a commit can never
+              // race a pending re-render and silently apply the previous value.
+              setEditing(false);
+              const typed = event.currentTarget.value;
+              if (typed !== committed) apply(typed);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+              if (event.key === "Escape") {
+                setDraft(committed);
+                event.currentTarget.blur();
+              }
+            }}
+          />
+        </span>
+      )}
+
       <button
         className="btn stop"
         type="button"
@@ -141,7 +200,6 @@ function LimitPicker({
     </span>
   );
 }
-
 export default function App(): React.JSX.Element {
   const state = useBridge();
   const live = useSocketLive();
@@ -275,7 +333,7 @@ function Sidebar({
               <span className="row-main">
                 <span className="row-title">{conversation.purpose}</span>
                 <span className="row-sub">
-                  @{other} · {limitLabel(conversation.limit)}
+                  @{other} · {describeLimit(conversation.limit)}
                 </span>
               </span>
             </button>
