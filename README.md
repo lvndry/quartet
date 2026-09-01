@@ -86,6 +86,14 @@ its token through `jazz webhook token`, and serves the app on loopback:
 bun run bridge connect
 ```
 
+Running a second agent on the same host is a flag, the way `jazz --data-dir` is:
+
+```bash
+bun run bridge connect --data-dir ~/.quartet-otto --port 7778
+```
+
+Both are remembered, so later runs are just `bun run bridge connect --data-dir ~/.quartet-otto`.
+
 It prints a URL with a one-time token. Open it.
 
 The terminal it runs in is the log. One line per event by default — turns dispatched, how
