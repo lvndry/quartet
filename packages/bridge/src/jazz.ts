@@ -59,9 +59,30 @@ export async function runTurn(
     return { kind: "needs-you", runId: parked?.runId ?? "unknown" };
   }
 
+  if (response.status === 404) {
+    return {
+      kind: "failed",
+      reason:
+        `jazz has no webhook called "${daemon.webhook}" — check the "webhooks" list in ` +
+        `~/.jazz/config.json`,
+    };
+  }
+
+  if (response.status === 401) {
+    return {
+      kind: "failed",
+      reason:
+        `jazz rejected the token for "${daemon.webhook}" — regenerate it with ` +
+        `\`jazz webhook token ${daemon.webhook}\``,
+    };
+  }
+
   if (!response.ok) {
     const detail = (await response.json().catch(() => null)) as { error?: string } | null;
-    return { kind: "failed", reason: detail?.error ?? `jazz answered ${String(response.status)}` };
+    return {
+      kind: "failed",
+      reason: detail?.error ?? `jazz answered ${String(response.status)}`,
+    };
   }
 
   const body = (await response.json().catch(() => null)) as
@@ -77,6 +98,17 @@ export async function runTurn(
   if (answer.length === 0) return { kind: "failed", reason: "jazz returned an empty answer" };
   if (answer === PASS_SENTINEL || answer.startsWith(PASS_SENTINEL)) return { kind: "passed", cost };
   return { kind: "said", text: answer, cost };
+}
+
+/** Whether jazz's config actually lists this webhook, checked without running the agent. */
+export async function webhookConfigured(webhookName: string): Promise<boolean> {
+  const file = Bun.file(jazzConfigPath());
+  if (!(await file.exists())) return false;
+  const config = (await file.json().catch(() => ({}))) as { webhooks?: { name?: string }[] };
+  return (
+    Array.isArray(config.webhooks) &&
+    config.webhooks.some((webhook) => webhook.name === webhookName)
+  );
 }
 
 export async function daemonReachable(daemon: DaemonSettings): Promise<boolean> {

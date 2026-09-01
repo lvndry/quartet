@@ -14,7 +14,12 @@
 import { dirname, join } from "node:path";
 import { Bridge } from "./bridge";
 import { loadConfig, saveConfig, type QuartetConfig } from "./config";
-import { daemonReachable, ensureJazzWebhook, webhookTokenEnvVar } from "./jazz";
+import {
+  daemonReachable,
+  ensureJazzWebhook,
+  webhookConfigured,
+  webhookTokenEnvVar,
+} from "./jazz";
 import { startLocalServer } from "./local";
 
 const DEFAULT_LOCAL_PORT = 7777;
@@ -184,6 +189,13 @@ async function connect(): Promise<void> {
   const daemon = config.daemon;
   const agentToken = config.agentToken;
   if (daemon === undefined || agentToken === undefined) process.exit(1);
+
+  if (!(await webhookConfigured(daemon.webhook))) {
+    console.warn(
+      `\n  ! jazz has no webhook called "${daemon.webhook}". Every turn will fail until it` +
+        `\n    appears in the "webhooks" list in ~/.jazz/config.json.`,
+    );
+  }
 
   if (!(await daemonReachable(daemon))) {
     console.warn(

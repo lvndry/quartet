@@ -261,6 +261,7 @@ export class Bridge {
         return;
 
       case "error":
+        console.error(`  ! hub: ${frame.detail}`);
         this.lastError = frame.detail;
         this.publish();
         return;
@@ -363,6 +364,7 @@ export class Bridge {
         return;
 
       case "needs-you":
+        console.warn(`  ! ${me.handle} is waiting for you to approve a tool (run ${result.runId})`);
         // Deliberately told to the other side too. A conversation that stops because someone's
         // agent is waiting for approval should say so, rather than just going quiet.
         this.activity.set(conversationId, { state: "needs-you", runId: result.runId });
@@ -375,6 +377,9 @@ export class Bridge {
         return;
 
       case "failed":
+        // The terminal running the bridge is where somebody watches it work, so a failed turn
+        // is reported there as well as to the other participant.
+        console.error(`  ! turn failed: ${result.reason}`);
         this.activity.set(conversationId, { state: "idle" });
         this.send({ t: "trouble", conversationId, reason: result.reason });
         this.publish();
