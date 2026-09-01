@@ -1,0 +1,115 @@
+/**
+ * @fileoverview Two people, two agents, two browsers — without needing two machines.
+ *
+ * Stands up a hub, a stand-in jazz daemon per agent, and a bridge per agent in its own
+ * process. Open both URLs side by side and invite one from the other.
+ *
+ * Run with: bun scripts/demo.ts
+ */
+
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const HUB_PORT = 8080;
+const CAST = [
+  { handle: "mira", name: "Mira", daemonPort: 8501, webPort: 7777 },
+  { handle: "otto", name: "Otto", daemonPort: 8502, webPort: 7778 },
+];
+
+/** Canned replies so the demo is watchable without burning tokens on a real model. */
+const REPLIES: Record<string, string[]> = {
+  mira: [
+    "Landry is free Thursday after 16:00, and Friday morning.",
+    "16:30 Thursday works. Somewhere central rather than your office, if that's alright.",
+    "<pass>",
+    "Confirmed on our side. Landry has it in the calendar.",
+  ],
+  otto: [
+    "Sam is open Thursday after 16:00 too. Where were you thinking?",
+    "Central is fine. I'll find somewhere near Réaumur and confirm.",
+    "Booked — a café on rue Saint-Denis. Sending the address over.",
+  ],
+};
+
+function fakeDaemon(port: number, replies: string[]): void {
+  let index = 0;
+  Bun.serve({
+    port,
+    hostname: "127.0.0.1",
+    async fetch(request) {
+      const url = new URL(request.url);
+      if (url.pathname === "/health") return new Response("{}");
+      await request.text();
+      // A deliberate pause: the thinking state is most of what this UI has to get right, and
+      // an instant answer would never show it.
+      await Bun.sleep(2500);
+      const answer = replies[index] ?? "<pass>";
+      index += 1;
+      return new Response(JSON.stringify({ ok: true, answer }), {
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+}
+
+const workDir = await mkdtemp(join(tmpdir(), "quartet-demo-"));
+const hub = Bun.spawn({
+  cmd: ["bun", "run", "packages/hub/src/main.ts"],
+  env: { ...process.env, PORT: String(HUB_PORT), QUARTET_DB: join(workDir, "hub.sqlite") },
+  stdout: "inherit",
+  stderr: "inherit",
+});
+
+const hubUrl = `http://127.0.0.1:${String(HUB_PORT)}`;
+for (let attempt = 0; attempt < 80; attempt += 1) {
+  if (await fetch(`${hubUrl}/health`).then((r) => r.ok).catch(() => false)) break;
+  await Bun.sleep(100);
+}
+
+const children = [hub];
+for (const member of CAST) {
+  fakeDaemon(member.daemonPort, REPLIES[member.handle] ?? []);
+  const response = await fetch(`${hubUrl}/agents`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ handle: member.handle, displayName: member.name }),
+  });
+  const body = (await response.json()) as { token?: string };
+  if (body.token === undefined) throw new Error(`could not register @${member.handle}`);
+
+  children.push(
+    Bun.spawn({
+      cmd: ["bun", "run", "scripts/demo-agent.ts"],
+      env: {
+        ...process.env,
+        QUARTET_HOME: join(workDir, member.handle),
+        DEMO_HUB: hubUrl,
+        DEMO_AGENT_TOKEN: body.token,
+        DEMO_DAEMON: `http://127.0.0.1:${String(member.daemonPort)}`,
+        DEMO_PORT: String(member.webPort),
+        DEMO_LOCAL_TOKEN: `demo-${member.handle}`,
+      },
+      stdout: "inherit",
+      stderr: "inherit",
+    }),
+  );
+}
+
+console.log(`
+  quartet demo
+
+    @mira   http://localhost:7777/?token=demo-mira
+    @otto   http://localhost:7778/?token=demo-otto
+
+  Invite @otto from @mira's window, accept it in @otto's, and watch.
+  Ctrl-C to stop.
+`);
+
+const stop = (): void => {
+  for (const child of children) child.kill();
+  process.exit(0);
+};
+process.on("SIGINT", stop);
+process.on("SIGTERM", stop);
+await new Promise(() => {});

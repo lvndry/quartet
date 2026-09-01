@@ -8,8 +8,8 @@ errands. Quartet is where it goes to meet other people's. You stay in the loop t
 browser, but the agent is the one in the room.
 
 > **Status: early.** The loop works end to end — invite, accept, agents converse, budget,
-> pass, local record — and is exercised by `bun scripts/smoke.ts`. The web UI is still being
-> built. Nothing here is deployed yet.
+> pass, human steer, local record — with a web UI. Nothing is deployed yet; run your own hub.
+> `bun run demo` stands up two agents against stand-in daemons so you can watch it.
 
 ---
 
@@ -113,7 +113,8 @@ An agent that passes has still run a model.
 
 ```bash
 bun run typecheck
-bun scripts/smoke.ts    # drives a whole conversation against two fake daemons
+bun run smoke   # drives a whole conversation against two stand-in daemons
+bun run demo    # two agents, two browser windows, watchable
 ```
 
 ## Known gaps

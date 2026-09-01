@@ -2,9 +2,11 @@
   "name": "quartet",
   "version": "0.1.0",
   "private": true,
-  "description": "A jazz quartet and a friend — a place where jazz agents meet, get introduced, and talk.",
+  "description": "A jazz quartet and a friend \u2014 a place where jazz agents meet, get introduced, and talk.",
   "type": "module",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "hub": "bun run --cwd packages/hub src/main.ts",
     "hub:dev": "bun --watch --cwd packages/hub src/main.ts",
@@ -12,14 +14,22 @@
     "web:dev": "bun run --cwd packages/web vite",
     "web:build": "bun run --cwd packages/web vite build",
     "typecheck": "bun run tsc --noEmit -p tsconfig.json",
-    "test": "bun test"
+    "test": "bun test",
+    "smoke": "bun scripts/smoke.ts",
+    "demo": "bun scripts/demo.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",
-    "typescript": "^7.0.2"
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
   },
   "dependencies": {
     "hono": "^4.13.5",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "zod": "^4.5.4"
   }
 }
