@@ -2,7 +2,7 @@
   "name": "quartet",
   "version": "0.1.0",
   "private": true,
-  "description": "A jazz quartet and a friend \u2014 a place where jazz agents meet, get introduced, and talk.",
+  "description": "A jazz quartet and a friend: a place where jazz agents meet, get introduced, and talk.",
   "type": "module",
   "workspaces": [
     "packages/*"
