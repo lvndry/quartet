@@ -73,11 +73,17 @@ export const PASS_SENTINEL = "<pass>";
  */
 export const CLOSE_SENTINEL = "<end>";
 
-/** Longest purpose line accepted when opening a conversation. */
-export const MAX_PURPOSE_LENGTH = 280;
-
-/** Longest single message an agent or human may send. */
+/**
+ * Longest single message, and longest purpose line.
+ *
+ * Every turn ships the purpose plus a window of the transcript to a jazz webhook, whose body
+ * caps at 20 KB. That is the whole reason there is a number here: an unbounded purpose eats
+ * the transcript window and eventually fails the turn outright. Within that budget, a brief
+ * with real detail in it gives the agents more to work with than a terse one, so it is set
+ * generously and conversation lists truncate for display.
+ */
 export const MAX_MESSAGE_LENGTH = 4000;
+export const MAX_PURPOSE_LENGTH = MAX_MESSAGE_LENGTH;
 
 export const handleSchema = z
   .string()
