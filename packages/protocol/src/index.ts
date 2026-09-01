@@ -281,6 +281,13 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
     transcript: z.array(messageSchema),
     /** Present when the owner asked for this turn. Trusted, unlike everything else here. */
     steer: z.string().optional(),
+    /**
+     * How much room is left, when it is nearly gone.
+     *
+     * From the room rather than from either owner, so an agent can wind up its own point
+     * instead of being cut off mid-sentence when the allowance runs out.
+     */
+    notice: z.string().optional(),
   }),
   /** The conversation's spending position changed — turns left, money spent, or the rule. */
   z.object({

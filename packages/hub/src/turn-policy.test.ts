@@ -226,6 +226,41 @@ describe("stopping", () => {
   });
 });
 
+describe("warning an agent the room is nearly out", () => {
+  it("says nothing while there is room left", () => {
+    const { dispatches } = run(room({ turnsLeft: 6 }), [{ kind: "message", author: MIRA }]);
+
+    expect(dispatches[0]?.notice).toBeUndefined();
+  });
+
+  it("warns on the second to last turn", () => {
+    const { dispatches } = run(room({ turnsLeft: 2 }), [{ kind: "message", author: MIRA }]);
+
+    expect(dispatches[0]?.notice).toContain("One turn left");
+  });
+
+  it("says so on the last turn, so the agent can sign off", () => {
+    const { dispatches } = run(room({ turnsLeft: 1 }), [{ kind: "message", author: MIRA }]);
+
+    expect(dispatches[0]?.notice).toContain("last turn");
+  });
+
+  it("warns near a spending ceiling", () => {
+    const near = room({ limit: { kind: "cost", usd: 1 }, spentUSD: 0.85, turnsLeft: 50 });
+    const { dispatches } = run(near, [{ kind: "message", author: MIRA }]);
+
+    expect(dispatches[0]?.notice).toContain("spending limit");
+  });
+
+  it("never warns when there is no ceiling to reach", () => {
+    const { dispatches } = run(room({ limit: { kind: "none" }, turnsLeft: 0 }), [
+      { kind: "message", author: MIRA },
+    ]);
+
+    expect(dispatches[0]?.notice).toBeUndefined();
+  });
+});
+
 describe("spending rules", () => {
   it("counts money under a cost limit and ignores the turn count", () => {
     const state = room({ limit: { kind: "cost", usd: 0.1 }, turnsLeft: 0, spentUSD: 0.05 });

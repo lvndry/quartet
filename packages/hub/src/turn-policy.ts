@@ -55,7 +55,13 @@ export type TurnEvent =
   | { readonly kind: "deadline"; readonly agent: AgentId };
 
 export type TurnEffect =
-  | { readonly kind: "dispatch"; readonly agent: AgentId; readonly steer?: string }
+  | {
+      readonly kind: "dispatch";
+      readonly agent: AgentId;
+      readonly steer?: string;
+      /** Sent when the allowance is nearly gone, so the agent can close rather than be cut. */
+      readonly notice?: string;
+    }
   | { readonly kind: "announce" }
   | { readonly kind: "note"; readonly agent: AgentId; readonly text: string };
 
@@ -120,20 +126,50 @@ function poke(state: TurnState, agent: AgentId, steer?: string): Decision {
   if (state.online[agent] !== true) return { state, effects: [] };
   if (!canSpend(state)) return { state, effects: [] };
 
-  return {
-    state: {
-      ...state,
-      turnsLeft: Math.max(0, state.turnsLeft - 1),
-      inFlight: {
-        ...state.inFlight,
-        [agent]: { pending: false, steered: steer !== undefined },
-      },
+  const charged: TurnState = {
+    ...state,
+    turnsLeft: Math.max(0, state.turnsLeft - 1),
+    inFlight: {
+      ...state.inFlight,
+      [agent]: { pending: false, steered: steer !== undefined },
     },
+  };
+  const notice = noticeFor(charged);
+
+  return {
+    state: charged,
     effects: [
-      { kind: "dispatch", agent, ...(steer !== undefined ? { steer } : {}) },
+      {
+        kind: "dispatch",
+        agent,
+        ...(steer !== undefined ? { steer } : {}),
+        ...(notice !== undefined ? { notice } : {}),
+      },
       { kind: "announce" },
     ],
   };
+}
+
+/** How close this conversation is to its ceiling, in words an agent can act on. */
+function noticeFor(state: TurnState): string | undefined {
+  switch (state.limit.kind) {
+    case "turns":
+      if (state.turnsLeft === 0) return "This is the last turn before the room goes quiet.";
+      if (state.turnsLeft === 1) return "One turn left after this one.";
+      return undefined;
+    case "cost": {
+      if (state.spendIncomplete) {
+        return state.turnsLeft === 0 ? "This is the last turn before the room goes quiet." : undefined;
+      }
+      const left = state.limit.usd - state.spentUSD;
+      if (left <= 0) return "This is the last turn before the room goes quiet.";
+      return left / state.limit.usd <= 0.2 ? "Nearly at the spending limit for this room." : undefined;
+    }
+    case "none":
+      return undefined;
+    default:
+      return undefined;
+  }
 }
 
 function otherThan(state: TurnState, agent: AgentId): AgentId | undefined {

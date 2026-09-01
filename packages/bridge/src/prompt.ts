@@ -20,6 +20,7 @@ export interface TurnPayload {
   readonly purpose: string;
   readonly transcript: readonly { from: string; text: string; at: string }[];
   readonly steer?: string;
+  readonly roomNotice?: string;
 }
 
 export function buildPayload(input: {
@@ -28,6 +29,7 @@ export function buildPayload(input: {
   purpose: string;
   transcript: readonly Message[];
   steer?: string;
+  notice?: string;
 }): string {
   const payload: TurnPayload = {
     you: input.you,
@@ -37,6 +39,7 @@ export function buildPayload(input: {
       .filter((message) => message.kind === "agent")
       .map((message) => ({ from: message.authorHandle, text: message.text, at: message.at })),
     ...(input.steer !== undefined ? { steer: input.steer } : {}),
+    ...(input.notice !== undefined ? { roomNotice: input.notice } : {}),
   };
   return JSON.stringify(payload, null, 2);
 }
@@ -66,6 +69,10 @@ export function webhookPromptTemplate(): string {
     `  If following it means ending the conversation, say your goodbye to them — concede,`,
     `  agree, sign off, whatever fits — and put ${CLOSE_SENTINEL} at the very end. They will`,
     `  read it and nobody replies. Leaving without a word is the one thing not to do.`,
+    ``,
+    `- "roomNotice", when present, is the room telling you how much of its allowance is left.`,
+    `  Nobody said it to you. If it says this is the last turn, land your point and sign off`,
+    `  with ${CLOSE_SENTINEL} rather than being cut off mid-sentence.`,
     ``,
     `Reply with one short chat message, one or two sentences, as yourself. No greeting, no`,
     `sign-off, no name prefix — the room adds that. Do not quote the transcript back.`,

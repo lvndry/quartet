@@ -87,6 +87,7 @@ export class Orchestrator {
           purpose: conversation.purpose,
           transcript: this.store.transcript(conversationId, TRANSCRIPT_WINDOW),
           ...(effect.steer !== undefined ? { steer: effect.steer } : {}),
+          ...(effect.notice !== undefined ? { notice: effect.notice } : {}),
         });
         return;
       }

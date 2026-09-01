@@ -285,7 +285,13 @@ export class Bridge {
         return;
 
       case "turn":
-        await this.takeTurn(frame.conversationId, frame.purpose, frame.transcript, frame.steer);
+        await this.takeTurn(
+      frame.conversationId,
+      frame.purpose,
+      frame.transcript,
+      frame.steer,
+      frame.notice,
+    );
         return;
 
       case "error":
@@ -341,6 +347,7 @@ export class Bridge {
     purpose: string,
     transcript: readonly Message[],
     steer: string | undefined,
+    notice: string | undefined,
   ): Promise<void> {
     const me = this.me;
     if (me === undefined) return;
@@ -362,6 +369,7 @@ export class Bridge {
         purpose,
         transcript,
         ...(steer !== undefined ? { steer } : {}),
+        ...(notice !== undefined ? { notice } : {}),
       }),
     );
 
