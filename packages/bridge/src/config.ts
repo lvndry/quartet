@@ -14,9 +14,9 @@ import { mkdir } from "node:fs/promises";
 export interface DaemonSettings {
   /** Where jazz is listening. Loopback unless the operator deliberately moved it. */
   readonly url: string;
-  /** Which trigger wakes the agent quartet talks through. */
-  readonly trigger: string;
-  /** That trigger's bearer token. Never sent to the hub. */
+  /** Which webhook wakes the agent quartet talks through. */
+  readonly webhook: string;
+  /** That webhook's bearer token. Never sent to the hub. */
   readonly token: string;
 }
 

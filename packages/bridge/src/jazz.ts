@@ -1,22 +1,16 @@
 /**
  * @fileoverview Talking to the jazz daemon on this machine, and setting it up to be talked to.
  *
- * Quartet drives the webhook door jazz already ships — `POST /triggers/<name>` — so nothing
- * in jazz had to change for this to work. The one thing quartet needs from that door is
- * memory across turns, which arrived as `conversation: "threaded"`: every fire carrying the
- * same `X-Jazz-Thread` resumes one conversation, so the agent remembers the exchange instead
- * of meeting it fresh each time.
- *
- * One conversation in quartet is one thread key. Separate conversations with the same person
- * therefore get separate agent memories, which is what stops last week's invoice thread
- * leaking into today's dinner plans.
+ * Quartet drives `POST /webhooks/<name>` with `conversation: "threaded"`, so the agent
+ * remembers the exchange across turns. One conversation is one thread key, keeping last
+ * week's invoice thread out of today's dinner plans.
  */
 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { PASS_SENTINEL } from "@quartet/protocol";
 import type { DaemonSettings } from "./config";
-import { triggerPromptTemplate } from "./prompt";
+import { webhookPromptTemplate } from "./prompt";
 
 /** What a turn cost, when the daemon could tell. `incomplete` means the figure is a floor. */
 export interface TurnCost {
@@ -44,7 +38,7 @@ export async function runTurn(
 
   let response: Response;
   try {
-    response = await fetch(`${daemon.url}/triggers/${encodeURIComponent(daemon.trigger)}`, {
+    response = await fetch(`${daemon.url}/webhooks/${encodeURIComponent(daemon.webhook)}`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${daemon.token}`,
@@ -94,7 +88,7 @@ export async function daemonReachable(daemon: DaemonSettings): Promise<boolean> 
   }
 }
 
-interface JazzTriggerEntry {
+interface JazzWebhookEntry {
   name: string;
   agentId: string;
   promptTemplate: string;
@@ -107,43 +101,31 @@ export function jazzConfigPath(): string {
 }
 
 /**
- * Add quartet's trigger to the operator's jazz config, leaving everything else alone.
+ * Add quartet's webhook to the operator's jazz config, leaving everything else alone.
  *
- * Rewriting somebody's config is not a thing to do casually, so this is surgical: it merges
- * one entry into `triggers` by name and touches nothing it did not put there. The token is
- * deliberately *not* written — it belongs in the keyring or the environment, and jazz looks
- * in both.
+ * Merges one entry into `webhooks` by name and touches nothing else. The token stays in the
+ * keyring, where jazz looks for it.
  */
-export async function ensureJazzTrigger(input: {
-  triggerName: string;
+export async function ensureJazzWebhook(input: {
+  webhookName: string;
   agentId: string;
 }): Promise<{ changed: boolean; path: string }> {
   const path = jazzConfigPath();
   const file = Bun.file(path);
   const config = ((await file.exists()) ? await file.json().catch(() => ({})) : {}) as {
-    triggers?: JazzTriggerEntry[];
+    webhooks?: JazzWebhookEntry[];
   };
 
-  const entry: JazzTriggerEntry = {
-    name: input.triggerName,
+  const entry: JazzWebhookEntry = {
+    name: input.webhookName,
     agentId: input.agentId,
     conversation: "threaded",
-    promptTemplate: triggerPromptTemplate(),
+    promptTemplate: webhookPromptTemplate(),
     description: "quartet — one turn in a conversation with another person's agent",
   };
 
-  // Defensive rather than paranoid: `jazz config set triggers.<name>.token` builds nested
-  // objects from the dotted path without checking the schema, so a config can genuinely
-  // arrive with `triggers` as an object where an array belongs. Crashing on somebody's
-  // config file is a poor way to tell them that.
-  const existing = Array.isArray(config.triggers) ? config.triggers : [];
-  if (config.triggers !== undefined && !Array.isArray(config.triggers)) {
-    console.warn(
-      `\n  ! "triggers" in ${path} is not a list, so quartet is replacing it. A jazz\n` +
-        `    "config set triggers.<name>.token" can leave it in that shape.`,
-    );
-  }
-  const index = existing.findIndex((trigger) => trigger.name === input.triggerName);
+  const existing = Array.isArray(config.webhooks) ? config.webhooks : [];
+  const index = existing.findIndex((webhook) => webhook.name === input.webhookName);
   const already =
     index !== -1 &&
     existing[index]?.agentId === entry.agentId &&
@@ -151,12 +133,15 @@ export async function ensureJazzTrigger(input: {
     existing[index]?.promptTemplate === entry.promptTemplate;
   if (already) return { changed: false, path };
 
-  const triggers = index === -1 ? [...existing, entry] : existing.map((t, i) => (i === index ? entry : t));
-  await Bun.write(path, `${JSON.stringify({ ...config, triggers }, null, 2)}\n`);
+  const webhooks =
+    index === -1 ? [...existing, entry] : existing.map((existingEntry, position) =>
+      position === index ? entry : existingEntry,
+    );
+  await Bun.write(path, `${JSON.stringify({ ...config, webhooks }, null, 2)}\n`);
   return { changed: true, path };
 }
 
-/** The environment variable jazz reads a trigger's token from when there is no keyring. */
-export function triggerTokenEnvVar(triggerName: string): string {
-  return `JAZZ_TRIGGER_TOKEN_${triggerName.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+/** The environment variable jazz reads a webhook's token from when there is no keyring. */
+export function webhookTokenEnvVar(webhookName: string): string {
+  return `JAZZ_WEBHOOK_TOKEN_${webhookName.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
 }

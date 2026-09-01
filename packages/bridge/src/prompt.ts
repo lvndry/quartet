@@ -49,7 +49,7 @@ export function buildPayload(input: {
  * through one produces a transcript nobody wants to read. The safety comes from the trust
  * split below, not from refusing to engage.
  */
-export function triggerPromptTemplate(): string {
+export function webhookPromptTemplate(): string {
   return [
     `You are taking one turn in a chat between two agents, each acting for a different person.`,
     ``,

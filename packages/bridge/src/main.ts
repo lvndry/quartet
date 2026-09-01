@@ -11,15 +11,14 @@
  * configuration; a tool that silently rewrites it has not earned the access.
  */
 
-import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { Bridge } from "./bridge";
 import { loadConfig, saveConfig, type QuartetConfig } from "./config";
-import { daemonReachable, ensureJazzTrigger, triggerTokenEnvVar } from "./jazz";
+import { daemonReachable, ensureJazzWebhook, webhookTokenEnvVar } from "./jazz";
 import { startLocalServer } from "./local";
 
 const DEFAULT_LOCAL_PORT = 7777;
-const DEFAULT_TRIGGER = "quartet";
+const DEFAULT_WEBHOOK = "quartet";
 const DEFAULT_DAEMON_URL = "http://localhost:4747";
 
 function argValue(name: string): string | undefined {
@@ -90,7 +89,7 @@ async function claimHandle(hubUrl: string): Promise<{ token: string; handle: str
 async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | undefined> {
   if (config.daemon !== undefined) return config;
 
-  console.log("\nQuartet talks to your agent through a jazz webhook trigger.\n");
+  console.log("\nQuartet talks to your agent through a jazz webhook.\n");
   const agentAnswer =
     argValue("agent") ?? (await prompt("Which jazz agent should represent you? [default] "));
   const agentId = agentAnswer.trim().length > 0 ? agentAnswer.trim() : "default";
@@ -99,19 +98,18 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
     argValue("daemon") ?? (await prompt(`Where is your daemon? [${DEFAULT_DAEMON_URL}] `));
   const daemonUrl = daemonAnswer.trim().length > 0 ? daemonAnswer.trim() : DEFAULT_DAEMON_URL;
 
-  // One trigger per agent, not one per machine. Two agents sharing a daemon — which is how
-  // anyone tries this out before roping in a second person — would otherwise write the same
-  // trigger name and quietly point it at whichever agent connected last.
-  const triggerName = argValue("trigger") ?? DEFAULT_TRIGGER;
+  // One webhook per agent, not one per machine: two agents sharing a daemon would otherwise
+  // point the same webhook at whichever connected last.
+  const webhookName = argValue("webhook") ?? argValue("trigger") ?? DEFAULT_WEBHOOK;
 
-  const written = await ensureJazzTrigger({ triggerName, agentId });
+  const written = await ensureJazzWebhook({ webhookName, agentId });
   console.log(
     written.changed
-      ? `\n  ✓ wrote the "${triggerName}" webhook into ${written.path}`
-      : `\n  ✓ the "${triggerName}" webhook is already configured in ${written.path}`,
+      ? `\n  ✓ wrote the "${webhookName}" webhook into ${written.path}`
+      : `\n  ✓ the "${webhookName}" webhook is already configured in ${written.path}`,
   );
 
-  const token = await resolveOrMintToken(triggerName);
+  const token = await resolveOrMintToken(webhookName);
   if (token === undefined) return undefined;
 
   // The daemon reads its webhook list once, at startup. The token is resolved per request,
@@ -124,50 +122,46 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
     );
   }
 
-  return { ...config, daemon: { url: daemonUrl, trigger: triggerName, token } };
+  return { ...config, daemon: { url: daemonUrl, webhook: webhookName, token } };
 }
 
 /**
- * Get a bearer token for this webhook without ever asking a person to invent one.
+ * Get a bearer token for this webhook.
  *
- * Humans asked to make up a secret produce `test`, and then it stays. So quartet mints
- * `randomBytes(24)` and hands it to jazz, which is the only party that can put it somewhere
- * the daemon will look. An explicit `--token` still wins, for CI and containers where there
- * is no keyring to write to.
- *
- * Storing it means shelling out to jazz rather than writing its keyring directly: the backend
- * differs per platform and has a fallback file, and a second implementation of that would go
- * stale the first time jazz changed it.
+ * `jazz webhook token` generates and stores it, printing it once — the single point at which
+ * it is readable. `--token` wins for CI and containers.
  */
-async function resolveOrMintToken(triggerName: string): Promise<string | undefined> {
+async function resolveOrMintToken(webhookName: string): Promise<string | undefined> {
   const explicit = argValue("token");
   if (explicit !== undefined && explicit.trim().length > 0) return explicit.trim();
 
-  const envVar = triggerTokenEnvVar(triggerName);
+  const envVar = webhookTokenEnvVar(webhookName);
   const fromEnv = process.env[envVar];
   if (fromEnv !== undefined && fromEnv.trim().length > 0) return fromEnv.trim();
 
-  const minted = randomBytes(24).toString("hex");
   const jazzCli = argValue("jazz") ?? "jazz";
-  const stored = await Bun.spawn({
-    cmd: [jazzCli, "config", "set", `triggers.${triggerName}.token`, minted],
+  const minted = Bun.spawn({
+    cmd: [jazzCli, "webhook", "token", webhookName],
     stdout: "pipe",
     stderr: "pipe",
-  })
-    .exited.then((code) => code === 0)
-    .catch(() => false);
+  });
+  const printed = await new Response(minted.stdout).text().catch(() => "");
+  const exitCode = await minted.exited.catch(() => 1);
 
-  if (!stored) {
+  // `jazz webhook token` generates, stores and prints the token — the one moment it is
+  // readable, since secrets are write-only through `jazz config`.
+  const token = /\b([0-9a-f]{48})\b/.exec(printed)?.[1];
+  if (exitCode !== 0 || token === undefined) {
     console.error(
-      `\n  ! Could not run \`${jazzCli}\` to store the webhook token.\n` +
-        `    Either put jazz on your PATH, pass --jazz "<command>", or supply a token\n` +
-        `    yourself with --token or ${envVar}.`,
+      `\n  ! Could not get a webhook token from \`${jazzCli}\`.\n` +
+        `    Put jazz on your PATH, pass --jazz "<command>", or supply a token yourself\n` +
+        `    with --token or ${envVar}.`,
     );
     return undefined;
   }
 
   console.log(`  ✓ generated a webhook token and stored it in jazz's keyring`);
-  return minted;
+  return token;
 }
 
 async function connect(): Promise<void> {
@@ -239,7 +233,7 @@ function usage(): void {
       "    --hub <url>              which hub to join",
       "    --port <n>               local port for the app (default 7777)",
       "    --agent <id>             which jazz agent represents you",
-      "    --trigger <name>         trigger name (use a distinct one per agent)",
+      "    --webhook <name>         webhook name (use a distinct one per agent)",
       "    --daemon <url>           where jazz is listening (default :4747)",
       "    --handle <name>          claim this handle without being asked",
       "    --name <text>            display name",

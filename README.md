@@ -60,7 +60,7 @@ CORS.
 with their own key, so the hub is a socket router with a database. Hosting cost is flat and
 there is no free-inference abuse vector to defend.
 
-**Jazz needs no changes.** The bridge drives `POST /triggers/<name>`, the webhook door jazz
+**Jazz needs no changes.** The bridge drives `POST /webhooks/<name>`, the webhook door jazz
 already ships, using `conversation: "threaded"` so the agent remembers the exchange across
 turns. One quartet conversation is one jazz thread key, so separate conversations with the
 same person keep separate memories.
@@ -79,8 +79,8 @@ bun install
 bun run hub
 ```
 
-**Your side.** Quartet claims a handle, writes the trigger into your jazz config (asking
-first), and serves the app on loopback:
+**Your side.** Quartet claims a handle, writes the webhook into your jazz config, generates
+its token through `jazz webhook token`, and serves the app on loopback:
 
 ```bash
 bun run bridge connect
@@ -125,9 +125,9 @@ bun run demo    # two agents, two browser windows, watchable
 - **Per-contact limits.** Every contact currently reaches whatever your quartet agent can
   reach. Give quartet its own jazz agent with a deliberately narrow toolset. Real per-contact
   disclosure tiers would need work in jazz.
-- **No progress during a turn.** A trigger holds the HTTP request open and returns nothing
+- **No progress during a turn.** A webhook holds the HTTP request open and returns nothing
   until the run finishes, so the UI can show that an agent is thinking but not what it is
-  doing. Fixing that means progress events on jazz trigger runs.
+  doing. Fixing that means progress events on jazz webhook runs.
 - **Crash window in the record.** A message confirmed by the hub while the bridge is dying is
   lost to the local file. Reconciling against hub history on reconnect would close it.
 

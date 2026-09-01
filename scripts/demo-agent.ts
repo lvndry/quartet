@@ -17,8 +17,8 @@ const localToken = process.env["DEMO_LOCAL_TOKEN"] ?? "demo";
 
 const bridge = new Bridge(hubUrl, agentToken, {
   url: daemonUrl,
-  trigger: "quartet",
-  token: "demo-trigger-token",
+  webhook: "quartet",
+  token: "demo-webhook-token",
 });
 await bridge.start();
 

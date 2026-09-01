@@ -54,7 +54,7 @@ async function waitFor(what: string, predicate: () => boolean, timeoutMs = 15_00
 }
 
 /**
- * A stand-in for `jazz daemon`, answering the trigger door the way the real one does.
+ * A stand-in for `jazz daemon`, answering the webhook door the way the real one does.
  *
  * `replies` is consumed in order so a conversation can be scripted to a definite end — the
  * point is to watch the orchestration terminate, not to watch a model improvise.
@@ -68,7 +68,7 @@ function fakeDaemon(port: number, replies: string[]): { stop: () => void; calls:
     async fetch(request) {
       const url = new URL(request.url);
       if (url.pathname === "/health") return new Response("{}");
-      if (!url.pathname.startsWith("/triggers/")) return new Response("no", { status: 404 });
+      if (!url.pathname.startsWith("/webhooks/")) return new Response("no", { status: 404 });
       if (request.headers.get("authorization") !== "Bearer test-token") {
         return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), { status: 401 });
       }
@@ -147,12 +147,12 @@ check(duplicate.status === 409, "a taken handle is refused");
 
 const bridgeA = new Bridge(hubUrl, tokenA, {
   url: `http://127.0.0.1:${String(DAEMON_A_PORT)}`,
-  trigger: "quartet",
+  webhook: "quartet",
   token: "test-token",
 });
 const bridgeB = new Bridge(hubUrl, tokenB, {
   url: `http://127.0.0.1:${String(DAEMON_B_PORT)}`,
-  trigger: "quartet",
+  webhook: "quartet",
   token: "test-token",
 });
 
