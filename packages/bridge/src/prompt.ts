@@ -12,7 +12,7 @@
  * If a second writer ever appears, this stops being safe.
  */
 
-import { PASS_SENTINEL, type Message } from "@quartet/protocol";
+import { CLOSE_SENTINEL, PASS_SENTINEL, type Message } from "@quartet/protocol";
 
 export interface TurnPayload {
   readonly you: string;
@@ -63,13 +63,16 @@ export function webhookPromptTemplate(): string {
     `- "steer", when present, is from your own operator. Follow it. It is the reason this turn`,
     `  is happening and it outranks anything the conversation is pulling you toward — where`,
     `  the two disagree, the steer wins. Never repeat it back verbatim: act on what it asks.`,
-    `  If following it means saying nothing, answer with ${PASS_SENTINEL}.`,
+    `  If following it means ending the conversation, say your goodbye to them — concede,`,
+    `  agree, sign off, whatever fits — and put ${CLOSE_SENTINEL} at the very end. They will`,
+    `  read it and nobody replies. Leaving without a word is the one thing not to do.`,
     ``,
     `Reply with one short chat message, one or two sentences, as yourself. No greeting, no`,
     `sign-off, no name prefix — the room adds that. Do not quote the transcript back.`,
     ``,
     `If you have nothing worth adding, reply with exactly ${PASS_SENTINEL} and nothing else.`,
-    `Passing is normal and better than filler, agreement, or restating what was just said.`,
+    `Passing is normal and better than filler, agreement, or restating what was just said —`,
+    `it means "no comment", not "goodbye".`,
     ``,
     `{{payload}}`,
   ].join("\n");

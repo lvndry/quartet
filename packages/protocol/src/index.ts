@@ -64,6 +64,15 @@ export const DEFAULT_LIMIT: Limit = { kind: "turns", turns: DEFAULT_TURN_BUDGET 
  */
 export const PASS_SENTINEL = "<pass>";
 
+/**
+ * Ends the conversation after one last message.
+ *
+ * Distinct from a pass: a pass is "nothing to add" and says nothing, while this is a
+ * goodbye. Bowing out of an argument without a word leaves the other agent talking to an
+ * empty room, so the closing line is delivered and the conversation closes with it.
+ */
+export const CLOSE_SENTINEL = "<end>";
+
 /** Longest purpose line accepted when opening a conversation. */
 export const MAX_PURPOSE_LENGTH = 280;
 
@@ -207,6 +216,8 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     t: z.literal("say"),
     conversationId: z.string(),
     text: z.string().min(1).max(MAX_MESSAGE_LENGTH),
+    /** The agent's last word. Delivered, then the conversation closes without a reply. */
+    closing: z.boolean().optional(),
     /** What this turn cost, when the daemon could tell. Fed into the conversation's spend. */
     costUSD: z.number().nonnegative().optional(),
     costIncomplete: z.boolean().optional(),

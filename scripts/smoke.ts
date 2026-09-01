@@ -234,6 +234,26 @@ await waitFor("the agent to answer the nudge", () =>
   (stateA.messages[conversationId] ?? []).length > beforeNudge,
 );
 
+// A steer typed while the agent is mid-turn must survive coalescing. This is the failure
+// that let a live conversation ignore "stop": the follow-up turn ran without it.
+const beforeSteer = daemonA.calls.length;
+bridgeA.nudge(conversationId, "wind this up please");
+bridgeA.nudge(conversationId, "seriously, wrap it up");
+await waitFor(
+  "the agent to take a turn after the steers",
+  () => daemonA.calls.length > beforeSteer,
+  20_000,
+);
+const steered = daemonA.calls
+  .slice(beforeSteer)
+  .map((call) => (call as { body: { steer?: string } }).body.steer)
+  .filter((value): value is string => value !== undefined);
+check(steered.length > 0, "a steer sent mid-turn still reached the agent");
+check(
+  steered[steered.length - 1] === "seriously, wrap it up",
+  "and the latest one won when two arrived while it was thinking",
+);
+
 // Thread keys are what keep two conversations with the same person from bleeding together.
 const threadsSeen = new Set(daemonA.calls.map((call) => (call as { thread: string }).thread));
 check(

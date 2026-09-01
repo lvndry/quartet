@@ -280,6 +280,12 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       if (message === undefined) return;
       orchestrator.onSpend(frame.conversationId, frame.costUSD, frame.costIncomplete === true);
       orchestrator.onTurnSettled(frame.conversationId, agentId);
+      if (frame.closing === true) {
+        // Delivered and closed in one step. Fanning out first and stopping second would
+        // dispatch a reply in between, and the goodbye would be answered.
+        orchestrator.closeWith(frame.conversationId, message);
+        return;
+      }
       orchestrator.onMessage(frame.conversationId, agentId, message);
       return;
     }

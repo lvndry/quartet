@@ -40,6 +40,15 @@ interface InFlight {
   readonly timer: ReturnType<typeof setTimeout>;
   /** Set when new messages land mid-turn, so exactly one follow-up runs when this settles. */
   pending: boolean;
+  /**
+   * An owner's instruction that arrived while the agent was already thinking.
+   *
+   * Carried to the follow-up turn rather than dropped with the rest of the coalescing: a
+   * message can be collapsed because the transcript already holds it, but a steer exists
+   * nowhere else, and losing it means the agent never hears what its owner asked for. The
+   * latest wins — somebody typing twice means the second thing.
+   */
+  steer?: string;
 }
 
 export type Deliver = (agentId: string, frame: ServerFrame) => void;
@@ -98,6 +107,19 @@ export class Orchestrator {
     this.poke(conversationId, agentId, steer);
   }
 
+  /**
+   * Deliver one last message, then close.
+   *
+   * The message reaches both sides and nobody is woken to answer it, so an agent bowing out
+   * can say so instead of falling silent.
+   */
+  closeWith(conversationId: string, message: Message): void {
+    const participants = this.store.conversationParticipantIds(conversationId);
+    if (participants === undefined) return;
+    for (const agentId of participants) this.deliver(agentId, { t: "appended", message });
+    this.stop(conversationId);
+  }
+
   /** Push the current spending position to both sides. */
   announceBudget(conversationId: string): void {
     const participants = this.store.conversationParticipantIds(conversationId);
@@ -121,7 +143,7 @@ export class Orchestrator {
     if (entry === undefined) return;
     clearTimeout(entry.timer);
     this.inFlight.delete(key);
-    if (entry.pending) this.poke(conversationId, agentId);
+    if (entry.pending) this.poke(conversationId, agentId, entry.steer);
   }
 
   /**
@@ -164,6 +186,7 @@ export class Orchestrator {
       // Already thinking. Collapse whatever arrived into one follow-up rather than queueing
       // a dispatch per message — otherwise a burst of three messages is billed three times.
       existing.pending = true;
+      if (steer !== undefined) existing.steer = steer;
       return;
     }
 

@@ -8,7 +8,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { PASS_SENTINEL } from "@quartet/protocol";
+import { CLOSE_SENTINEL, PASS_SENTINEL } from "@quartet/protocol";
 import type { DaemonSettings } from "./config";
 import { webhookPromptTemplate } from "./prompt";
 
@@ -19,7 +19,13 @@ export interface TurnCost {
 }
 
 export type TurnResult =
-  | { readonly kind: "said"; readonly text: string; readonly cost: TurnCost }
+  | {
+      readonly kind: "said";
+      readonly text: string;
+      readonly cost: TurnCost;
+      /** The agent's last word: delivered, then the conversation closes. */
+      readonly closing: boolean;
+    }
   | { readonly kind: "passed"; readonly cost: TurnCost }
   | { readonly kind: "needs-you"; readonly runId: string }
   | { readonly kind: "failed"; readonly reason: string };
@@ -97,7 +103,11 @@ export async function runTurn(
   };
   if (answer.length === 0) return { kind: "failed", reason: "jazz returned an empty answer" };
   if (answer === PASS_SENTINEL || answer.startsWith(PASS_SENTINEL)) return { kind: "passed", cost };
-  return { kind: "said", text: answer, cost };
+
+  const closing = answer.includes(CLOSE_SENTINEL);
+  const text = answer.split(CLOSE_SENTINEL).join("").trim();
+  if (text.length === 0) return { kind: "passed", cost };
+  return { kind: "said", text, cost, closing };
 }
 
 /** Whether jazz's config actually lists this webhook, checked without running the agent. */
