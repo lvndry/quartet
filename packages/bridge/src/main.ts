@@ -18,6 +18,7 @@ import { getDataDirectory, setDataDirectory } from "./paths";
 import {
   daemonReachable,
   ensureJazzWebhook,
+  jazzConfigPath,
   webhookConfigured,
   webhookTokenEnvVar,
 } from "./jazz";
@@ -94,7 +95,19 @@ async function claimHandle(hubUrl: string): Promise<{ token: string; handle: str
  * where jazz already keeps it.
  */
 async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | undefined> {
-  if (config.daemon !== undefined) return config;
+  if (config.daemon !== undefined) {
+    // The prompt lives in jazz's config, written when the webhook was first set up. Quartet
+    // owns that text and it changes with quartet, so it is rewritten whenever it has drifted
+    // — otherwise an agent keeps answering under whatever wording it was created with.
+    const refreshed = await ensureJazzWebhook({
+      webhookName: config.daemon.webhook,
+      agentId: argValue("agent") ?? (await agentIdFor(config.daemon.webhook)),
+    });
+    if (refreshed.changed) {
+      console.log(`\n  ✓ refreshed the "${config.daemon.webhook}" prompt in ${refreshed.path}`);
+    }
+    return config;
+  }
 
   console.log("\nQuartet talks to your agent through a jazz webhook.\n");
   const agentAnswer =
@@ -171,6 +184,17 @@ async function resolveOrMintToken(webhookName: string): Promise<string | undefin
   return token;
 }
 
+/** The agent a webhook already points at, so refreshing its prompt leaves that alone. */
+async function agentIdFor(webhookName: string): Promise<string> {
+  const file = Bun.file(jazzConfigPath());
+  if (!(await file.exists())) return "default";
+  const config = (await file.json().catch(() => ({}))) as {
+    webhooks?: { name?: string; agentId?: string }[];
+  };
+  const entry = config.webhooks?.find((webhook) => webhook.name === webhookName);
+  return entry?.agentId ?? "default";
+}
+
 async function connect(): Promise<void> {
   const level = parseLogLevel(argValue("log-level"));
   if (level !== undefined) setLogLevel(level);
@@ -213,9 +237,8 @@ async function connect(): Promise<void> {
   const bridge = new Bridge(hubUrl, agentToken, daemon);
   await bridge.start();
 
-  // A fresh token per run: the app is reopened from this terminal anyway, and a long-lived
-  // one lying in a config file is a worse trade than pasting a URL again after a restart.
-  const localToken = crypto.randomUUID().replaceAll("-", "");
+  const localToken = config.localToken ?? crypto.randomUUID().replaceAll("-", "");
+  if (config.localToken !== localToken) config = { ...config, localToken };
   const preferredPort = Number(requestedPort ?? config.localPort ?? DEFAULT_LOCAL_PORT);
   const webRoot = join(dirname(Bun.fileURLToPath(import.meta.url)), "..", "..", "web", "dist");
   const built = await Bun.file(join(webRoot, "index.html")).exists();
@@ -229,10 +252,8 @@ async function connect(): Promise<void> {
 
   // Remember whichever port it settled on, so the next start comes back to the same URL
   // without a flag even when it had to move up from the preferred one.
-  if (config.localPort !== local.port) {
-    config = { ...config, localPort: local.port };
-    await saveConfig(config);
-  }
+  if (config.localPort !== local.port) config = { ...config, localPort: local.port };
+  await saveConfig(config);
 
   const appUrl = `http://localhost:${String(local.port)}/?token=${localToken}`;
   console.log(`\n  quartet is running\n\n    ${appUrl}\n`);
