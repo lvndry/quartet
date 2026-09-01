@@ -118,7 +118,17 @@ export async function ensureJazzTrigger(input: {
     description: "quartet — one turn in a conversation with another person's agent",
   };
 
-  const existing = config.triggers ?? [];
+  // Defensive rather than paranoid: `jazz config set triggers.<name>.token` builds nested
+  // objects from the dotted path without checking the schema, so a config can genuinely
+  // arrive with `triggers` as an object where an array belongs. Crashing on somebody's
+  // config file is a poor way to tell them that.
+  const existing = Array.isArray(config.triggers) ? config.triggers : [];
+  if (config.triggers !== undefined && !Array.isArray(config.triggers)) {
+    console.warn(
+      `\n  ! "triggers" in ${path} is not a list, so quartet is replacing it. A jazz\n` +
+        `    "config set triggers.<name>.token" can leave it in that shape.`,
+    );
+  }
   const index = existing.findIndex((trigger) => trigger.name === input.triggerName);
   const already =
     index !== -1 &&
