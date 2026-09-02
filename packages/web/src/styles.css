@@ -219,9 +219,65 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
 
 .led-row { padding: 0.6rem 1rem; border-bottom: 1px solid var(--rule-soft); display: flex; flex-direction: column; gap: 0.2rem; }
 .led-meta { font-family: var(--mono); font-size: 0.62rem; color: var(--slate); font-variant-numeric: tabular-nums; }
-.led-text { font-size: 0.84rem; color: var(--cream-dim); }
+/* A record, shown verbatim; clamped so one long answer cannot own the column. */
+.led-text {
+  font-size: 0.84rem; color: var(--cream-dim);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden; white-space: pre-wrap; word-break: break-word;
+}
 .led-steer { font-family: var(--mono); font-size: 0.62rem; color: var(--brass); }
 .led-foot { padding: 0.8rem 1rem; font-family: var(--mono); font-size: 0.62rem; color: var(--slate); line-height: 1.7; }
 
 .placeholder { display: grid; place-items: center; height: 100%; padding: 2rem; text-align: center; }
 .placeholder p { color: var(--slate); max-width: 34ch; font-size: 0.9rem; }
+
+/* ---------- rendered agent output ---------- */
+
+/* Held to ~68 characters so a long answer reads as a document, not a wall. */
+.md { font-size: 0.92rem; color: var(--cream-dim); max-width: 68ch; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 0.65em; }
+.md strong { color: var(--cream); font-weight: 600; }
+.md em { font-style: italic; }
+
+.md h1, .md h2, .md h3, .md h4 {
+  color: var(--cream); font-family: var(--body); font-weight: 600;
+  margin: 1.1em 0 0.45em; line-height: 1.3;
+}
+.md h1 { font-size: 1.1rem; }
+.md h2 { font-size: 1.02rem; }
+.md h3, .md h4 { font-size: 0.95rem; }
+
+.md ul, .md ol { margin: 0 0 0.65em; padding-left: 1.25rem; }
+.md li { margin: 0.2em 0; }
+.md li::marker { color: var(--slate); }
+
+.md blockquote {
+  margin: 0.65em 0; padding: 0.1em 0 0.1em 0.8rem;
+  border-left: 2px solid var(--rule); color: var(--slate);
+}
+
+.md code {
+  font-family: var(--mono); font-size: 0.86em; color: var(--signal);
+  background: var(--ink-sunk); border: 1px solid var(--rule-soft);
+  border-radius: 3px; padding: 0.08em 0.32em;
+}
+.md pre {
+  margin: 0.65em 0; padding: 0.7rem 0.8rem;
+  background: var(--ink-sunk); border: 1px solid var(--rule-soft);
+}
+.md pre code { background: none; border: none; padding: 0; color: var(--cream-dim); }
+
+.md table { border-collapse: collapse; font-size: 0.86rem; min-width: 0; }
+.md th, .md td { border: 1px solid var(--rule-soft); padding: 0.3rem 0.55rem; text-align: left; }
+.md th { color: var(--cream); font-weight: 600; background: var(--ink-sunk); }
+
+.md hr { border: none; border-top: 1px solid var(--rule-soft); margin: 1em 0; }
+.md a { color: var(--signal); text-decoration: underline; text-underline-offset: 2px; }
+
+.md-scroll { overflow-x: auto; max-width: 100%; }
+
+/* KaTeX sizes itself; colour and display rhythm are ours. */
+.md .katex { color: var(--cream); font-size: 1em; }
+.md .katex-display { margin: 0.7em 0; overflow-x: auto; overflow-y: hidden; padding: 0.15em 0; }
