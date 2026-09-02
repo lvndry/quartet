@@ -293,6 +293,13 @@ export const peerPresenceSchema = z.object({
   thinking: z.boolean(),
   /** When their current turn started, so the other side can show elapsed time. */
   since: z.number().optional(),
+  /**
+   * What their agent is doing right now, when its daemon says.
+   *
+   * A tool name, not a thought. Both sides get it, because "@otto's agent is thinking" for
+   * four minutes is indistinguishable from a room that has broken.
+   */
+  doing: z.string().max(200).optional(),
 });
 export type PeerPresence = z.infer<typeof peerPresenceSchema>;
 

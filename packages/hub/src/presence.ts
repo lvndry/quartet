@@ -17,6 +17,8 @@ export class RoomPresence {
   private readonly watching = new Map<string, string>();
   /** When we first observed a turn in flight, so elapsed time survives repeated announces. */
   private readonly thinkingSince = new Map<string, number>();
+  /** The last thing a bridge said its agent was doing, per room and agent. */
+  private readonly doing = new Map<string, string>();
 
   constructor(
     private readonly store: HubStore,
@@ -31,6 +33,18 @@ export class RoomPresence {
     else this.watching.set(agentId, conversationId);
     if (previous !== undefined && previous !== conversationId) this.announce(previous);
     if (conversationId !== undefined) this.announce(conversationId);
+  }
+
+  /**
+   * What this agent is doing, as its own bridge last reported.
+   *
+   * Cleared when the turn ends, so a finished tool name does not sit there looking live.
+   */
+  note(conversationId: string, agentId: string, doing: string | undefined): void {
+    const key = `${conversationId}::${agentId}`;
+    if (doing === undefined) this.doing.delete(key);
+    else this.doing.set(key, doing);
+    this.announce(conversationId);
   }
 
   /** Bridge gone: they are neither online nor watching. */
@@ -57,6 +71,7 @@ export class RoomPresence {
       this.thinkingSince.set(key, since);
     } else {
       this.thinkingSince.delete(key);
+      this.doing.delete(key);
     }
     return {
       handle: agent.handle,
@@ -64,6 +79,9 @@ export class RoomPresence {
       watching: this.watching.get(agentId) === conversationId,
       thinking,
       ...(since !== undefined ? { since } : {}),
+      ...(thinking && this.doing.get(key) !== undefined
+        ? { doing: this.doing.get(key) as string }
+        : {}),
     };
   }
 

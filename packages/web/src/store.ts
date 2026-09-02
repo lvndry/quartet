@@ -14,6 +14,8 @@ export type { Limit, PeerPresence } from "@quartet/protocol";
 export interface Activity {
   state: "idle" | "thinking" | "needs-you";
   since?: number;
+  /** What the daemon last said the agent was doing. A tool name, not a thought. */
+  doing?: string;
   runId?: string;
   pending?:
     | { kind: "approval"; message?: string }

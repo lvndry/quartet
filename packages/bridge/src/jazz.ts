@@ -73,10 +73,20 @@ function isTimeout(error: unknown): boolean {
   return name === "TimeoutError" || name === "AbortError";
 }
 
+/** Header jazz reads a loopback progress URL from. Must match its own constant. */
+const PROGRESS_HEADER = "x-jazz-progress-url";
+
 export async function runTurn(
   daemon: DaemonSettings,
   threadKey: string,
   payload: string,
+  /**
+   * Where this machine's daemon should report what the run is doing.
+   *
+   * Optional because a jazz without the route ignores it, and because a turn is perfectly
+   * valid without progress — it is just silent.
+   */
+  progressUrl?: string,
 ): Promise<TurnResult> {
   // Should be unreachable: every payload quartet sends is composed to this budget. Kept as
   // a guard for any future caller that builds one another way, because the alternative is
@@ -93,6 +103,7 @@ export async function runTurn(
         authorization: `Bearer ${daemon.token}`,
         "content-type": "application/json",
         "x-jazz-thread": threadKey,
+        ...(progressUrl !== undefined ? { [PROGRESS_HEADER]: progressUrl } : {}),
       },
       body: payload,
       signal: AbortSignal.timeout(TURN_TIMEOUT_MS),

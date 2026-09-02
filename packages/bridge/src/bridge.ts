@@ -51,7 +51,12 @@ import { composeTurnPayload } from "./prompt";
 /** What your own agent is doing right now, per conversation. Drives the UI's live states. */
 export type Activity =
   | { readonly state: "idle" }
-  | { readonly state: "thinking"; readonly since: number }
+  | {
+      readonly state: "thinking";
+      readonly since: number;
+      /** What the daemon last said it was doing. A tool name, not a thought. */
+      readonly doing?: string;
+    }
   | {
       readonly state: "needs-you";
       readonly runId: string;
@@ -156,6 +161,15 @@ export class Bridge {
   private readonly outbound: ClientFrame[] = [];
   /** Heartbeat timers for turns currently running, one per conversation. */
   private readonly beating = new Map<string, ReturnType<typeof setInterval>>();
+  /**
+   * One-time secrets that let this machine's daemon report into a running turn.
+   *
+   * The progress URL is handed to the daemon and comes back as an inbound request, so it
+   * needs to be one only the daemon could have. A nonce per turn, dropped when the turn
+   * ends: anything else on this machine can reach the port, and "your agent is reading your
+   * calendar" is not a sentence somebody else should be able to put in the room.
+   */
+  private readonly progressKeys = new Map<string, string>();
 
   private readonly verdicts = new Map<string, Verdict>();
 
@@ -717,7 +731,15 @@ export class Bridge {
       });
     }
 
-    const result = await runTurn(this.daemon, conversationId, composed.payload);
+    const progressKey = crypto.randomUUID().replaceAll("-", "");
+    this.progressKeys.set(progressKey, conversationId);
+    const progressUrl =
+      this.localOrigin === undefined
+        ? undefined
+        : `${this.localOrigin}/progress/${progressKey}`;
+
+    const result = await runTurn(this.daemon, conversationId, composed.payload, progressUrl);
+    this.progressKeys.delete(progressKey);
 
     this.finishTurn(conversationId, result, startedAt, steer);
   }
@@ -759,6 +781,49 @@ export class Bridge {
         this.send({ t: "progress", conversationId });
       }, PROGRESS_EVERY_MS),
     );
+  }
+
+  /**
+   * Where this bridge is reachable, once its own server is listening.
+   *
+   * Set by the local server rather than assumed, because the port is whatever was free and
+   * a URL built from a guess would send the daemon somewhere else entirely.
+   */
+  private localOrigin: string | undefined;
+
+  setLocalOrigin(origin: string): void {
+    this.localOrigin = origin;
+  }
+
+  /**
+   * The daemon reporting what a turn is doing.
+   *
+   * Returns whether the key was live, so the caller can refuse an unknown one rather than
+   * accept anything that arrives on the port.
+   */
+  onDaemonProgress(key: string, event: { kind?: string; toolName?: string }): boolean {
+    const conversationId = this.progressKeys.get(key);
+    if (conversationId === undefined) return false;
+
+    const running = this.activity.get(conversationId);
+    if (running?.state !== "thinking") return true;
+
+    const tool = typeof event.toolName === "string" ? event.toolName : undefined;
+    const doing =
+      event.kind === "approval-required" && tool !== undefined
+        ? `waiting for you to approve ${tool}`
+        : event.kind === "tool-started" && tool !== undefined
+          ? tool
+          : undefined;
+    // A finished tool leaves the note as it was rather than blanking it: the next thing is
+    // usually the model thinking again, and flicking to nothing reads as a stall.
+    if (doing === undefined) return true;
+
+    this.activity.set(conversationId, { ...running, doing });
+    this.publish();
+    // The other side gets it too, on the heartbeat that already re-arms the deadline.
+    this.send({ t: "progress", conversationId, note: doing });
+    return true;
   }
 
   private stopBeating(conversationId: string): void {

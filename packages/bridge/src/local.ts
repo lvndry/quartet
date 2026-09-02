@@ -99,6 +99,19 @@ export function startLocalServer(options: LocalServerOptions): { port: number; s
           : new Response("expected a websocket upgrade", { status: 426 });
       }
 
+      // This machine's jazz daemon, reporting into a turn it was given a key for. It has
+      // no browser token and is not a browser, so it authenticates with the one-time key in
+      // the path — which is also what stops anything else on the port narrating the room.
+      if (url.pathname.startsWith("/progress/")) {
+        if (request.method !== "POST") return json({ error: "not found" }, 404);
+        const key = url.pathname.slice("/progress/".length);
+        const event = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+        if (event === null) return json({ error: "expected a JSON body" }, 400);
+        return options.bridge.onDaemonProgress(key, event)
+          ? json({ ok: true })
+          : json({ error: "no turn is waiting on that key" }, 404);
+      }
+
       if (url.pathname.startsWith("/api/")) {
         if (presentedToken(request) !== options.token) return json({ error: "unauthorized" }, 401);
         return handleApi(url.pathname, request, options.bridge);
@@ -147,6 +160,9 @@ export function startLocalServer(options: LocalServerOptions): { port: number; s
   if (server === undefined) throw new Error("could not find a free port for the app");
 
   const running = server;
+  // The daemon is told where to report only once the port is known, because it is whichever
+  // one was free rather than the one that was asked for.
+  options.bridge.setLocalOrigin(`http://127.0.0.1:${String(running.port)}`);
   return {
     port: Number(running.port),
     stop: () => {

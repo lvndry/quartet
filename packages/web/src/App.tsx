@@ -303,7 +303,7 @@ function OnePeer({
   if (presence.thinking) {
     return (
       <span className="peer live">
-        @{handle}’s agent is thinking
+        @{handle}’s agent is {presence.doing ?? "thinking"}
         {presence.since !== undefined && <Elapsed since={presence.since} />}
       </span>
     );
@@ -961,7 +961,9 @@ function Chat({
                 <i />
                 <i />
               </span>
-              <span className="activity-who">your agent</span>
+              <span className="activity-who">
+                your agent{activity.doing !== undefined ? ` — ${activity.doing}` : ""}
+              </span>
               <Elapsed since={activity.since ?? Date.now()} />
             </div>
           )}
@@ -976,7 +978,9 @@ function Chat({
                   <i />
                   <i />
                 </span>
-                <span className="activity-who">@{entry.handle}’s agent</span>
+                <span className="activity-who">
+                  @{entry.handle}’s agent{entry.doing !== undefined ? ` — ${entry.doing}` : ""}
+                </span>
                 {entry.since !== undefined && <Elapsed since={entry.since} />}
               </div>
             ))}
