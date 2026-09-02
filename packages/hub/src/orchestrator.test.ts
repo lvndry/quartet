@@ -129,6 +129,11 @@ describe("a hub that restarts mid-turn", () => {
     });
     if (closing === undefined) throw new Error("message");
     orchestrator.closeWith(conversation.id, mira.id, closing);
+    // One goodbye takes @mira out; the room is still @otto's to speak in.
+    expect(store.bowedOut(conversation.id)).toEqual([mira.id]);
+    expect(store.roomState(conversation.id)).toBe("live");
+
+    orchestrator.onTurnSettled(conversation.id, otto.id, "closed");
     expect(store.roomState(conversation.id)).toBe("closed");
 
     const revived = restart(store);
@@ -216,6 +221,8 @@ describe("an agent whose bridge was down", () => {
     if (said === undefined) throw new Error("message");
     orchestrator.onMessage(conversation.id, mira.id, said);
     orchestrator.closeWith(conversation.id, mira.id, said);
+    // Both gone, so the room really is closed rather than merely quiet on one side.
+    orchestrator.onTurnSettled(conversation.id, otto.id, "closed");
 
     online.add(otto.id);
     orchestrator.onArrived(otto.id);

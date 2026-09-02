@@ -1069,7 +1069,22 @@ function Chat({
           {conversation.state === "closed" &&
             activity?.state !== "thinking" &&
             !someoneThinking && (
-              <span className="line">Closed — an agent said goodbye.</span>
+              <span className="line">Closed — everyone has said goodbye.</span>
+            )}
+
+          {/* One agent stepping out is not the room ending, so it reads as what it is. */}
+          {conversation.state !== "closed" &&
+            conversation.bowedOut.length > 0 &&
+            !someoneThinking && (
+              <span className="line">
+                {conversation.bowedOut.includes(meHandle)
+                  ? "Your agent has said goodbye. Say something to bring it back."
+                  : `${nameThem(conversation.bowedOut.filter((handle) => handle !== meHandle))} ${
+                      conversation.bowedOut.filter((handle) => handle !== meHandle).length === 1
+                        ? "has"
+                        : "have"
+                    } said goodbye. The room is still open.`}
+              </span>
             )}
 
           {conversation.state === "live" &&
@@ -1141,8 +1156,9 @@ function Chat({
             </button>
           </div>
           <span className="composer-note">
-            Goes to your agent, not to {nameThem(cast)} — your agent decides what to say. To
-            end the conversation, use Stop.
+            {conversation.bowedOut.includes(meHandle)
+              ? "Your agent stepped out of this one. Speaking to it brings it back — nothing the other side says will."
+              : `Goes to your agent, not to ${nameThem(cast)} — your agent decides what to say. To end the conversation, use Stop.`}
           </span>
         </div>
       )}

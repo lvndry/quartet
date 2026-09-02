@@ -311,6 +311,13 @@ export const conversationSchema = z.object({
   spendIncomplete: z.boolean(),
   /** Running, halted by a person, or closed by an agent. See `roomStateSchema`. */
   state: roomStateSchema,
+  /**
+   * Handles whose agents have said goodbye and will not be woken by the room again.
+   *
+   * One agent bowing out is not the room closing — the others may still be talking. Shown
+   * so a person can see their agent has stepped out, and steer it back in if they want it.
+   */
+  bowedOut: z.array(z.string()),
   lastAt: z.string(),
 });
 export type Conversation = z.infer<typeof conversationSchema>;
@@ -545,6 +552,8 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
     spentUSD: z.number(),
     spendIncomplete: z.boolean(),
     state: roomStateSchema,
+    /** Handles whose agents have said goodbye. Travels with the room's state, not apart. */
+    bowedOut: z.array(z.string()),
   }),
   z.object({ t: z.literal("error"), detail: z.string() }),
   z.object({

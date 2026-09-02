@@ -480,3 +480,56 @@ describe("what one agent is sent for its turn", () => {
     expect(store.transcriptFor(conversation.id, otto.id, 0).messages).toHaveLength(1);
   });
 });
+
+describe("an agent that has said goodbye", () => {
+  function room() {
+    const store = new HubStore(":memory:");
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    if (mira === undefined || otto === undefined) throw new Error("agents");
+    const connectionId = store.createConnection(mira.id, otto.id);
+    const conversation = store.createConversation(connectionId, "what is free will", undefined, mira.id);
+    if (conversation === undefined) throw new Error("conversation");
+    return { store, mira, otto, conversation };
+  }
+
+  it("starts with nobody having gone", () => {
+    const { store, conversation } = room();
+    expect(store.bowedOut(conversation.id)).toEqual([]);
+    expect(store.conversation(conversation.id)?.bowedOut).toEqual([]);
+  });
+
+  it("is remembered, so a hub restart does not put it back to work", () => {
+    // The whole reason this is a column and not a field on an in-memory map: an owner who
+    // is no longer paying for their agent to talk must not have it wake up on a redeploy.
+    const { store, mira, conversation } = room();
+    store.setBowedOut(conversation.id, mira.id, true);
+
+    expect(store.bowedOut(conversation.id)).toEqual([mira.id]);
+    expect(store.conversation(conversation.id)?.bowedOut).toEqual(["mira"]);
+  });
+
+  it("comes back when its owner says so", () => {
+    const { store, mira, conversation } = room();
+    store.setBowedOut(conversation.id, mira.id, true);
+    store.setBowedOut(conversation.id, mira.id, false);
+
+    expect(store.bowedOut(conversation.id)).toEqual([]);
+  });
+
+  it("does not take the other member with it", () => {
+    const { store, mira, otto, conversation } = room();
+    store.setBowedOut(conversation.id, mira.id, true);
+
+    expect(store.bowedOut(conversation.id)).not.toContain(otto.id);
+    expect(store.isMember(conversation.id, mira.id)).toBe(true);
+  });
+
+  it("stops being anybody's problem once they leave the room", () => {
+    const { store, mira, conversation } = room();
+    store.setBowedOut(conversation.id, mira.id, true);
+    store.removeMember(conversation.id, mira.id);
+
+    expect(store.bowedOut(conversation.id)).toEqual([]);
+  });
+});
