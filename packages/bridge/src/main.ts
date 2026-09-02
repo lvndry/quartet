@@ -317,6 +317,26 @@ async function agentIdFor(webhookName: string): Promise<string | undefined> {
   return typeof agentId === "string" && agentId.length > 0 ? agentId : undefined;
 }
 
+/**
+ * What jazz says this webhook's agent is running, for the app header.
+ *
+ * Best-effort: an older jazz without `GET /agents`, a daemon that is not up yet, or a
+ * webhook with no agent recorded on file all just mean the header omits the line rather
+ * than the app failing to start over it.
+ */
+async function currentModel(daemon: QuartetConfig["daemon"]): Promise<string | undefined> {
+  if (daemon === undefined) return undefined;
+  const agentId = await agentIdFor(daemon.webhook);
+  if (agentId === undefined) return undefined;
+  const listing = await fetchJazzAgents(daemon.url);
+  if (listing.kind !== "ok") return undefined;
+  const agent = listing.agents.find((candidate) => candidate.id === agentId);
+  if (agent === undefined || (agent.provider === undefined && agent.model === undefined)) {
+    return undefined;
+  }
+  return describeModel(agent);
+}
+
 async function connect(): Promise<void> {
   const level = parseLogLevel(argValue("log-level"));
   if (level !== undefined) setLogLevel(level);
@@ -363,7 +383,8 @@ async function connect(): Promise<void> {
     );
   }
 
-  const bridge = new Bridge(hubUrl, daemon, new Attestor(keypair));
+  const myModel = await currentModel(daemon);
+  const bridge = new Bridge(hubUrl, daemon, new Attestor(keypair), undefined, myModel);
   await bridge.start();
 
   const localToken = config.localToken ?? crypto.randomUUID().replaceAll("-", "");

@@ -75,6 +75,8 @@ export interface Aside {
 export interface BridgeState {
   readonly connectedToHub: boolean;
   readonly me?: Agent;
+  /** `provider/model` for the jazz agent answering on this machine, when jazz will say. */
+  readonly myModel?: string;
   readonly connections: Connection[];
   readonly conversations: Conversation[];
   readonly invites: Invite[];
@@ -179,6 +181,7 @@ export class Bridge {
     private readonly daemon: DaemonSettings,
     private readonly attestor: Attestor,
     private readonly known: KnownKeys = new KnownKeys(),
+    private readonly myModel?: string,
   ) {}
 
   async start(): Promise<void> {
@@ -211,6 +214,7 @@ export class Bridge {
     return {
       connectedToHub: this.connectedToHub,
       ...(this.me !== undefined ? { me: this.me } : {}),
+      ...(this.myModel !== undefined ? { myModel: this.myModel } : {}),
       connections: this.connections,
       conversations: this.conversations,
       invites: this.invites,

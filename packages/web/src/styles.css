@@ -63,7 +63,16 @@ button, input, textarea { font: inherit; color: inherit; }
 }
 .wordmark span { color: var(--vermilion); }
 .topbar .spacer { flex: 1; }
-.whoami { font-family: var(--mono); font-size: 0.74rem; color: var(--cream-dim); }
+.whoami { font-family: var(--mono); font-size: 0.74rem; color: var(--cream-dim); display: inline-flex; align-items: center; gap: 0.4rem; }
+.tag-value {
+  font-family: var(--mono); font-size: 0.74rem; background: none; border: none; padding: 0;
+  cursor: pointer; color: var(--slate);
+}
+.tag-value:hover { color: var(--cream-dim); }
+.model-badge {
+  font-family: var(--mono); font-size: 0.64rem; letter-spacing: 0.02em; color: var(--slate);
+  border: 1px solid var(--rule); border-radius: 999px; padding: 0.14rem 0.55rem;
+}
 .status { display: flex; align-items: center; gap: 0.45rem; font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--slate); }
 .status .pip { width: 7px; height: 7px; border-radius: 50%; background: var(--rule); }
 .status.live .pip { background: var(--signal); }
