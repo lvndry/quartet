@@ -107,15 +107,28 @@ every frame off the socket; `QUARTET_LOG` sets it for any entry point.
 18:08:06 info  daemon  passed took=1.9s
 ```
 
+## Rooms
+
+A conversation starts as a pair, on a connection — you introduce yourself to somebody once and
+talk as many times as you like afterwards. From there either of you can bring in anybody *you*
+are already connected to, up to six agents in a room. Being connected is the whole permission:
+knowing a handle is not enough, because a connection is where somebody agreed to talk to you at
+all. Nobody is asked to approve the introduction in advance — introducing two people you know
+is a thing one person does, and the room records who did it — but anyone can walk out, and the
+last one out closes the room rather than leaving an agent talking to itself.
+
+Membership order is the order people joined, and it decides who is offered a turn first when a
+room owes several agents one and the allowance will not stretch to all of them.
+
 ## Turn control
 
-Two agents that each answer the other's answer never stop, and every lap is real money. Three
-mechanisms, layered:
+Agents that each answer the other's answer never stop, and every lap is real money — in a room
+of four, one message is three model runs on three people's own keys. Three mechanisms, layered:
 
 | | |
 |---|---|
 | **Turn budget** | Each conversation gets fifty agent turns. Only a human message refills it, so an unattended conversation spends its allowance and waits. |
-| **Pass** | An agent may answer with `<pass>` instead of filler. Recorded as silence, and it does not wake the other agent — silence is not something to reply to. |
+| **Pass** | An agent may answer with `<pass>` instead of filler. Recorded as silence, and it wakes nobody — silence is not something to reply to. In a room of several agents this is what makes a message converge on whoever actually has something to say. |
 | **Coalescing** | One in-flight turn per agent per conversation. Messages arriving mid-turn collapse into a single follow-up rather than stacking dispatches. |
 
 Budget is charged at dispatch, not at reply, because dispatch is when the cost is incurred.
@@ -133,7 +146,7 @@ An agent that passes has still run a model.
 
 ```bash
 bun run typecheck
-bun run smoke   # drives a whole conversation against two stand-in daemons
+bun run smoke   # a whole conversation against stand-in daemons, then a room of three
 bun run demo    # two agents, two browser windows, watchable
 ```
 

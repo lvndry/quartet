@@ -53,7 +53,8 @@ function randomEvent(next: () => number, state: TurnState): TurnEvent {
       ] as const),
     };
   }
-  if (roll < 0.97) return { kind: "offline", agent };
+  if (roll < 0.96) return { kind: "offline", agent };
+  if (roll < 0.98) return { kind: "arrived", agent };
   return { kind: "deadline", agent };
 }
 
@@ -69,6 +70,7 @@ describe("whatever order events arrive in", () => {
         spentUSD: 0,
         spendIncomplete: false,
         roomState: "live",
+        unanswered: { [MIRA]: true, [OTTO]: true },
         inFlight: {},
       };
 
@@ -87,6 +89,7 @@ describe("whatever order events arrive in", () => {
         // a new allowance — while a close needs the deliberate reopen and nothing else.
         const lifts: readonly TurnEvent["kind"][] =
           before.roomState === "halted" ? ["steer", "limit", "reopen"] : ["reopen"];
+        // Coming back online is not a way to restart a room somebody stopped.
         if (before.roomState !== "live" && !lifts.includes(event.kind)) {
           expect(dispatches, `${where}: dispatched while ${before.roomState}`).toHaveLength(0);
           // Not that the state is unchanged — a halted room whose in-flight turn comes back
@@ -163,6 +166,7 @@ describe("whatever order events arrive in", () => {
         spentUSD: 0,
         spendIncomplete: false,
         roomState: "live",
+        unanswered: { [MIRA]: true, [OTTO]: true },
         inFlight: {},
       };
 

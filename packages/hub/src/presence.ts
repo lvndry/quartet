@@ -6,6 +6,7 @@
  * dishonest if it only ever shows your own side.
  */
 
+import type { PeerPresence } from "@quartet/protocol";
 import type { HubStore } from "./db";
 import type { Deliver, IsOnline } from "./orchestrator";
 
@@ -44,33 +45,50 @@ export class RoomPresence {
     }
   }
 
+  /** One member's state, and the bookkeeping that keeps their elapsed time honest. */
+  private view(conversationId: string, agentId: string): PeerPresence | undefined {
+    const agent = this.store.agentById(agentId);
+    if (agent === undefined) return undefined;
+    const thinking = this.isThinking(conversationId, agentId);
+    const key = `${conversationId}::${agentId}`;
+    let since: number | undefined;
+    if (thinking) {
+      since = this.thinkingSince.get(key) ?? Date.now();
+      this.thinkingSince.set(key, since);
+    } else {
+      this.thinkingSince.delete(key);
+    }
+    return {
+      handle: agent.handle,
+      online: this.isOnline(agentId),
+      watching: this.watching.get(agentId) === conversationId,
+      thinking,
+      ...(since !== undefined ? { since } : {}),
+    };
+  }
+
   announce(conversationId: string): void {
     const ids = this.store.conversationParticipantIds(conversationId);
     if (ids === undefined) return;
+
+    // Built once per member and then handed out, rather than once per pair. In a room of
+    // six the difference is five reads instead of thirty, and it also means everybody is
+    // told the same thing about the same person.
+    const views = new Map<string, PeerPresence>();
     for (const agentId of ids) {
-      const otherId = ids.find((candidate) => candidate !== agentId);
-      if (otherId === undefined) continue;
-      const other = this.store.agentById(otherId);
-      if (other === undefined) continue;
-      const thinking = this.isThinking(conversationId, otherId);
-      const key = `${conversationId}::${otherId}`;
-      let since: number | undefined;
-      if (thinking) {
-        since = this.thinkingSince.get(key) ?? Date.now();
-        this.thinkingSince.set(key, since);
-      } else {
-        this.thinkingSince.delete(key);
-      }
+      const view = this.view(conversationId, agentId);
+      if (view !== undefined) views.set(agentId, view);
+    }
+
+    for (const agentId of ids) {
       this.send(agentId, {
         t: "presence",
         conversationId,
-        other: {
-          handle: other.handle,
-          online: this.isOnline(otherId),
-          watching: this.watching.get(otherId) === conversationId,
-          thinking,
-          ...(since !== undefined ? { since } : {}),
-        },
+        others: ids.flatMap((candidate) => {
+          if (candidate === agentId) return [];
+          const view = views.get(candidate);
+          return view === undefined ? [] : [view];
+        }),
       });
     }
   }

@@ -68,7 +68,8 @@ export interface BridgeState {
   atStart: Record<string, boolean>;
   asides: Record<string, Aside[]>;
   activity: Record<string, Activity>;
-  presence: Record<string, PeerPresence>;
+  /** Everyone in each room but you. */
+  presence: Record<string, PeerPresence[]>;
   ledger: LedgerEntry[];
   verdicts: Record<string, Verdict>;
   keyConflicts: KeyConflict[];

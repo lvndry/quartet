@@ -213,3 +213,154 @@ describe("opening a database written by an older build", () => {
     await rm(workDir, { recursive: true, force: true });
   });
 });
+
+describe("whether a room owes an agent a turn", () => {
+  function room() {
+    const store = new HubStore(":memory:");
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    if (mira === undefined || otto === undefined) throw new Error("agents");
+    const connectionId = store.createConnection(mira.id, otto.id);
+    const conversation = store.createConversation(connectionId, "what is free will");
+    if (conversation === undefined) throw new Error("conversation");
+    const say = (agentId: string, kind: "agent" | "pass" | "system", text = "") => {
+      store.appendMessage({ conversationId: conversation.id, authorAgentId: agentId, kind, text });
+    };
+    return { store, mira, otto, conversation, say };
+  }
+
+  it("owes nobody anything in an empty room", () => {
+    const { store, mira, otto, conversation } = room();
+
+    expect(store.owesTurn(conversation.id, mira.id)).toBe(false);
+    expect(store.owesTurn(conversation.id, otto.id)).toBe(false);
+  });
+
+  it("owes the agent that was spoken to, and not the speaker", () => {
+    const { store, mira, otto, conversation, say } = room();
+    say(mira.id, "agent", "free will is compatible with determinism");
+
+    expect(store.owesTurn(conversation.id, otto.id)).toBe(true);
+    expect(store.owesTurn(conversation.id, mira.id)).toBe(false);
+  });
+
+  it("stops owing once the agent has spoken", () => {
+    const { store, mira, otto, conversation, say } = room();
+    say(mira.id, "agent", "a claim");
+    say(otto.id, "agent", "a rebuttal");
+
+    expect(store.owesTurn(conversation.id, otto.id)).toBe(false);
+    expect(store.owesTurn(conversation.id, mira.id)).toBe(true);
+  });
+
+  it("treats a pass as an answer, because it was a deliberate one", () => {
+    const { store, mira, otto, conversation, say } = room();
+    say(mira.id, "agent", "a claim");
+    say(otto.id, "pass");
+
+    // Otto ran a model and chose to say nothing. Asking again on reconnect would spend
+    // another turn re-deciding the same silence.
+    expect(store.owesTurn(conversation.id, otto.id)).toBe(false);
+  });
+
+  it("does not treat the other side's pass as something to answer", () => {
+    const { store, mira, otto, conversation, say } = room();
+    say(mira.id, "pass");
+
+    expect(store.owesTurn(conversation.id, otto.id)).toBe(false);
+  });
+
+  it("does not treat the room talking about itself as something to answer", () => {
+    const { store, mira, otto, conversation, say } = room();
+    say(mira.id, "system", "no answer in time");
+
+    expect(store.owesTurn(conversation.id, otto.id)).toBe(false);
+  });
+
+  it("still owes a turn when a system note lands after the message", () => {
+    const { store, mira, otto, conversation, say } = room();
+    say(mira.id, "agent", "a claim");
+    say(mira.id, "system", "stopped");
+
+    expect(store.owesTurn(conversation.id, otto.id)).toBe(true);
+  });
+});
+
+describe("who is in a room", () => {
+  function trio() {
+    const store = new HubStore(":memory:");
+    const made = ["mira", "otto", "nia"].map((handle) =>
+      store.createAgent({ handle, displayName: handle }),
+    );
+    const [mira, otto, nia] = made;
+    if (mira === undefined || otto === undefined || nia === undefined) throw new Error("agents");
+    const connectionId = store.createConnection(mira.id, otto.id);
+    const conversation = store.createConversation(
+      connectionId,
+      "what is free will",
+      undefined,
+      mira.id,
+    );
+    if (conversation === undefined) throw new Error("conversation");
+    return { store, mira, otto, nia, conversation };
+  }
+
+  it("starts a room with both ends of the connection it grew from", () => {
+    const { store, mira, otto, conversation } = trio();
+
+    expect(store.conversationParticipantIds(conversation.id)).toEqual([mira.id, otto.id]);
+    expect(conversation.participants).toEqual(["mira", "otto"]);
+  });
+
+  it("grows, and the newcomer sees the room in their own list", () => {
+    const { store, nia, conversation } = trio();
+    expect(store.conversationsFor(nia.id)).toHaveLength(0);
+
+    store.addMember(conversation.id, nia.id);
+
+    expect(store.conversationsFor(nia.id).map((room) => room.id)).toEqual([conversation.id]);
+    expect(store.conversation(conversation.id)?.participants).toEqual(["mira", "otto", "nia"]);
+  });
+
+  it("orders members by when they joined, which is the order turns are offered in", () => {
+    const { store, mira, otto, nia, conversation } = trio();
+    store.addMember(conversation.id, nia.id);
+
+    expect(store.conversationParticipantIds(conversation.id)).toEqual([mira.id, otto.id, nia.id]);
+  });
+
+  it("shrinks, and the leaver stops seeing it", () => {
+    const { store, otto, conversation } = trio();
+    store.removeMember(conversation.id, otto.id);
+
+    expect(store.isMember(conversation.id, otto.id)).toBe(false);
+    expect(store.conversationsFor(otto.id)).toHaveLength(0);
+    expect(store.conversation(conversation.id)?.participants).toEqual(["mira"]);
+  });
+
+  it("gives up a turn owed to somebody who has left", () => {
+    const { store, otto, conversation } = trio();
+    store.saveInFlight(conversation.id, otto.id, { pending: false, steered: false });
+
+    store.removeMember(conversation.id, otto.id);
+
+    expect(store.allInFlight()).toHaveLength(0);
+  });
+
+  it("adding somebody twice is not two memberships", () => {
+    const { store, nia, conversation } = trio();
+    store.addMember(conversation.id, nia.id);
+    store.addMember(conversation.id, nia.id);
+
+    expect(store.conversationParticipantIds(conversation.id)).toHaveLength(3);
+  });
+
+  it("tells a room with nobody left apart from one that does not exist", () => {
+    const { store, mira, otto, conversation } = trio();
+    store.removeMember(conversation.id, mira.id);
+    store.removeMember(conversation.id, otto.id);
+
+    expect(store.conversationParticipantIds(conversation.id)).toEqual([]);
+    expect(store.conversationParticipantIds("cnv_nonexistent")).toBeUndefined();
+  });
+});

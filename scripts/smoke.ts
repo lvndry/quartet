@@ -16,7 +16,16 @@ import { join } from "node:path";
 import { Bridge } from "../packages/bridge/src/bridge";
 import { readLedger } from "../packages/bridge/src/ledger";
 import { PASS_SENTINEL } from "../packages/protocol/src/index";
-import { generateKeypair, signClaim, tag, type Keypair } from "../packages/identity/src/index";
+import {
+  generateKeypair,
+  linkAfter,
+  newNonce,
+  signChallenge,
+  signClaim,
+  signMessage,
+  tag,
+  type Keypair,
+} from "../packages/identity/src/index";
 import { Attestor } from "../packages/bridge/src/attest";
 import { Journal } from "../packages/bridge/src/journal";
 import { KnownKeys } from "../packages/bridge/src/known";
@@ -132,9 +141,10 @@ const hub = Bun.spawn({
     ...process.env,
     PORT: String(HUB_PORT),
     QUARTET_DB: join(workDir, "hub.sqlite"),
-    // This run claims a handful of handles, several of them deliberately bad ones. The real
-    // ceiling is exercised on its own below rather than by letting it trip mid-scenario.
-    QUARTET_REGISTRATION_BURST: "8",
+    // This run claims four handles and makes several deliberately bad claims, and every
+    // request costs a token whether it is accepted or not. The real ceiling is exercised on
+    // its own below rather than by letting it trip mid-scenario.
+    QUARTET_REGISTRATION_BURST: "12",
   },
   stdout: "pipe",
   stderr: "pipe",
@@ -192,6 +202,13 @@ const keyA = generateKeypair();
 const keyB = generateKeypair();
 await register("mira", keyA);
 await register("otto", keyB);
+// @nia and @ada are not needed until the room section far below, but they claim their
+// handles here: the ceiling test just underneath drains the registration bucket on purpose,
+// and it stays drained for the rest of the run.
+const keyNia = generateKeypair();
+const keyAda = generateKeypair();
+await register("nia", keyNia);
+await register("ada", keyAda);
 check(keyA.did !== keyB.did, "two agents claimed handles with keys of their own");
 
 check((await claim("mira", generateKeypair())).status === 409, "a taken handle is refused");
@@ -308,10 +325,13 @@ check(
 bridgeA.send({ t: "watch", conversationId });
 await waitFor(
   "@otto to see @mira watching",
-  () => stateB.presence[conversationId]?.watching === true,
+  () => stateB.presence[conversationId]?.[0]?.watching === true,
 );
-check(stateB.presence[conversationId]?.online === true, "@mira shows as online in the room");
-check(stateB.presence[conversationId]?.watching === true, "@otto can see @mira is watching");
+// One other party in a two-party room, so the list has exactly one entry in it.
+const miraInTheRoom = stateB.presence[conversationId]?.[0];
+check(stateB.presence[conversationId]?.length === 1, "the room reports exactly one other party");
+check(miraInTheRoom?.online === true, "@mira shows as online in the room");
+check(miraInTheRoom?.watching === true, "@otto can see @mira is watching");
 
 await waitFor(
   "both agents to speak and one to pass",
@@ -517,6 +537,190 @@ if (genuine !== undefined) {
   const { signature: _dropped, ...unsigned } = genuine;
   check(judge(unsigned) === "broken", "a line stripped of its signature is caught, not shrugged at");
 }
+
+
+/* ---------------------------------------------------------------------------------- */
+/* A room is not a pair                                                               */
+/* ---------------------------------------------------------------------------------- */
+
+/**
+ * A third party on a bare socket, no bridge and no daemon.
+ *
+ * What is on trial in this section is the hub's frame handlers — who may join a room, who a
+ * message wakes, what happens as people leave. None of that needs a model behind it, and a
+ * socket speaking the protocol directly is the shortest way to ask. @mira and @otto are
+ * still real bridges, so the membership change has to reach those too.
+ */
+class Party {
+  readonly frames: { t: string; [key: string]: unknown }[] = [];
+  private socket!: WebSocket;
+  /** This party's own signing chain, one link per room. */
+  private readonly chain = new Map<string, string>();
+
+  constructor(
+    readonly handle: string,
+    private readonly keypair: Keypair,
+  ) {}
+
+  async join(): Promise<void> {
+    this.socket = new WebSocket(`${hubUrl.replace("http", "ws")}/socket`);
+    // Listening before the open await, because the hub challenges the moment the socket is
+    // up and a listener attached afterwards can miss it.
+    const answered = new Promise<void>((resolve) => {
+      this.socket.addEventListener("message", (event) => {
+        const frame = JSON.parse(String(event.data)) as {
+          t: string;
+          conversationId?: string;
+          nonce?: string;
+        };
+        this.frames.push(frame);
+        if (frame.t === "challenge" && frame.nonce !== undefined) {
+          this.send({
+            t: "hello",
+            did: this.keypair.did,
+            challenge: frame.nonce,
+            signature: signChallenge(this.keypair.did, frame.nonce, this.keypair.privateKey),
+          });
+          resolve();
+          return;
+        }
+        // Answer every turn, with nothing. One turn is in flight per agent at a time, so a
+        // party that took its turn and never settled it would quietly stop being dispatched
+        // to — and every later assertion about being woken would fail for that reason rather
+        // than the one it was testing. A pass is the cheapest way to be well behaved.
+        if (frame.t === "turn" && frame.conversationId !== undefined) {
+          this.pass(frame.conversationId);
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      this.socket.addEventListener("open", () => resolve());
+      this.socket.addEventListener("error", () => reject(new Error(`@${this.handle} could not connect`)));
+    });
+    await answered;
+    cleanups.push(() => this.socket.close());
+  }
+
+  /** A pass is this agent's silence, so the hub wants it signed like speech. */
+  private pass(conversationId: string): void {
+    const authoredAt = new Date().toISOString();
+    const nonce = newNonce();
+    const prev = this.chain.get(conversationId) ?? "";
+    const signature = signMessage(
+      { did: this.keypair.did, conversationId, kind: "pass", authoredAt, nonce, prev, text: "" },
+      this.keypair.privateKey,
+    );
+    this.chain.set(conversationId, linkAfter(signature));
+    this.send({
+      t: "pass",
+      conversationId,
+      authorship: { authoredAt, nonce, prev, signature },
+    });
+  }
+
+  send(frame: Record<string, unknown>): void {
+    this.socket.send(JSON.stringify(frame));
+  }
+
+  last<T>(kind: string): T | undefined {
+    return [...this.frames].reverse().find((frame) => frame.t === kind) as T | undefined;
+  }
+
+  count(kind: string): number {
+    return this.frames.filter((frame) => frame.t === kind).length;
+  }
+}
+
+// @nia is connected to @mira but has never met @otto. @ada is connected to nobody.
+const nia = new Party("nia", keyNia);
+const ada = new Party("ada", keyAda);
+await nia.join();
+await ada.join();
+
+bridgeA.send({ t: "invite.send", toHandle: "nia", purpose: "sanity-check the venue", limit: { kind: "turns", turns: 20 } });
+await waitFor("the invite to reach @nia", () => nia.count("invite") > 0);
+const niaInvite = nia.last<{ invite: { id: string } }>("invite");
+nia.send({ t: "invite.respond", inviteId: niaInvite?.invite.id ?? "", accept: true });
+await waitFor("@nia to be connected", () => nia.count("connected") > 0);
+
+const niaTurnsBeforeJoining = nia.count("turn");
+bridgeA.send({ t: "conversation.add", conversationId, handle: "nia" });
+await waitFor(
+  "the room to grow",
+  () => (stateB.conversations.find((room) => room.id === conversationId)?.participants.length ?? 0) === 3,
+  10_000,
+  () => stateB.conversations.find((room) => room.id === conversationId)?.participants,
+);
+check(
+  (stateB.conversations.find((room) => room.id === conversationId)?.participants ?? []).includes("nia"),
+  "a third agent can be brought into a room over the wire",
+);
+check(
+  nia.count("welcome") === 2,
+  "and is sent the room and the history it missed, without asking for it",
+);
+const niaSees = nia.last<{ others: { handle: string }[] }>("presence")?.others ?? [];
+check(
+  niaSees.map((entry) => entry.handle).sort().join(",") === "mira,otto",
+  "presence names both of the others, including the one @nia had never met",
+);
+check(
+  nia.count("turn") > niaTurnsBeforeJoining,
+  "the newcomer is asked for a turn, having heard none of it",
+);
+
+// The rule the whole introduction model rests on: a connection is where somebody agreed to
+// talk to you, and knowing a handle is not a substitute for having one.
+ada.send({ t: "conversation.add", conversationId, handle: "mira" });
+await waitFor("@ada to be refused", () => ada.count("error") > 0);
+check(
+  String(ada.last<{ detail: string }>("error")?.detail ?? "").includes("not in that conversation"),
+  "somebody outside a room cannot add to it",
+);
+nia.send({ t: "conversation.add", conversationId, handle: "ada" });
+await waitFor("the unconnected add to be refused", () => nia.count("error") > 0);
+check(
+  String(nia.last<{ detail: string }>("error")?.detail ?? "").includes("not connected"),
+  "and @ada cannot be brought in by somebody who has never been introduced to her",
+);
+
+// One message, three agents: the two who did not speak are both woken, and the speaker is
+// not asked to answer itself.
+const beforeSay = { otto: daemonB.calls.length, nia: nia.count("turn") };
+bridgeA.nudge(conversationId, "confirm the venue with both of them");
+await waitFor(
+  "both of the others to be asked for a turn",
+  () => daemonB.calls.length > beforeSay.otto && nia.count("turn") > beforeSay.nia,
+  20_000,
+  () => ({ otto: daemonB.calls.length - beforeSay.otto, nia: nia.count("turn") - beforeSay.nia }),
+);
+check(
+  daemonB.calls.length > beforeSay.otto && nia.count("turn") > beforeSay.nia,
+  "a message in a room of three wakes both of the others",
+);
+
+nia.send({ t: "conversation.leave", conversationId });
+await waitFor(
+  "the room to shrink",
+  () => (stateB.conversations.find((room) => room.id === conversationId)?.participants.length ?? 0) === 2,
+  10_000,
+);
+check(
+  stateB.conversations.find((room) => room.id === conversationId)?.state === "live",
+  "somebody walking out of a room of three leaves it running",
+);
+
+bridgeA.send({ t: "conversation.leave", conversationId });
+await waitFor(
+  "the room to close behind the last of them",
+  () => stateB.conversations.find((room) => room.id === conversationId)?.state === "closed",
+  10_000,
+  () => stateB.conversations.find((room) => room.id === conversationId)?.state,
+);
+check(
+  stateB.conversations.find((room) => room.id === conversationId)?.state === "closed",
+  "and the last one out closes it rather than leaving an agent talking to nobody",
+);
 
 bridgeA.stop();
 bridgeB.stop();

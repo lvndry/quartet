@@ -20,7 +20,7 @@ function setup() {
     },
     (agentId) => online.has(agentId),
   );
-  return { store, mira, otto, conversation, frames, orchestrator };
+  return { store, mira, otto, conversation, frames, orchestrator, online };
 }
 
 describe("orchestrator write path", () => {
@@ -142,5 +142,172 @@ describe("a hub that restarts mid-turn", () => {
     revived.orchestrator.reopen(conversation.id);
     revived.orchestrator.onNudge(conversation.id, otto.id, "actually, one more thing");
     expect(revived.frames.filter((frame) => frame.t === "turn")).toHaveLength(1);
+  });
+});
+
+describe("an agent whose bridge was down", () => {
+  it("answers the message it missed once it reconnects", () => {
+    const { store, mira, otto, conversation, frames, orchestrator, online } = setup();
+    online.delete(otto.id);
+
+    const said = store.appendMessage({
+      conversationId: conversation.id,
+      authorAgentId: mira.id,
+      kind: "agent",
+      text: "free will is compatible with determinism",
+    });
+    if (said === undefined) throw new Error("message");
+    const before = store.budget(conversation.id);
+    orchestrator.onMessage(conversation.id, mira.id, said);
+
+    // Nothing was dispatched and nothing was charged: there was no socket to dispatch to.
+    expect(frames.filter((frame) => frame.t === "turn")).toHaveLength(0);
+    expect(store.budget(conversation.id)).toBe(before);
+
+    online.add(otto.id);
+    orchestrator.replayTurns(otto.id);
+    orchestrator.onArrived(otto.id);
+
+    const turns = frames.filter((frame) => frame.t === "turn");
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({ conversationId: conversation.id });
+    expect(store.budget(conversation.id)).toBe(before - 1);
+  });
+
+  it("does not ask twice when it reconnects again", () => {
+    const { store, mira, otto, conversation, frames, orchestrator, online } = setup();
+    online.delete(otto.id);
+    const said = store.appendMessage({
+      conversationId: conversation.id,
+      authorAgentId: mira.id,
+      kind: "agent",
+      text: "a claim",
+    });
+    if (said === undefined) throw new Error("message");
+    orchestrator.onMessage(conversation.id, mira.id, said);
+
+    online.add(otto.id);
+    orchestrator.onArrived(otto.id);
+    const charged = store.budget(conversation.id);
+
+    // A flapping connection must not spend a turn per reconnect. The first turn is still in
+    // flight, so this is replayTurns' business, not a fresh dispatch.
+    orchestrator.onArrived(otto.id);
+    expect(store.budget(conversation.id)).toBe(charged);
+    expect(frames.filter((frame) => frame.t === "turn")).toHaveLength(1);
+  });
+
+  it("asks for nothing when the room was already up to date", () => {
+    const { otto, frames, orchestrator } = setup();
+    orchestrator.onArrived(otto.id);
+
+    expect(frames.filter((frame) => frame.t === "turn")).toHaveLength(0);
+  });
+
+  it("leaves a closed room closed when somebody comes back to it", () => {
+    const { store, mira, otto, conversation, frames, orchestrator, online } = setup();
+    online.delete(otto.id);
+    const said = store.appendMessage({
+      conversationId: conversation.id,
+      authorAgentId: mira.id,
+      kind: "agent",
+      text: "settled, then. bye",
+    });
+    if (said === undefined) throw new Error("message");
+    orchestrator.onMessage(conversation.id, mira.id, said);
+    orchestrator.closeWith(conversation.id, mira.id, said);
+
+    online.add(otto.id);
+    orchestrator.onArrived(otto.id);
+
+    expect(frames.filter((frame) => frame.t === "turn")).toHaveLength(0);
+    expect(store.roomState(conversation.id)).toBe("closed");
+  });
+});
+
+describe("a room somebody was brought into", () => {
+  function trio() {
+    const base = setup();
+    const nia = base.store.createAgent({ handle: "nia", displayName: "Nia" });
+    if (nia === undefined) throw new Error("agent");
+    base.online.add(nia.id);
+    return { ...base, nia };
+  }
+
+  const dispatchedTo = (frames: ServerFrame[]) =>
+    frames.filter((frame) => frame.t === "turn").length;
+
+  it("wakes both of the others when one agent speaks", () => {
+    const { store, mira, conversation, frames, orchestrator, nia } = trio();
+    store.addMember(conversation.id, nia.id);
+    const before = store.budget(conversation.id);
+
+    const said = store.appendMessage({
+      conversationId: conversation.id,
+      authorAgentId: mira.id,
+      kind: "agent",
+      text: "free will is compatible with determinism",
+    });
+    if (said === undefined) throw new Error("message");
+    orchestrator.onMessage(conversation.id, mira.id, said);
+
+    expect(dispatchedTo(frames)).toBe(2);
+    expect(store.budget(conversation.id)).toBe(before - 2);
+  });
+
+  it("asks the newcomer for a turn, since they have heard none of it", () => {
+    const { store, mira, conversation, frames, orchestrator, nia } = trio();
+    const said = store.appendMessage({
+      conversationId: conversation.id,
+      authorAgentId: mira.id,
+      kind: "agent",
+      text: "a claim",
+    });
+    if (said === undefined) throw new Error("message");
+    orchestrator.onMessage(conversation.id, mira.id, said);
+    const dispatchedBefore = dispatchedTo(frames);
+
+    store.addMember(conversation.id, nia.id);
+    orchestrator.onJoined(conversation.id, nia.id);
+
+    expect(dispatchedTo(frames)).toBe(dispatchedBefore + 1);
+  });
+
+  it("closes the room when leaving would leave one agent on its own", () => {
+    const { store, otto, conversation, orchestrator } = trio();
+    store.removeMember(conversation.id, otto.id);
+    orchestrator.onLeft(conversation.id, otto.id);
+
+    expect(store.roomState(conversation.id)).toBe("closed");
+  });
+
+  it("keeps a three-way room running when one of them walks out", () => {
+    const { store, otto, conversation, orchestrator, nia } = trio();
+    store.addMember(conversation.id, nia.id);
+
+    store.removeMember(conversation.id, otto.id);
+    orchestrator.onLeft(conversation.id, otto.id);
+
+    expect(store.roomState(conversation.id)).toBe("live");
+    expect(store.conversationParticipantIds(conversation.id)).toHaveLength(2);
+  });
+
+  it("stops dispatching to somebody who has left", () => {
+    const { store, mira, otto, conversation, frames, orchestrator, nia } = trio();
+    store.addMember(conversation.id, nia.id);
+    store.removeMember(conversation.id, otto.id);
+    orchestrator.onLeft(conversation.id, otto.id);
+
+    const said = store.appendMessage({
+      conversationId: conversation.id,
+      authorAgentId: mira.id,
+      kind: "agent",
+      text: "still here?",
+    });
+    if (said === undefined) throw new Error("message");
+    frames.length = 0;
+    orchestrator.onMessage(conversation.id, mira.id, said);
+
+    expect(dispatchedTo(frames)).toBe(1);
   });
 });
