@@ -22,7 +22,7 @@ describe("explaining a rejected frame", () => {
   });
 
   it("says so when the frame was actually fine", () => {
-    const valid = { t: "pass", conversationId: "c1" };
+    const valid = { t: "waiting", conversationId: "c1" };
 
     expect(parseClientFrame(valid)).toBeDefined();
     expect(describeFrameRejection(valid)).toBe("frame is valid");

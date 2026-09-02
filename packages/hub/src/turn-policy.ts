@@ -27,6 +27,8 @@ export interface InFlight {
   readonly steered: boolean;
   /** An instruction that arrived mid-turn, carried to the follow-up. Latest wins. */
   readonly queuedSteer?: string;
+  /** The steer this in-flight turn was dispatched with, so a reconnect can replay it. */
+  readonly dispatchSteer?: string;
 }
 
 export interface TurnState {
@@ -131,7 +133,11 @@ function poke(state: TurnState, agent: AgentId, steer?: string): Decision {
     turnsLeft: Math.max(0, state.turnsLeft - 1),
     inFlight: {
       ...state.inFlight,
-      [agent]: { pending: false, steered: steer !== undefined },
+      [agent]: {
+        pending: false,
+        steered: steer !== undefined,
+        ...(steer !== undefined ? { dispatchSteer: steer } : {}),
+      },
     },
   };
   const notice = noticeFor(charged);
@@ -236,12 +242,12 @@ export function decide(state: TurnState, event: TurnEvent): Decision {
     }
 
     case "limit": {
-      // Raising a ceiling tops the remaining turns up to match, so a conversation that has
-      // just gone quiet is usable again at once. A money ceiling keeps a turn count as the
-      // fallback for when spend turns out to be unpriced.
+      // Choosing an allowance grants exactly that, up or down: raising it makes a quiet room
+      // usable again, and lowering it takes effect now rather than after the old one drains.
+      // A money ceiling keeps a turn count as the fallback for when spend is unpriced.
       const turnsLeft =
         event.limit.kind === "turns"
-          ? Math.max(state.turnsLeft, event.limit.turns)
+          ? event.limit.turns
           : event.limit.kind === "cost"
             ? Math.max(state.turnsLeft, DEFAULT_TURN_BUDGET)
             : state.turnsLeft;

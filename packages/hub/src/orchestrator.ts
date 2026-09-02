@@ -23,6 +23,9 @@ const TRANSCRIPT_WINDOW = 40;
  */
 const TURN_DEADLINE_MS = 180_000;
 
+/** A parked tool waits on a person, not on the model. Three minutes is not enough. */
+const APPROVAL_DEADLINE_MS = 15 * 60_000;
+
 export type Deliver = (agentId: string, frame: ServerFrame) => void;
 export type IsOnline = (agentId: string) => boolean;
 
@@ -61,6 +64,7 @@ export class Orchestrator {
   private write(conversationId: string, state: TurnState): void {
     this.store.setBudget(conversationId, state.turnsLeft);
     this.store.setStopped(conversationId, state.stopped);
+    this.store.setSpend(conversationId, state.spentUSD, state.spendIncomplete);
     this.turns.set(conversationId, state.inFlight);
   }
 
@@ -112,7 +116,7 @@ export class Orchestrator {
     }
   }
 
-  private armDeadline(conversationId: string, agentId: string): void {
+  private armDeadline(conversationId: string, agentId: string, ms: number = TURN_DEADLINE_MS): void {
     const key = Orchestrator.timerKey(conversationId, agentId);
     clearTimeout(this.timers.get(key));
     this.timers.set(
@@ -120,7 +124,7 @@ export class Orchestrator {
       setTimeout(() => {
         this.timers.delete(key);
         this.apply(conversationId, { kind: "deadline", agent: agentId });
-      }, TURN_DEADLINE_MS),
+      }, ms),
     );
   }
 
@@ -172,11 +176,31 @@ export class Orchestrator {
     this.apply(conversationId, { kind: "stop" });
   }
 
-  onDisconnect(agentId: string): void {
-    for (const conversationId of [...this.turns.keys()]) {
-      this.clearDeadline(conversationId, agentId);
-      this.apply(conversationId, { kind: "offline", agent: agentId });
+  /**
+   * A socket dropped. The turn stays in flight: a laptop sleep or a replaced
+   * connection must not eat a charged dispatch. The deadline still fires if they
+   * never come back. `replayTurns` re-delivers the work on the next hello.
+   */
+  onDisconnect(_agentId: string): void {}
+
+  /** Re-deliver every in-flight turn for this agent without charging again. */
+  replayTurns(agentId: string): void {
+    for (const [conversationId, inFlight] of this.turns) {
+      const entry = inFlight[agentId];
+      if (entry === undefined) continue;
+      this.run(conversationId, {
+        kind: "dispatch",
+        agent: agentId,
+        ...(entry.dispatchSteer !== undefined ? { steer: entry.dispatchSteer } : {}),
+      });
     }
+  }
+
+  /** The owner is deciding something; keep the turn, give them time. */
+  onWaiting(conversationId: string, agentId: string): void {
+    const inFlight = this.turns.get(conversationId);
+    if (inFlight?.[agentId] === undefined) return;
+    this.armDeadline(conversationId, agentId, APPROVAL_DEADLINE_MS);
   }
 
   announceBudget(conversationId: string): void {

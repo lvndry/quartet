@@ -44,13 +44,19 @@ function check(condition: boolean, message: string): void {
   console.log(`  ✓ ${message}`);
 }
 
-async function waitFor(what: string, predicate: () => boolean, timeoutMs = 15_000): Promise<void> {
+async function waitFor(
+  what: string,
+  predicate: () => boolean,
+  timeoutMs = 15_000,
+  describe?: () => unknown,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return;
     await Bun.sleep(50);
   }
-  fail(`timed out waiting for ${what}`);
+  const seen = describe === undefined ? "" : ` — saw ${JSON.stringify(describe())}`;
+  fail(`timed out waiting for ${what}${seen}`);
 }
 
 /**
@@ -76,7 +82,10 @@ function fakeDaemon(port: number, replies: string[]): { stop: () => void; calls:
         thread: request.headers.get("x-jazz-thread"),
         body: JSON.parse(await request.text()) as unknown,
       });
-      const answer = replies[index] ?? PASS_SENTINEL;
+      // Cycles rather than falling silent, so the only thing that can end a room here is the
+      // budget — an agent that runs out of script would end it by mutual silence instead and
+      // the exhaustion assertion below would pass without ever testing exhaustion.
+      const answer = replies[index % replies.length] ?? PASS_SENTINEL;
       index += 1;
       return new Response(JSON.stringify({ ok: true, answer }), {
         headers: { "content-type": "application/json" },
@@ -173,12 +182,14 @@ check(
   "@otto shows as online in @mira's directory",
 );
 
-// The invite carries the purpose line: it establishes the relationship and opens the first
-// conversation in one move, so the room is never empty and nobody races to speak first.
+const PURPOSE = "Can our agents find us a time to meet next week?";
+
+// The invite carries the topic. Accepting starts the inviter's agent with that as a steer —
+// the sentence itself must not appear in the room as if the agent said it.
 bridgeA.send({
   t: "invite.send",
   toHandle: "otto",
-  purpose: "Can our agents find us a time to meet next week?",
+  purpose: PURPOSE,
 });
 await waitFor("the invite to land with @otto", () => stateB.invites.length > 0);
 check(stateB.invites[0]?.fromHandle === "mira", "the invite reached @otto with its purpose line");
@@ -192,34 +203,41 @@ await waitFor("a conversation to exist on both sides", () =>
 const conversationId = stateA.conversations[0]?.id ?? fail("no conversation");
 check(true, "accepting the invite connected them and opened a conversation");
 
-// Now let the agents run. The budget is what makes this terminate rather than loop forever.
 await waitFor(
-  "the turn budget to run out",
-  () => (stateA.conversations[0]?.budgetRemaining ?? 99) <= 0,
+  "both agents to speak and one to pass",
+  () => {
+    const messages = stateA.messages[conversationId] ?? [];
+    return (
+      messages.some((message) => message.authorHandle === "mira" && message.kind === "agent") &&
+      messages.some((message) => message.authorHandle === "otto" && message.kind === "agent") &&
+      messages.some((message) => message.kind === "pass")
+    );
+  },
   30_000,
+  () => stateA.messages[conversationId]?.map((message) => `${message.authorHandle}:${message.kind}`),
 );
 
 const transcript = stateA.messages[conversationId] ?? [];
 check(transcript.length > 1, `the agents exchanged ${String(transcript.length)} messages`);
 check(
-  transcript.some((message) => message.authorHandle === "mira") &&
-    transcript.some((message) => message.authorHandle === "otto"),
-  "both agents spoke",
+  !transcript.some((message) => message.kind === "agent" && message.text === PURPOSE),
+  "the purpose was a steer, not an agent utterance in the room",
 );
 check(
   transcript.some((message) => message.kind === "pass"),
   "a pass was recorded as silence rather than as a message",
 );
-
-const spent = stateA.conversations[0]?.budgetRemaining ?? -1;
-check(spent === 0, "the conversation stopped when the budget ran out, rather than looping");
+const firstCall = daemonA.calls[0] as { body: { transcript: unknown[]; steer?: string } };
+check(
+  firstCall?.body.steer === PURPOSE,
+  "the inviter's agent was steered with the purpose before it spoke",
+);
 
 const beforeNudge = (stateA.messages[conversationId] ?? []).length;
 bridgeA.nudge(conversationId, "tell them the place on rue Oberkampf is fine");
-await waitFor("the nudge to refill the budget", () =>
-  (stateA.conversations[0]?.budgetRemaining ?? 0) > 0,
+await waitFor("the nudge to be kept locally", () =>
+  (stateA.asides[conversationId] ?? []).length === 1,
 );
-check(true, "a human message refilled the budget");
 check(
   (stateA.asides[conversationId] ?? []).length === 1,
   "the human aside was kept locally",
@@ -266,16 +284,10 @@ check(
     20_000,
   );
   await Bun.sleep(1500);
-  const mineAfter = (stateA.messages[conversationId] ?? []).filter(
-    (message) => message.authorHandle === "mira" && message.kind === "agent",
-  );
   const lastIsNotPostPass =
     (stateA.messages[conversationId] ?? []).at(-1)?.authorHandle !== "mira" ||
     (stateA.messages[conversationId] ?? []).at(-1)?.kind !== "agent";
-  check(
-    mineAfter.length >= 0 && lastIsNotPostPass !== undefined,
-    "a steered turn settles without @mira immediately speaking again",
-  );
+  check(lastIsNotPostPass, "a steered turn settles without @mira immediately speaking again");
 }
 
 // Thread keys are what keep two conversations with the same person from bleeding together.
@@ -285,13 +297,15 @@ check(
   "every turn used the conversation id as its jazz thread key",
 );
 
-const firstCall = daemonA.calls[0] as { body: { transcript: unknown[]; steer?: string } };
 check(Array.isArray(firstCall.body.transcript), "the daemon received a structured payload");
-const nudged = daemonA.calls.find((call) => (call as { body: { steer?: string } }).body.steer);
+const steersSeen = daemonA.calls
+  .map((call) => (call as { body: { steer?: string } }).body.steer)
+  .filter((steer): steer is string => steer !== undefined);
 check(
-  nudged !== undefined &&
-    (nudged as { body: { steer: string } }).body.steer.includes("Oberkampf"),
-  "the owner's steer reached their own agent on a separate field from the transcript",
+  steersSeen.some((steer) => steer.includes("Oberkampf")),
+  `the owner's steer reached their own agent on a separate field from the transcript${
+    steersSeen.some((steer) => steer.includes("Oberkampf")) ? "" : ` — saw ${JSON.stringify(steersSeen)}`
+  }`,
 );
 
 const ledger = await readLedger(conversationId);

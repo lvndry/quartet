@@ -93,19 +93,25 @@ describe("whatever order events arrive in", () => {
           expect(running.length, `${where}: ${agent} has ${String(running.length)} turns`).toBeLessThanOrEqual(1);
         }
 
-        // 4: the allowance falls only by dispatching. `steer` and `limit` deliberately top
-        // it up, so they are the two events allowed to move it the other way.
-        const topsUp = event.kind === "limit" || event.kind === "steer";
-        if (!topsUp) {
+        // 4: the allowance falls only by dispatching, except where a person sets it.
+        if (event.kind === "limit") {
+          // Choosing an allowance grants exactly that, up or down, minus anything dispatched
+          // in the same step.
+          if (event.limit.kind === "turns") {
+            expect(after.turnsLeft, `${where}: limit not granted outright`).toBe(
+              event.limit.turns - dispatches.length,
+            );
+          }
+        } else if (event.kind === "steer") {
+          expect(after.turnsLeft, `${where}: a steer took turns away`).toBeGreaterThanOrEqual(
+            before.turnsLeft - dispatches.length,
+          );
+        } else {
           const charged = before.turnsLeft - after.turnsLeft;
           expect(
             charged,
             `${where}: charged ${String(charged)} for ${String(dispatches.length)} dispatches`,
           ).toBe(Math.min(dispatches.length, before.turnsLeft));
-        } else {
-          expect(after.turnsLeft, `${where}: topping up went backwards`).toBeGreaterThanOrEqual(
-            before.turnsLeft - dispatches.length,
-          );
         }
 
         // 1: a dispatch only ever happens when the conversation could pay for it.

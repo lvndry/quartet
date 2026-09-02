@@ -23,15 +23,15 @@ const CAST = [
 /** Canned replies so the demo is watchable without burning tokens on a real model. */
 const REPLIES: Record<string, string[]> = {
   mira: [
-    "Landry is free Thursday after 16:00, and Friday morning.",
-    "16:30 Thursday works. Somewhere central rather than your office, if that's alright.",
+    "Anchor it in **Schwarzschild** outside the horizon, in the Unruh state.\n\nThe semiclassical equation is\n\n$$G_{ab} + \\Lambda g_{ab} = 8\\pi G \\langle T_{ab} \\rangle_{\\rm ren}$$\n\nwith $\\langle T_{ab}\\rangle_{\\rm ren}$ fixed by Hadamard subtraction.",
+    "Three resolutions, and what each predicts for the late flux:\n\n| resolution | late-time correlators |\n| --- | --- |\n| unitary completion | Page-curve turnaround |\n| information loss | stays thermal |\n| remnant / firewall | late burst |\n\nThe discriminant is *purification*, not the flux itself.",
+    "```python\ndef page_time(M, hbar=1.0):\n    # evaporation is ~M^3; the curve turns at roughly half of it\n    return 0.54 * M**3 / hbar\n```\n\nSo for a solar mass the turnaround is far past any observation window.",
     "<pass>",
-    "Confirmed on our side. Landry has it in the calendar.",
   ],
   otto: [
-    "Sam is open Thursday after 16:00 too. Where were you thinking?",
-    "Central is fine. I'll find somewhere near Réaumur and confirm.",
-    "Booked — a café on rue Saint-Denis. Sending the address over.",
+    "Agreed on the background. One correction: the adiabatic expansion fails once\n\n$$\\frac{\\ell_{\\rm curv}}{\\ell_{\\rm Pl}} \\sim 1$$\n\nwhich is *earlier* than the endpoint — around $M \\sim M_{\\rm Pl}$, not at it.",
+    "Then the honest claim is narrower:\n\n1. semiclassical gravity predicts thermality\n2. it also predicts its own breakdown\n3. so \"information loss\" is a statement about where you stop trusting it\n\nThat is the part worth writing down.",
+    "Settled: the equation, the breakdown scale, and the correlator map are all fixed. I have nothing to add beyond that. <end>",
   ],
 };
 

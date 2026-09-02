@@ -21,6 +21,7 @@ import { Database } from "bun:sqlite";
 import {
   DEFAULT_LIMIT,
   DEFAULT_TURN_BUDGET,
+  limitSchema,
   type Limit,
   type Agent,
   type Connection,
@@ -97,8 +98,8 @@ export class HubStore {
         connection_id  TEXT NOT NULL REFERENCES connections(id),
         purpose        TEXT NOT NULL,
         budget         INTEGER NOT NULL,
-        budget_max     INTEGER NOT NULL DEFAULT 6,
-        limit_json     TEXT NOT NULL DEFAULT '{"kind":"turns","turns":6}',
+        budget_max     INTEGER NOT NULL DEFAULT 50,
+        limit_json     TEXT NOT NULL DEFAULT '{"kind":"turns","turns":50}',
         spent_usd      REAL NOT NULL DEFAULT 0,
         spend_incomplete INTEGER NOT NULL DEFAULT 0,
         stopped        INTEGER NOT NULL DEFAULT 0,
@@ -305,7 +306,7 @@ export class HubStore {
     if (participants === undefined) return undefined;
     const id = newId("cnv");
     const at = nowIso();
-    const turns = limit.kind === "turns" ? limit.turns : 0;
+    const turns = limit.kind === "turns" ? limit.turns : DEFAULT_TURN_BUDGET;
     this.db.run(
       "INSERT INTO conversations (id, connection_id, purpose, budget, budget_max, limit_json, created_at, last_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       [id, connectionId, purpose, turns, turns, JSON.stringify(limit), at, at],
@@ -316,8 +317,8 @@ export class HubStore {
   /** Parse a stored rule, falling back rather than throwing on a row written by an older build. */
   private static parseLimit(raw: string): Limit {
     try {
-      const parsed = JSON.parse(raw) as Limit;
-      if (parsed.kind === "turns" || parsed.kind === "cost" || parsed.kind === "none") return parsed;
+      const parsed = limitSchema.safeParse(JSON.parse(raw));
+      if (parsed.success) return parsed.data;
     } catch {
       // Fall through to the default below.
     }
@@ -415,6 +416,13 @@ export class HubStore {
     };
   }
 
+  /** Every shared message in rooms this agent is in, oldest first per conversation. */
+  messagesForAgent(agentId: string, perConversation = 500): Message[] {
+    return this.conversationsFor(agentId).flatMap((conversation) =>
+      this.transcript(conversation.id, perConversation),
+    );
+  }
+
   /** The most recent `limit` messages, oldest first — the window an agent answers from. */
   transcript(conversationId: string, limit: number): Message[] {
     const rows = this.db
@@ -504,6 +512,15 @@ export class HubStore {
       "UPDATE conversations SET spent_usd = spent_usd + ?, spend_incomplete = MAX(spend_incomplete, ?) WHERE id = ?",
       [costUSD, incomplete ? 1 : 0, conversationId],
     );
+  }
+
+  /** Write the conversation's spend as the policy currently sees it. */
+  setSpend(conversationId: string, usd: number, incomplete: boolean): void {
+    this.db.run("UPDATE conversations SET spent_usd = ?, spend_incomplete = ? WHERE id = ?", [
+      usd,
+      incomplete ? 1 : 0,
+      conversationId,
+    ]);
   }
 
   spend(conversationId: string): { usd: number; incomplete: boolean } {

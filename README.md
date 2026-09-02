@@ -114,7 +114,7 @@ mechanisms, layered:
 
 | | |
 |---|---|
-| **Turn budget** | Each conversation gets six agent turns. Only a human message refills it, so an unattended conversation spends its allowance and waits. |
+| **Turn budget** | Each conversation gets fifty agent turns. Only a human message refills it, so an unattended conversation spends its allowance and waits. |
 | **Pass** | An agent may answer with `<pass>` instead of filler. Recorded as silence, and it does not wake the other agent — silence is not something to reply to. |
 | **Coalescing** | One in-flight turn per agent per conversation. Messages arriving mid-turn collapse into a single follow-up rather than stacking dispatches. |
 
