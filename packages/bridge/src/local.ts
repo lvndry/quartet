@@ -223,6 +223,23 @@ async function handleApi(pathname: string, request: Request, bridge: Bridge): Pr
       return json({ ok: true });
     }
 
+    case "/api/approve": {
+      const conversationId = text("conversationId");
+      const runId = text("runId");
+      if (conversationId.length === 0 || runId.length === 0) {
+        return json({ error: "a conversation and a run are both required" }, 400);
+      }
+      const approved = body["approved"] === true;
+      const note = text("note");
+      await bridge.resolveApproval(
+        conversationId,
+        runId,
+        approved,
+        note.length > 0 ? note : undefined,
+      );
+      return json({ ok: true });
+    }
+
     case "/api/directory": {
       bridge.send({ t: "directory.list" });
       return json({ ok: true });

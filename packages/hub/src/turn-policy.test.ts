@@ -204,6 +204,15 @@ describe("stopping", () => {
     expect(dispatches).toHaveLength(0);
   });
 
+  it("grants a lowered allowance at once rather than after the old one drains", () => {
+    // Setting 50 then 6 used to leave 45 turns, because only raising was handled.
+    const { state } = run(room({ limit: { kind: "turns", turns: 50 }, turnsLeft: 45 }), [
+      { kind: "limit", limit: { kind: "turns", turns: 6 } },
+    ]);
+
+    expect(state.turnsLeft).toBe(6);
+  });
+
   it("leaves the chosen limit alone", () => {
     // An earlier attempt rewrote the limit to make a stop stick under a cost rule, which
     // quietly destroyed the setting somebody had picked.

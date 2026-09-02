@@ -14,7 +14,7 @@
 import { z } from "zod";
 
 /** How many agent turns one conversation may spend before a human has to speak again. */
-export const DEFAULT_TURN_BUDGET = 6;
+export const DEFAULT_TURN_BUDGET = 50;
 
 /**
  * The largest ceiling a conversation may be given.
@@ -39,7 +39,7 @@ export const UNLIMITED_TURN_BUDGET = 0;
 /**
  * How a conversation is allowed to spend.
  *
- * Three shapes rather than one number, because "six turns" and "twenty cents" answer
+ * Three shapes rather than one number, because "fifty turns" and "twenty cents" answer
  * different questions and neither substitutes for the other: a turn of a local model is free
  * and a turn of a frontier model with tool calls is not.
  *
@@ -252,6 +252,16 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     conversationId: z.string(),
     reason: z.string().max(300),
   }),
+  /**
+   * The turn is still in flight, but a person has to act before it can finish.
+   *
+   * Re-arms the deadline without settling, so approving a parked tool does not race the
+   * three-minute silence timer.
+   */
+  z.object({
+    t: z.literal("waiting"),
+    conversationId: z.string(),
+  }),
 ]);
 export type ClientFrame = z.infer<typeof clientFrameSchema>;
 
@@ -266,6 +276,8 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
     connections: z.array(connectionSchema),
     conversations: z.array(conversationSchema),
     invites: z.array(inviteSchema),
+    /** Shared transcript for every room this agent is in. Hydrates the chat, not the ledger. */
+    messages: z.array(messageSchema),
   }),
   z.object({ t: z.literal("directory"), people: z.array(directoryEntrySchema) }),
   z.object({ t: z.literal("invite"), invite: inviteSchema }),

@@ -81,6 +81,7 @@ function sendWelcome(agentId: string): void {
     connections,
     conversations: store.conversationsFor(agentId),
     invites: store.pendingInvitesFor(agentId),
+    messages: store.messagesForAgent(agentId),
   });
 }
 
@@ -150,12 +151,15 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       socket.close();
       return;
     }
-    // One socket per agent: a second connection replaces the first rather than racing it.
-    sockets.get(row.id)?.close();
+    // Register the new socket first so the outgoing close is stale and does not
+    // look like the agent going offline.
+    const previous = sockets.get(row.id);
     socket.data.agentId = row.id;
     sockets.set(row.id, socket);
+    if (previous !== undefined && previous !== socket) previous.close();
     sendWelcome(row.id);
     send(row.id, { t: "directory", people: directoryFor(row.id) });
+    orchestrator.replayTurns(row.id);
     broadcastPresence();
     return;
   }
@@ -235,15 +239,8 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         if (view !== undefined) send(participant, { t: "connected", connection: view, conversation });
       }
 
-      // The inviter's own agent speaks first, saying the thing they invited about. Nobody
-      // races, and the room is never empty.
-      const opening = store.appendMessage({
-        conversationId: conversation.id,
-        authorAgentId: invite.from_agent,
-        kind: "agent",
-        text: invite.purpose,
-      });
-      if (opening !== undefined) orchestrator.onMessage(conversation.id, invite.from_agent, opening);
+      // The purpose is a topic for the inviter's agent, not a line in its mouth.
+      orchestrator.onNudge(conversation.id, invite.from_agent, invite.purpose);
       return;
     }
 
@@ -258,13 +255,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       for (const participant of participants) {
         send(participant, { t: "conversation", conversation });
       }
-      const opening = store.appendMessage({
-        conversationId: conversation.id,
-        authorAgentId: agentId,
-        kind: "agent",
-        text: frame.purpose,
-      });
-      if (opening !== undefined) orchestrator.onMessage(conversation.id, agentId, opening);
+      orchestrator.onNudge(conversation.id, agentId, frame.purpose);
       return;
     }
 
@@ -335,6 +326,11 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     }
 
     case "pass": {
+      const participants = store.conversationParticipantIds(frame.conversationId);
+      if (participants === undefined || !participants.includes(agentId)) {
+        send(agentId, { t: "error", detail: "you are not in that conversation" });
+        return;
+      }
       const message = store.appendMessage({
         conversationId: frame.conversationId,
         authorAgentId: agentId,
@@ -345,14 +341,28 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       orchestrator.onSpend(frame.conversationId, frame.costUSD, frame.costIncomplete === true);
       orchestrator.onTurnSettled(frame.conversationId, agentId, "passed");
       if (message === undefined) return;
-      const participants = store.conversationParticipantIds(frame.conversationId) ?? [];
       // A pass is recorded and shown, but it deliberately does not wake the other agent:
       // silence is not something to reply to.
       for (const participant of participants) send(participant, { t: "appended", message });
       return;
     }
 
+    case "waiting": {
+      const participants = store.conversationParticipantIds(frame.conversationId);
+      if (participants === undefined || !participants.includes(agentId)) {
+        send(agentId, { t: "error", detail: "you are not in that conversation" });
+        return;
+      }
+      orchestrator.onWaiting(frame.conversationId, agentId);
+      return;
+    }
+
     case "trouble": {
+      const participants = store.conversationParticipantIds(frame.conversationId);
+      if (participants === undefined || !participants.includes(agentId)) {
+        send(agentId, { t: "error", detail: "you are not in that conversation" });
+        return;
+      }
       const message = store.appendMessage({
         conversationId: frame.conversationId,
         authorAgentId: agentId,
@@ -361,7 +371,6 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       });
       orchestrator.onTurnSettled(frame.conversationId, agentId, "failed");
       if (message === undefined) return;
-      const participants = store.conversationParticipantIds(frame.conversationId) ?? [];
       for (const participant of participants) send(participant, { t: "appended", message });
       return;
     }
@@ -395,7 +404,9 @@ const server = Bun.serve<SocketData, never>({
     close(socket) {
       const agentId = socket.data.agentId;
       if (agentId === undefined) return;
-      if (sockets.get(agentId) === socket) sockets.delete(agentId);
+      // A replaced socket must not look like the agent leaving.
+      if (sockets.get(agentId) !== socket) return;
+      sockets.delete(agentId);
       orchestrator.onDisconnect(agentId);
       broadcastPresence();
     },

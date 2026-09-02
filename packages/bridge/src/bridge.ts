@@ -24,7 +24,7 @@ import {
   type Agent,
 } from "@quartet/protocol";
 import type { DaemonSettings } from "./config";
-import { runTurn } from "./jazz";
+import { answerParkedRun, runTurn, type TurnResult } from "./jazz";
 import { recordSent, readLedger, type LedgerEntry } from "./ledger";
 import { logger } from "./log";
 import { buildPayload } from "./prompt";
@@ -183,6 +183,7 @@ export class Bridge {
     });
 
     socket.addEventListener("close", () => {
+      if (this.socket !== socket) return;
       this.connectedToHub = false;
       this.publish();
       if (this.closing) return;
@@ -210,6 +211,13 @@ export class Bridge {
         this.connections = frame.connections;
         this.conversations = frame.conversations;
         this.invites = frame.invites;
+        this.messages.clear();
+        for (const message of frame.messages) {
+          const list = this.messages.get(message.conversationId) ?? [];
+          if (!list.some((existing) => existing.id === message.id)) {
+            this.messages.set(message.conversationId, [...list, message]);
+          }
+        }
         this.publish();
         return;
 
@@ -351,6 +359,7 @@ export class Bridge {
   ): Promise<void> {
     const me = this.me;
     if (me === undefined) return;
+    if (this.activity.get(conversationId)?.state === "thinking") return;
 
     const conversation = this.conversations.find((candidate) => candidate.id === conversationId);
     const other = conversation?.participants.find((handle) => handle !== me.handle) ?? "them";
@@ -373,6 +382,31 @@ export class Bridge {
       }),
     );
 
+    this.finishTurn(conversationId, result, startedAt, steer);
+  }
+
+  /**
+   * Approve or decline a parked jazz tool from this app, then finish the turn.
+   */
+  async resolveApproval(
+    conversationId: string,
+    runId: string,
+    approved: boolean,
+    note?: string,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    this.activity.set(conversationId, { state: "thinking", since: startedAt });
+    this.publish();
+    const result = await answerParkedRun(this.daemon, runId, approved, note);
+    this.finishTurn(conversationId, result, startedAt, this.pendingSteer.get(conversationId));
+  }
+
+  private finishTurn(
+    conversationId: string,
+    result: TurnResult,
+    startedAt: number,
+    steer: string | undefined,
+  ): void {
     const took = `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
 
     switch (result.kind) {
@@ -413,21 +447,19 @@ export class Bridge {
 
       case "needs-you":
         daemonLog.warn("waiting for you to approve a tool", { run: result.runId, took });
-        // Deliberately told to the other side too. A conversation that stops because someone's
-        // agent is waiting for approval should say so, rather than just going quiet.
         this.activity.set(conversationId, { state: "needs-you", runId: result.runId });
-        this.send({
-          t: "trouble",
-          conversationId,
-          reason: `${me.handle} is waiting on their operator to approve a tool`,
-        });
+        this.send({ t: "waiting", conversationId });
         this.publish();
         return;
 
       case "failed":
         daemonLog.error(result.reason, { took });
         this.activity.set(conversationId, { state: "idle" });
-        this.send({ t: "trouble", conversationId, reason: result.reason });
+        this.send({
+          t: "trouble",
+          conversationId,
+          reason: result.reason,
+        });
         this.publish();
         return;
 

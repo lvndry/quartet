@@ -94,6 +94,51 @@ export async function runTurn(
   const body = (await response.json().catch(() => null)) as
     | { answer?: string; costUSD?: number; costIncomplete?: boolean }
     | null;
+  return interpretAnswer(body);
+}
+
+/**
+ * Resume a parked jazz run after the operator approved or declined a tool.
+ *
+ * Same door `jazz runs answer` uses: the daemon finishes the run and returns the text.
+ */
+export async function answerParkedRun(
+  daemon: DaemonSettings,
+  runId: string,
+  approved: boolean,
+  note?: string,
+): Promise<TurnResult> {
+  let response: Response;
+  try {
+    response = await fetch(`${daemon.url}/runs/${encodeURIComponent(runId)}/answer`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${daemon.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ approved, ...(note !== undefined ? { note } : {}) }),
+    });
+  } catch {
+    return { kind: "failed", reason: "jazz daemon is not reachable — is `jazz daemon` running?" };
+  }
+
+  if (!response.ok) {
+    const detail = (await response.json().catch(() => null)) as { error?: string } | null;
+    return {
+      kind: "failed",
+      reason: detail?.error ?? `jazz answered ${String(response.status)}`,
+    };
+  }
+
+  const body = (await response.json().catch(() => null)) as
+    | { answer?: string; costUSD?: number; costIncomplete?: boolean }
+    | null;
+  return interpretAnswer(body);
+}
+
+function interpretAnswer(
+  body: { answer?: string; costUSD?: number; costIncomplete?: boolean } | null,
+): TurnResult {
   const answer = body?.answer?.trim() ?? "";
   // An unpriced run is marked rather than assumed free: a local model reports no cost, and
   // treating that as zero would let a spend ceiling sit at zero forever.

@@ -88,6 +88,7 @@ export const token = readToken();
 
 let current: BridgeState = EMPTY;
 let socketLive = false;
+let currentSocket: WebSocket | undefined;
 const listeners = new Set<() => void>();
 
 function emit(): void {
@@ -99,6 +100,7 @@ function connect(): void {
   const socket = new WebSocket(
     `${protocol}//${window.location.host}/socket?token=${encodeURIComponent(token)}`,
   );
+  currentSocket = socket;
 
   socket.addEventListener("open", () => {
     socketLive = true;
@@ -118,6 +120,7 @@ function connect(): void {
   });
 
   socket.addEventListener("close", () => {
+    if (currentSocket !== socket) return;
     socketLive = false;
     emit();
     // The bridge is a local process — if it is gone the user restarted it, and it will be
