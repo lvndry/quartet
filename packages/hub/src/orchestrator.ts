@@ -225,6 +225,15 @@ export class Orchestrator {
   }
 
   /**
+   * Forget a room outright. Call once its rows are already gone, in place of `onLeft` —
+   * there is no state left for the turn policy to read, so there is nothing left to decide.
+   */
+  discard(conversationId: string, participants: readonly string[]): void {
+    for (const agentId of participants) this.clearDeadline(conversationId, agentId);
+    this.turns.delete(conversationId);
+  }
+
+  /**
    * A bridge came back. Ask it for anything the room has been holding.
    *
    * Without this a conversation only moved while both bridges happened to be up at once:

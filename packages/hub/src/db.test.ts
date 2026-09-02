@@ -370,6 +370,45 @@ describe("who is in a room", () => {
   });
 });
 
+describe("deleting a room", () => {
+  function trio() {
+    const store = new HubStore(":memory:");
+    const made = ["mira", "otto"].map((handle) => store.createAgent({ handle, displayName: handle }));
+    const [mira, otto] = made;
+    if (mira === undefined || otto === undefined) throw new Error("agents");
+    const connectionId = store.createConnection(mira.id, otto.id);
+    const conversation = store.createConversation(connectionId, "what is free will");
+    if (conversation === undefined) throw new Error("conversation");
+    return { store, mira, otto, conversation };
+  }
+
+  it("erases the room, its members and everything said in it", () => {
+    const { store, mira, otto, conversation } = trio();
+    store.appendMessage({ conversationId: conversation.id, authorAgentId: mira.id, kind: "agent", text: "hi" });
+    store.saveInFlight(conversation.id, otto.id, { pending: false, steered: false });
+
+    store.deleteConversation(conversation.id);
+
+    expect(store.conversation(conversation.id)).toBeUndefined();
+    expect(store.conversationParticipantIds(conversation.id)).toBeUndefined();
+    expect(store.conversationsFor(mira.id)).toHaveLength(0);
+    expect(store.conversationsFor(otto.id)).toHaveLength(0);
+    expect(store.allInFlight()).toHaveLength(0);
+  });
+
+  it("leaves an unrelated room alone", () => {
+    const { store, mira, otto, conversation } = trio();
+    const otherConnection = store.createConnection(mira.id, otto.id);
+    const other = store.createConversation(otherConnection, "something else");
+    if (other === undefined) throw new Error("conversation");
+
+    store.deleteConversation(conversation.id);
+
+    expect(store.conversation(other.id)).toBeDefined();
+    expect(store.conversationsFor(mira.id).map((room) => room.id)).toEqual([other.id]);
+  });
+});
+
 describe("what one agent is sent for its turn", () => {
   function room() {
     const store = new HubStore(":memory:");

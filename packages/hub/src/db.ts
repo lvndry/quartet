@@ -692,6 +692,21 @@ export class HubStore {
     );
   }
 
+  /**
+   * Erase a room and everything said in it from the hub's own copy.
+   *
+   * Deleted child-first because foreign keys are enforced: a conversation row cannot go
+   * while a message or membership row still points at it. Each participant's own local
+   * bridge journal is a separate, durable record of what it said — this only clears the
+   * hub's shared copy, which is the part everyone in the room has a say over together.
+   */
+  deleteConversation(conversationId: string): void {
+    this.db.run("DELETE FROM turns_in_flight WHERE conversation_id = ?", [conversationId]);
+    this.db.run("DELETE FROM messages WHERE conversation_id = ?", [conversationId]);
+    this.db.run("DELETE FROM conversation_members WHERE conversation_id = ?", [conversationId]);
+    this.db.run("DELETE FROM conversations WHERE id = ?", [conversationId]);
+  }
+
   isMember(conversationId: string, agentId: string): boolean {
     const row = this.db
       .query<{ agent_id: string }, [string, string]>(

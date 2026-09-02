@@ -560,6 +560,15 @@ export class Bridge {
         this.publish();
         return;
 
+      case "conversation.removed":
+        this.conversations = this.conversations.filter((c) => c.id !== frame.conversationId);
+        this.messages.delete(frame.conversationId);
+        this.presence.delete(frame.conversationId);
+        this.activity.delete(frame.conversationId);
+        this.atStart.delete(frame.conversationId);
+        this.publish();
+        return;
+
       case "appended": {
         const list = this.messages.get(frame.message.conversationId) ?? [];
         if (!list.some((message) => message.id === frame.message.id)) {

@@ -605,6 +605,38 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       return;
     }
 
+    case "conversation.delete": {
+      const participants = store.conversationParticipantIds(frame.conversationId);
+      if (participants === undefined || !participants.includes(agentId)) {
+        send(agentId, { t: "error", detail: "you are not in that conversation" });
+        return;
+      }
+
+      if (frame.scope === "everyone") {
+        orchestrator.discard(frame.conversationId, participants);
+        store.deleteConversation(frame.conversationId);
+        for (const participant of participants) {
+          send(participant, { t: "conversation.removed", conversationId: frame.conversationId });
+        }
+        return;
+      }
+
+      // Quietly drop your own membership — no system message, no notice to anyone still
+      // in the room, unlike `conversation.leave`. A hidden conversation, not a departure.
+      store.removeMember(frame.conversationId, agentId);
+      orchestrator.onLeft(frame.conversationId, agentId);
+      send(agentId, { t: "conversation.removed", conversationId: frame.conversationId });
+
+      const shrunk = store.conversation(frame.conversationId);
+      if (shrunk !== undefined) {
+        for (const participant of store.conversationParticipantIds(frame.conversationId) ?? []) {
+          send(participant, { t: "conversation", conversation: shrunk });
+        }
+      }
+      presence.announce(frame.conversationId);
+      return;
+    }
+
     case "conversation.reopen": {
       const participants = store.conversationParticipantIds(frame.conversationId);
       if (participants === undefined || !participants.includes(agentId)) {
