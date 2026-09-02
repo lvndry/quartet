@@ -14,6 +14,7 @@ import type { ServerWebSocket } from "bun";
 import {
   describeFrameRejection,
   handleSchema,
+  HISTORY_PAGE_SIZE,
   parseClientFrame,
   type Agent,
   type Authorship,
@@ -26,6 +27,7 @@ import { isDid, newNonce, verifyChallenge, verifyClaim, verifyMessage } from "@q
 import { HubStore, type AgentRow } from "./db";
 import { Orchestrator } from "./orchestrator";
 import { RoomPresence } from "./presence";
+import { RateLimiter } from "./rate-limit";
 
 const PORT = Number(process.env["PORT"] ?? 8080);
 const DB_PATH = process.env["QUARTET_DB"] ?? "quartet.sqlite";
@@ -112,7 +114,29 @@ function broadcastPresence(): void {
   }
 }
 
-const app = new Hono();
+/**
+ * How many identities one address may claim: three at once, then one every twenty minutes.
+ *
+ * Generous for the case it has to serve — a person setting themselves up, getting the
+ * handle wrong, and trying again — and useless for taking a namespace. It is a stopgap
+ * either way: a claim proves nothing about who is making it, and only agent identity fixes
+ * that. This just stops the cheapest version of the attack.
+ */
+/**
+ * How many handles one caller may claim before waiting.
+ *
+ * Three per twenty minutes is aimed at a person setting up their agents, not at a script
+ * taking every readable handle on a hub. The burst is an environment variable because it is
+ * a policy an operator may reasonably disagree with — a private hub handing out handles to a
+ * team wants a larger one — and because a test that drove the real limit would otherwise
+ * have to sit out the window.
+ */
+const REGISTRATION_BURST = Number(process.env["QUARTET_REGISTRATION_BURST"] ?? 3);
+
+const registrations = new RateLimiter({ burst: REGISTRATION_BURST, refillMs: 20 * 60_000 });
+
+/** `ip` is filled in from the socket by the server below, because Hono cannot see it. */
+const app = new Hono<{ Bindings: { ip: string } }>();
 
 app.get("/health", (context) => context.json({ ok: true }));
 
@@ -144,6 +168,18 @@ function withinClaimWindow(at: string): boolean {
  * made it, so there is no token here to leak, to lose, or to have to rotate.
  */
 app.post("/agents", async (context) => {
+  // Charged before the body is even read, so a flood of malformed requests costs the same
+  // as a flood of valid ones.
+  const verdict = registrations.take(context.env.ip);
+  if (!verdict.allowed) {
+    const seconds = Math.ceil(verdict.retryAfterMs / 1000);
+    return context.json(
+      { error: `too many handles claimed from here — try again in ${String(seconds)}s` },
+      429,
+      { "retry-after": String(seconds) },
+    );
+  }
+
   const body = (await context.req.json().catch(() => null)) as Record<string, unknown> | null;
   if (body === null) return context.json({ error: "expected a JSON body" }, 400);
 
@@ -456,6 +492,44 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       return;
     }
 
+    case "conversation.reopen": {
+      const participants = store.conversationParticipantIds(frame.conversationId);
+      if (participants === undefined || !participants.includes(agentId)) {
+        send(agentId, { t: "error", detail: "you are not in that conversation" });
+        return;
+      }
+      orchestrator.reopen(frame.conversationId);
+      const reopened = store.appendMessage({
+        conversationId: frame.conversationId,
+        authorAgentId: agentId,
+        kind: "system",
+        text: "reopened",
+      });
+      if (reopened !== undefined) {
+        for (const participant of participants) {
+          send(participant, { t: "appended", message: reopened });
+        }
+      }
+      return;
+    }
+
+    case "history.load": {
+      const participants = store.conversationParticipantIds(frame.conversationId);
+      if (participants === undefined || !participants.includes(agentId)) {
+        send(agentId, { t: "error", detail: "you are not in that conversation" });
+        return;
+      }
+      // Answered only to the asker: this is somebody scrolling, not an event in the room.
+      const page = store.historyBefore(frame.conversationId, frame.beforeId, HISTORY_PAGE_SIZE);
+      send(agentId, {
+        t: "history",
+        conversationId: frame.conversationId,
+        messages: page.messages,
+        reachedStart: page.reachedStart,
+      });
+      return;
+    }
+
     case "nudge": {
       const participants = store.conversationParticipantIds(frame.conversationId);
       if (participants === undefined || !participants.includes(agentId)) {
@@ -551,7 +625,10 @@ const server = Bun.serve<SocketData, never>({
         ? undefined
         : new Response("expected a websocket upgrade", { status: 426 });
     }
-    return app.fetch(request);
+    // The socket's own peer address, not a forwarded header: a header is whatever the
+    // caller wrote unless there is a proxy in front that is trusted to overwrite it, and a
+    // hub anybody can run has no way to know whether there is.
+    return app.fetch(request, { ip: bunServer.requestIP(request)?.address ?? "unknown" });
   },
   websocket: {
     open(socket) {
@@ -583,5 +660,9 @@ const server = Bun.serve<SocketData, never>({
     },
   },
 });
+
+// Before anything can connect, and after presence is wired: a recovered deadline that has
+// already expired fires on the next tick and appends to the room it belonged to.
+orchestrator.recover();
 
 console.log(`quartet hub listening on http://localhost:${String(server.port)}`);

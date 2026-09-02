@@ -15,6 +15,17 @@ export interface Activity {
   state: "idle" | "thinking" | "needs-you";
   since?: number;
   runId?: string;
+  pending?:
+    | { kind: "approval"; message?: string }
+    | {
+        kind: "question";
+        question: {
+          question: string;
+          suggestions: { value: string; label?: string; description?: string }[];
+          allowCustom: boolean;
+          allowMultiple: boolean;
+        };
+      };
 }
 
 export interface Aside {
@@ -53,6 +64,8 @@ export interface BridgeState {
   invites: Invite[];
   directory: DirectoryEntry[];
   messages: Record<string, Message[]>;
+  /** Whether the oldest message held for a room really is the room's first. */
+  atStart: Record<string, boolean>;
   asides: Record<string, Aside[]>;
   activity: Record<string, Activity>;
   presence: Record<string, PeerPresence>;
@@ -72,6 +85,7 @@ const EMPTY: BridgeState = {
   invites: [],
   directory: [],
   messages: {},
+  atStart: {},
   asides: {},
   activity: {},
   presence: {},
