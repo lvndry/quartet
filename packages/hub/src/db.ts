@@ -18,11 +18,15 @@
  */
 
 import { Database } from "bun:sqlite";
+import type { InFlight } from "./turn-policy";
 import {
   DEFAULT_LIMIT,
   DEFAULT_TURN_BUDGET,
   limitSchema,
+  roomStateSchema,
+  WELCOME_TRANSCRIPT_WINDOW,
   type Limit,
+  type RoomState,
   type Agent,
   type Connection,
   type Conversation,
@@ -40,6 +44,28 @@ export interface AgentRow {
   token: string;
   created_at: string;
 }
+
+/** One message with its author's handle already resolved. See `MESSAGE_SELECT`. */
+interface MessageRow {
+  id: string;
+  conversation_id: string;
+  handle: string;
+  kind: string;
+  text: string;
+  at: string;
+}
+
+/**
+ * The projection every transcript read shares.
+ *
+ * One string so the two readers cannot drift into selecting different columns and then
+ * disagreeing about what a message is. The join also decides what happens to a message
+ * whose author has been deleted: it disappears, which is what the per-row lookup this
+ * replaced did too.
+ */
+const MESSAGE_SELECT = `SELECT m.id, m.conversation_id, a.handle, m.kind, m.text, m.at
+     FROM messages m
+     JOIN agents a ON a.id = m.author_agent`;
 
 interface InviteRow {
   id: string;
@@ -113,7 +139,7 @@ export class HubStore {
         limit_json     TEXT NOT NULL DEFAULT '{"kind":"turns","turns":50}',
         spent_usd      REAL NOT NULL DEFAULT 0,
         spend_incomplete INTEGER NOT NULL DEFAULT 0,
-        stopped        INTEGER NOT NULL DEFAULT 0,
+        state          TEXT NOT NULL DEFAULT 'live',
         created_at     TEXT NOT NULL,
         last_at        TEXT NOT NULL
       );
@@ -125,6 +151,23 @@ export class HubStore {
         kind             TEXT NOT NULL,
         text             TEXT NOT NULL,
         at               TEXT NOT NULL
+      );
+
+      -- Turns the hub has charged for and is waiting on.
+      --
+      -- Durable because the charge is: the budget is written to disk at dispatch, so a hub
+      -- restart used to leave a conversation paid up and silent, with no in-flight entry to
+      -- replay, no deadline left to fire, and nothing in the transcript saying why it had
+      -- gone quiet. Orchestrator.recover reads these back at boot.
+      CREATE TABLE IF NOT EXISTS turns_in_flight (
+        conversation_id TEXT NOT NULL REFERENCES conversations(id),
+        agent_id        TEXT NOT NULL REFERENCES agents(id),
+        dispatched_at   TEXT NOT NULL,
+        pending         INTEGER NOT NULL DEFAULT 0,
+        steered         INTEGER NOT NULL DEFAULT 0,
+        queued_steer    TEXT,
+        dispatch_steer  TEXT,
+        PRIMARY KEY (conversation_id, agent_id)
       );
 
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, at);
@@ -142,12 +185,21 @@ export class HubStore {
       limit_json: `TEXT NOT NULL DEFAULT '{"kind":"turns","turns":${String(DEFAULT_TURN_BUDGET)}}'`,
       spent_usd: "REAL NOT NULL DEFAULT 0",
       spend_incomplete: "INTEGER NOT NULL DEFAULT 0",
-      stopped: "INTEGER NOT NULL DEFAULT 0",
+      state: "TEXT NOT NULL DEFAULT 'live'",
     };
     for (const [column, definition] of Object.entries(added)) {
       if (!columns.includes(column)) {
         this.db.exec(`ALTER TABLE conversations ADD COLUMN ${column} ${definition}`);
       }
+    }
+
+    // A database written before rooms had three states carries one `stopped` flag, which
+    // cannot say whether a person halted the room or an agent said goodbye. `halted` is the
+    // safe reading of the two: it is the one a person can lift by carrying on, so a
+    // misread costs a conversation nothing. The old column is left where it is — SQLite
+    // makes dropping one a table rewrite, and nothing reads it now.
+    if (!columns.includes("state") && columns.includes("stopped")) {
+      this.db.exec("UPDATE conversations SET state = 'halted' WHERE stopped = 1");
     }
 
     const inviteColumns = this.db
@@ -347,6 +399,23 @@ export class HubStore {
     return this.conversation(id);
   }
 
+  private static toMessage(row: MessageRow): Message {
+    return {
+      id: row.id,
+      conversationId: row.conversation_id,
+      authorHandle: row.handle,
+      kind: row.kind as MessageKind,
+      text: row.text,
+      at: row.at,
+    };
+  }
+
+  /** Same forgiveness as `parseLimit`: a row from another build reads as a running room. */
+  private static parseRoomState(raw: string): RoomState {
+    const parsed = roomStateSchema.safeParse(raw);
+    return parsed.success ? parsed.data : "live";
+  }
+
   /** Parse a stored rule, falling back rather than throwing on a row written by an older build. */
   private static parseLimit(raw: string): Limit {
     try {
@@ -370,12 +439,12 @@ export class HubStore {
           limit_json: string;
           spent_usd: number;
           spend_incomplete: number;
-          stopped: number;
+          state: string;
           last_at: string;
         },
         [string]
       >(
-        "SELECT id, connection_id, purpose, budget, budget_max, limit_json, spent_usd, spend_incomplete, stopped, last_at FROM conversations WHERE id = ?",
+        "SELECT id, connection_id, purpose, budget, budget_max, limit_json, spent_usd, spend_incomplete, state, last_at FROM conversations WHERE id = ?",
       )
       .get(id);
     if (row === null || row === undefined) return undefined;
@@ -394,7 +463,7 @@ export class HubStore {
       limit: HubStore.parseLimit(row.limit_json),
       spentUSD: row.spent_usd,
       spendIncomplete: row.spend_incomplete === 1,
-      stopped: row.stopped === 1,
+      state: HubStore.parseRoomState(row.state),
       lastAt: row.last_at,
     };
   }
@@ -449,36 +518,143 @@ export class HubStore {
     };
   }
 
-  /** Every shared message in rooms this agent is in, oldest first per conversation. */
-  messagesForAgent(agentId: string, perConversation = 500): Message[] {
+  /**
+   * The most recent messages in rooms this agent is in, oldest first per conversation.
+   *
+   * Windowed, because this runs on every hello: an agent in a dozen long-running rooms was
+   * pulling six thousand rows on each reconnect, which is precisely when a flapping network
+   * makes it run again. The browser asks for anything older by the page.
+   */
+  messagesForAgent(agentId: string, perConversation = WELCOME_TRANSCRIPT_WINDOW): Message[] {
     return this.conversationsFor(agentId).flatMap((conversation) =>
       this.transcript(conversation.id, perConversation),
     );
   }
 
-  /** The most recent `limit` messages, oldest first — the window an agent answers from. */
+  /**
+   * The most recent `limit` messages, oldest first — the window an agent answers from.
+   *
+   * The author's handle comes from a join rather than a lookup per row. It was a query per
+   * message, on the hub's hottest read.
+   */
   transcript(conversationId: string, limit: number): Message[] {
     const rows = this.db
-      .query<{ id: string; author_agent: string; kind: string; text: string; at: string }, [string, number]>(
-        "SELECT id, author_agent, kind, text, at FROM messages WHERE conversation_id = ? ORDER BY at DESC, rowid DESC LIMIT ?",
+      .query<MessageRow, [string, number]>(
+        `${MESSAGE_SELECT}
+         WHERE m.conversation_id = ?
+         ORDER BY m.at DESC, m.rowid DESC
+         LIMIT ?`,
       )
       .all(conversationId, limit);
-    return rows
-      .reverse()
-      .flatMap((row) => {
-        const author = this.agentById(row.author_agent);
-        if (author === undefined) return [];
-        return [
-          {
-            id: row.id,
-            conversationId,
-            authorHandle: author.handle,
-            kind: row.kind as MessageKind,
-            text: row.text,
-            at: row.at,
-          },
-        ];
-      });
+    return rows.reverse().map(HubStore.toMessage);
+  }
+
+  /**
+   * The page of messages immediately older than `beforeId`, oldest first.
+   *
+   * Keyset paging on `(at, rowid)` rather than an offset: an offset would drift under any
+   * message arriving mid-scroll, and this is the same ordering `transcript` reads by, so it
+   * uses the same index. `reachedStart` is answered by asking for one row more than the
+   * caller wants and seeing whether it exists — cheaper than a second count query, and it
+   * cannot disagree with the page it was measured against.
+   */
+  historyBefore(
+    conversationId: string,
+    beforeId: string,
+    limit: number,
+  ): { messages: Message[]; reachedStart: boolean } {
+    const anchor = this.db
+      .query<{ at: string; rowid: number }, [string, string]>(
+        "SELECT at, rowid FROM messages WHERE conversation_id = ? AND id = ?",
+      )
+      .get(conversationId, beforeId);
+    if (anchor === null || anchor === undefined) return { messages: [], reachedStart: true };
+
+    const rows = this.db
+      .query<MessageRow, [string, string, string, number, number]>(
+        `${MESSAGE_SELECT}
+         WHERE m.conversation_id = ?
+           AND (m.at < ? OR (m.at = ? AND m.rowid < ?))
+         ORDER BY m.at DESC, m.rowid DESC
+         LIMIT ?`,
+      )
+      .all(conversationId, anchor.at, anchor.at, anchor.rowid, limit + 1);
+
+    const reachedStart = rows.length <= limit;
+    return {
+      messages: rows.slice(0, limit).reverse().map(HubStore.toMessage),
+      reachedStart,
+    };
+  }
+
+  /* ---------------- turns the hub is waiting on ---------------- */
+
+  /**
+   * Record a turn as in flight, or update what is queued behind it.
+   *
+   * `dispatched_at` is written once and never touched again, so the deadline a recovered
+   * turn is given is measured from when the money was actually spent rather than from when
+   * the hub happened to come back.
+   */
+  saveInFlight(conversationId: string, agentId: string, entry: InFlight): void {
+    this.db.run(
+      `INSERT INTO turns_in_flight
+         (conversation_id, agent_id, dispatched_at, pending, steered, queued_steer, dispatch_steer)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (conversation_id, agent_id) DO UPDATE SET
+         pending = excluded.pending,
+         steered = excluded.steered,
+         queued_steer = excluded.queued_steer,
+         dispatch_steer = excluded.dispatch_steer`,
+      [
+        conversationId,
+        agentId,
+        nowIso(),
+        entry.pending ? 1 : 0,
+        entry.steered ? 1 : 0,
+        entry.queuedSteer ?? null,
+        entry.dispatchSteer ?? null,
+      ],
+    );
+  }
+
+  clearInFlight(conversationId: string, agentId: string): void {
+    this.db.run("DELETE FROM turns_in_flight WHERE conversation_id = ? AND agent_id = ?", [
+      conversationId,
+      agentId,
+    ]);
+  }
+
+  /** Every turn the hub was waiting on, for the orchestrator to pick back up at boot. */
+  allInFlight(): { conversationId: string; agentId: string; dispatchedAt: string; entry: InFlight }[] {
+    return this.db
+      .query<
+        {
+          conversation_id: string;
+          agent_id: string;
+          dispatched_at: string;
+          pending: number;
+          steered: number;
+          queued_steer: string | null;
+          dispatch_steer: string | null;
+        },
+        []
+      >(
+        `SELECT conversation_id, agent_id, dispatched_at, pending, steered, queued_steer, dispatch_steer
+         FROM turns_in_flight`,
+      )
+      .all()
+      .map((row) => ({
+        conversationId: row.conversation_id,
+        agentId: row.agent_id,
+        dispatchedAt: row.dispatched_at,
+        entry: {
+          pending: row.pending === 1,
+          steered: row.steered === 1,
+          ...(row.queued_steer !== null ? { queuedSteer: row.queued_steer } : {}),
+          ...(row.dispatch_steer !== null ? { dispatchSteer: row.dispatch_steer } : {}),
+        },
+      }));
   }
 
   setBudget(conversationId: string, remaining: number): void {
@@ -493,34 +669,34 @@ export class HubStore {
    * nudge. Under a cost or unlimited rule the turn counter stops meaning anything.
    */
   setLimit(conversationId: string, limit: Limit): void {
-    // Changing the rule un-stops the conversation: picking a new allowance is how you say
-    // "carry on", and making somebody clear a separate flag as well would be a puzzle.
+    // Only the rule and its ceiling. The remaining turns and the room's state are the turn
+    // policy's to decide — it is the caller here, and having this method reach for them too
+    // meant two writers racing over the same two columns, with the winner decided by
+    // statement order rather than by anything anyone had reasoned about.
     const turns = limit.kind === "turns" ? limit.turns : 0;
-    this.db.run(
-      "UPDATE conversations SET limit_json = ?, budget_max = ?, budget = MAX(budget, ?), stopped = 0 WHERE id = ?",
-      [JSON.stringify(limit), turns, turns, conversationId],
-    );
-  }
-
-  /**
-   * Halt or resume a conversation without touching its rule.
-   *
-   * A separate flag rather than a zeroed budget: stopping must not quietly rewrite the
-   * allowance somebody chose, and under a cost or unlimited rule there is no turn counter to
-   * zero in the first place.
-   */
-  setStopped(conversationId: string, stopped: boolean): void {
-    this.db.run("UPDATE conversations SET stopped = ? WHERE id = ?", [
-      stopped ? 1 : 0,
+    this.db.run("UPDATE conversations SET limit_json = ?, budget_max = ? WHERE id = ?", [
+      JSON.stringify(limit),
+      turns,
       conversationId,
     ]);
   }
 
-  isStopped(conversationId: string): boolean {
+  /**
+   * Record whether a room is running, halted, or closed.
+   *
+   * Its own column rather than a zeroed budget: stopping must not quietly rewrite the
+   * allowance somebody chose, and under a cost or unlimited rule there is no turn counter to
+   * zero in the first place.
+   */
+  setState(conversationId: string, state: RoomState): void {
+    this.db.run("UPDATE conversations SET state = ? WHERE id = ?", [state, conversationId]);
+  }
+
+  roomState(conversationId: string): RoomState {
     const row = this.db
-      .query<{ stopped: number }, [string]>("SELECT stopped FROM conversations WHERE id = ?")
+      .query<{ state: string }, [string]>("SELECT state FROM conversations WHERE id = ?")
       .get(conversationId);
-    return row?.stopped === 1;
+    return row === null || row === undefined ? "live" : HubStore.parseRoomState(row.state);
   }
 
   limitFor(conversationId: string): Limit {

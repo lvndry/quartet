@@ -15,6 +15,7 @@
 
 import {
   parseServerFrame,
+  WELCOME_TRANSCRIPT_WINDOW,
   type ClientFrame,
   type Connection,
   type Conversation,
@@ -25,7 +26,7 @@ import {
   type PeerPresence,
 } from "@quartet/protocol";
 import type { DaemonSettings } from "./config";
-import { answerParkedRun, runTurn, type TurnResult } from "./jazz";
+import { answerParkedRun, runTurn, type HumanQuestion, type TurnResult } from "./jazz";
 import {
   missingOutgoing,
   readAsides,
@@ -41,7 +42,13 @@ import { buildPayload } from "./prompt";
 export type Activity =
   | { readonly state: "idle" }
   | { readonly state: "thinking"; readonly since: number }
-  | { readonly state: "needs-you"; readonly runId: string };
+  | {
+      readonly state: "needs-you";
+      readonly runId: string;
+      readonly pending:
+        | { readonly kind: "approval"; readonly message?: string }
+        | { readonly kind: "question"; readonly question: HumanQuestion };
+    };
 
 /** An aside you typed to your own agent. Local only — it never reaches the other party. */
 export interface Aside {
@@ -58,6 +65,8 @@ export interface BridgeState {
   readonly invites: Invite[];
   readonly directory: DirectoryEntry[];
   readonly messages: Record<string, Message[]>;
+  /** Whether the oldest message held for a room really is the room's first. */
+  readonly atStart: Record<string, boolean>;
   readonly asides: Record<string, Aside[]>;
   readonly activity: Record<string, Activity>;
   readonly presence: Record<string, PeerPresence>;
@@ -85,6 +94,7 @@ export class Bridge {
   private invites: Invite[] = [];
   private directory: DirectoryEntry[] = [];
   private readonly messages = new Map<string, Message[]>();
+  private readonly atStart = new Map<string, boolean>();
   private readonly asides = new Map<string, Aside[]>();
   private readonly activity = new Map<string, Activity>();
   private readonly presence = new Map<string, PeerPresence>();
@@ -137,6 +147,7 @@ export class Bridge {
       invites: this.invites,
       directory: this.directory,
       messages: Object.fromEntries(this.messages),
+      atStart: Object.fromEntries(this.atStart),
       asides: Object.fromEntries(this.asides),
       activity: Object.fromEntries(this.activity),
       presence: Object.fromEntries(this.presence),
@@ -178,6 +189,19 @@ export class Bridge {
       }
     });
     this.send({ t: "nudge", conversationId, steer: text });
+  }
+
+  /**
+   * Ask the hub for the page of messages before the oldest one held for a room.
+   *
+   * A no-op once the start is reached, so a browser that keeps asking cannot make the hub
+   * keep answering.
+   */
+  requestHistory(conversationId: string): void {
+    if (this.atStart.get(conversationId) === true) return;
+    const oldest = this.messages.get(conversationId)?.[0];
+    if (oldest === undefined) return;
+    this.send({ t: "history.load", conversationId, beforeId: oldest.id });
   }
 
   private open(): void {
@@ -242,11 +266,19 @@ export class Bridge {
         this.invites = frame.invites;
         this.presence.clear();
         this.messages.clear();
+        this.atStart.clear();
         for (const message of frame.messages) {
           const list = this.messages.get(message.conversationId) ?? [];
           if (!list.some((existing) => existing.id === message.id)) {
             this.messages.set(message.conversationId, [...list, message]);
           }
+        }
+        // Welcome carries a window, not a whole history. A room that came back short of
+        // that window has nothing older; anything else has to be asked about. Guessing
+        // wrong here costs one empty page, which corrects itself.
+        for (const conversation of frame.conversations) {
+          const held = this.messages.get(conversation.id)?.length ?? 0;
+          this.atStart.set(conversation.id, held < WELCOME_TRANSCRIPT_WINDOW);
         }
         await this.catchUpLedger(frame.messages);
         this.flushOutbound();
@@ -307,7 +339,7 @@ export class Bridge {
           conversation: frame.conversationId,
           left: frame.remaining,
           spent: frame.spentUSD.toFixed(4),
-          stopped: frame.stopped ? "yes" : undefined,
+          room: frame.state !== "live" ? frame.state : undefined,
         });
         this.conversations = this.conversations.map((conversation) =>
           conversation.id === frame.conversationId
@@ -317,7 +349,7 @@ export class Bridge {
                 limit: frame.limit,
                 spentUSD: frame.spentUSD,
                 spendIncomplete: frame.spendIncomplete,
-                stopped: frame.stopped,
+                state: frame.state,
               }
             : conversation,
         );
@@ -338,6 +370,18 @@ export class Bridge {
         this.presence.set(frame.conversationId, frame.other);
         this.publish();
         return;
+
+      case "history": {
+        // Prepended, and deduped against what is already held: a page that overlaps the
+        // window welcome carried must not double every message in the room.
+        const held = this.messages.get(frame.conversationId) ?? [];
+        const known = new Set(held.map((message) => message.id));
+        const older = frame.messages.filter((message) => !known.has(message.id));
+        this.messages.set(frame.conversationId, [...older, ...held]);
+        this.atStart.set(frame.conversationId, frame.reachedStart);
+        this.publish();
+        return;
+      }
 
       case "error":
         hubLog.error(frame.detail);
@@ -448,11 +492,12 @@ export class Bridge {
     runId: string,
     approved: boolean,
     note?: string,
+    questionResponse?: string,
   ): Promise<void> {
     const startedAt = Date.now();
     this.activity.set(conversationId, { state: "thinking", since: startedAt });
     this.publish();
-    const result = await answerParkedRun(this.daemon, runId, approved, note);
+    const result = await answerParkedRun(this.daemon, runId, approved, note, questionResponse);
     this.finishTurn(conversationId, result, startedAt, this.pendingSteer.get(conversationId));
   }
 
@@ -502,7 +547,11 @@ export class Bridge {
 
       case "needs-you":
         daemonLog.warn("waiting for you to approve a tool", { run: result.runId, took });
-        this.activity.set(conversationId, { state: "needs-you", runId: result.runId });
+        this.activity.set(conversationId, {
+          state: "needs-you",
+          runId: result.runId,
+          pending: result.pending,
+        });
         this.send({ t: "waiting", conversationId });
         this.publish();
         return;

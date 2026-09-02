@@ -10,13 +10,13 @@
  * 1. A steer reaches its agent. Messages coalesce because the transcript still holds them;
  *    an instruction exists nowhere else.
  * 2. An agent never speaks immediately after its own pass, unless newly steered.
- * 3. `stopped` holds until a person lifts it.
+ * 3. A halt holds until a person lifts it, and a close holds until a person reopens it.
  * 4. A turn is charged once, at dispatch, and only when one is dispatched.
  * 5. One turn in flight per agent.
  * 6. A closed conversation dispatches nothing.
  */
 
-import { DEFAULT_TURN_BUDGET, type Limit } from "@quartet/protocol";
+import { DEFAULT_TURN_BUDGET, type Limit, type RoomState } from "@quartet/protocol";
 
 export type AgentId = string;
 
@@ -40,7 +40,8 @@ export interface TurnState {
   readonly spentUSD: number;
   /** Some spend was unpriced, so `spentUSD` is a floor. */
   readonly spendIncomplete: boolean;
-  readonly stopped: boolean;
+  /** Running, halted by a person, or closed by an agent. Only `live` may spend. */
+  readonly roomState: RoomState;
   readonly inFlight: Readonly<Record<AgentId, InFlight>>;
 }
 
@@ -52,6 +53,7 @@ export type TurnEvent =
   | { readonly kind: "settled"; readonly agent: AgentId; readonly outcome: TurnOutcome }
   | { readonly kind: "spend"; readonly usd: number; readonly incomplete: boolean }
   | { readonly kind: "stop" }
+  | { readonly kind: "reopen" }
   | { readonly kind: "limit"; readonly limit: Limit }
   | { readonly kind: "offline"; readonly agent: AgentId }
   | { readonly kind: "deadline"; readonly agent: AgentId };
@@ -74,7 +76,7 @@ export interface Decision {
 
 /** Whether this conversation may pay for another turn. */
 export function canSpend(state: TurnState): boolean {
-  if (state.stopped) return false;
+  if (state.roomState !== "live") return false;
   switch (state.limit.kind) {
     case "turns":
       return state.turnsLeft > 0;
@@ -191,10 +193,15 @@ export function decide(state: TurnState, event: TurnEvent): Decision {
     }
 
     case "steer": {
+      // A goodbye is not undone by typing at it. Reopening is a deliberate act with its own
+      // event, so a steer into a closed room is dropped here and the app offers Reopen
+      // instead of a composer.
+      if (state.roomState === "closed") return { state, effects: [] };
+
       // Topping the allowance up restarts a room that has gone quiet. A room still running
       // gets the instruction and nothing else: somebody typing into a live argument is as
       // likely to be reining it in as egging it on.
-      const lifted = { ...state, stopped: false };
+      const lifted: TurnState = { ...state, roomState: "live" };
       const refilled =
         lifted.limit.kind === "turns" && lifted.turnsLeft <= 0
           ? { ...lifted, turnsLeft: lifted.limit.turns }
@@ -209,7 +216,7 @@ export function decide(state: TurnState, event: TurnEvent): Decision {
 
       if (event.outcome === "closed") {
         return {
-          state: { ...cleared, stopped: true, inFlight: withoutPending(cleared.inFlight) },
+          state: { ...cleared, roomState: "closed", inFlight: withoutPending(cleared.inFlight) },
           effects: [{ kind: "announce" }],
         };
       }
@@ -235,10 +242,20 @@ export function decide(state: TurnState, event: TurnEvent): Decision {
     }
 
     case "stop": {
+      // A person halting a room does not overwrite an agent's goodbye: both mean the room
+      // is quiet, and the one that says a conversation is *finished* is the stronger claim.
+      const roomState: RoomState = state.roomState === "closed" ? "closed" : "halted";
       return {
-        state: { ...state, stopped: true, inFlight: withoutPending(state.inFlight) },
+        state: { ...state, roomState, inFlight: withoutPending(state.inFlight) },
         effects: [{ kind: "announce" }],
       };
+    }
+
+    case "reopen": {
+      // Lifts a close, and a halt with it — both mean "carry on". The allowance is left
+      // alone: a reopened room with nothing left to spend is quiet until somebody speaks,
+      // and that steer is what tops it up.
+      return { state: { ...state, roomState: "live" }, effects: [{ kind: "announce" }] };
     }
 
     case "limit": {
@@ -251,8 +268,12 @@ export function decide(state: TurnState, event: TurnEvent): Decision {
           : event.limit.kind === "cost"
             ? Math.max(state.turnsLeft, DEFAULT_TURN_BUDGET)
             : state.turnsLeft;
+      // Choosing an allowance means "carry on", so it lifts a halt. It does not lift a
+      // close: an agent's goodbye surviving somebody nudging a number is the whole reason
+      // these are two states and not one boolean.
+      const roomState: RoomState = state.roomState === "halted" ? "live" : state.roomState;
       return {
-        state: { ...state, limit: event.limit, turnsLeft, stopped: false },
+        state: { ...state, limit: event.limit, turnsLeft, roomState },
         effects: [{ kind: "announce" }],
       };
     }

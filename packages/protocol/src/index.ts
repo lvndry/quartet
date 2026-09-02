@@ -85,6 +85,20 @@ export const CLOSE_SENTINEL = "<end>";
 export const MAX_MESSAGE_LENGTH = 4000;
 export const MAX_PURPOSE_LENGTH = MAX_MESSAGE_LENGTH;
 
+/**
+ * How much of each room's transcript a welcome carries, and how much one page adds.
+ *
+ * Welcome hydrates *every* room this agent is in, so an unwindowed number here is the
+ * hub's worst query multiplied by however many people you know — and it runs on every
+ * reconnect, which is exactly when a flapping network makes it run repeatedly. Older
+ * messages are fetched a page at a time by the browser that wants them.
+ *
+ * Comfortably above the window an agent answers from, so what you can see without asking
+ * is never less than what your agent was working from.
+ */
+export const WELCOME_TRANSCRIPT_WINDOW = 60;
+export const HISTORY_PAGE_SIZE = 60;
+
 export const handleSchema = z
   .string()
   .min(2)
@@ -101,6 +115,26 @@ export const handleSchema = z
  */
 export const messageKindSchema = z.enum(["agent", "pass", "system"]);
 export type MessageKind = z.infer<typeof messageKindSchema>;
+
+/**
+ * Whether a room is running, and if not, who stopped it.
+ *
+ * These were one boolean, which made three different silences look alike — and made the
+ * agent's own goodbye reversible by either owner nudging a budget number, because changing
+ * the allowance clears a halt on purpose.
+ *
+ * - `live` — dispatching normally. Says nothing about whether the allowance is spent: a
+ *   room out of turns is still `live`, because topping it up is all it needs. That state is
+ *   derived from the limit rather than stored, so there is one place it can be wrong.
+ * - `halted` — a person pressed stop. Lifted by speaking to your agent or choosing a new
+ *   allowance, both of which mean "carry on".
+ * - `closed` — an agent signed off with the closing sentinel. Terminal until a person
+ *   deliberately reopens it: a finished conversation must not come back to life because
+ *   somebody touched a number, and either owner can open a fresh room on the same
+ *   connection instead.
+ */
+export const roomStateSchema = z.enum(["live", "halted", "closed"]);
+export type RoomState = z.infer<typeof roomStateSchema>;
 
 export const messageSchema = z.object({
   id: z.string(),
@@ -176,8 +210,8 @@ export const conversationSchema = z.object({
   spentUSD: z.number(),
   /** True when some spend was unpriced, so `spentUSD` understates the real total. */
   spendIncomplete: z.boolean(),
-  /** Halted by a person. Cleared by changing the limit or by speaking to your agent. */
-  stopped: z.boolean(),
+  /** Running, halted by a person, or closed by an agent. See `roomStateSchema`. */
+  state: roomStateSchema,
   lastAt: z.string(),
 });
 export type Conversation = z.infer<typeof conversationSchema>;
@@ -236,6 +270,15 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   }),
   /** End a conversation's current run. The kill switch that makes unlimited defensible. */
   z.object({ t: z.literal("conversation.stop"), conversationId: z.string() }),
+  /**
+   * Bring a closed conversation back.
+   *
+   * Deliberately its own frame rather than a side effect of choosing an allowance. An agent
+   * that said goodbye should stay gone until a person says otherwise in as many words —
+   * `limit.set` clears a halt precisely because picking a new ceiling means "carry on", and
+   * that must not also undo a goodbye.
+   */
+  z.object({ t: z.literal("conversation.reopen"), conversationId: z.string() }),
   /** The agent's answer to a turn. The only way anything reaches the other party. */
   z.object({
     t: z.literal("say"),
@@ -291,6 +334,18 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     t: z.literal("watch"),
     conversationId: z.string().optional(),
   }),
+  /**
+   * Older messages, for a browser that has scrolled back past what welcome carried.
+   *
+   * Pulled rather than pushed: history is only wanted by somebody actually looking at it,
+   * and the alternative is every reconnect paying for transcripts nobody reads.
+   */
+  z.object({
+    t: z.literal("history.load"),
+    conversationId: z.string(),
+    /** Load the page immediately older than this message. */
+    beforeId: z.string(),
+  }),
 ]);
 export type ClientFrame = z.infer<typeof clientFrameSchema>;
 
@@ -344,13 +399,21 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
     limit: limitSchema,
     spentUSD: z.number(),
     spendIncomplete: z.boolean(),
-    stopped: z.boolean(),
+    state: roomStateSchema,
   }),
   z.object({ t: z.literal("error"), detail: z.string() }),
   z.object({
     t: z.literal("presence"),
     conversationId: z.string(),
     other: peerPresenceSchema,
+  }),
+  /** One page of older messages, oldest first, in answer to `history.load`. */
+  z.object({
+    t: z.literal("history"),
+    conversationId: z.string(),
+    messages: z.array(messageSchema),
+    /** True when this page reaches the start of the room and there is nothing older. */
+    reachedStart: z.boolean(),
   }),
 ]);
 export type ServerFrame = z.infer<typeof serverFrameSchema>;

@@ -18,6 +18,13 @@ export interface TurnCost {
   readonly incomplete: boolean;
 }
 
+export interface HumanQuestion {
+  readonly question: string;
+  readonly suggestions: readonly { readonly value: string; readonly label?: string; readonly description?: string }[];
+  readonly allowCustom: boolean;
+  readonly allowMultiple: boolean;
+}
+
 export type TurnResult =
   | {
       readonly kind: "said";
@@ -27,7 +34,7 @@ export type TurnResult =
       readonly closing: boolean;
     }
   | { readonly kind: "passed"; readonly cost: TurnCost }
-  | { readonly kind: "needs-you"; readonly runId: string }
+  | { readonly kind: "needs-you"; readonly runId: string; readonly pending: { readonly kind: "approval"; readonly message?: string } | { readonly kind: "question"; readonly question: HumanQuestion } }
   | { readonly kind: "failed"; readonly reason: string };
 
 /** Cap chosen to sit under jazz's own 20 KB body limit with room for the JSON envelope. */
@@ -61,8 +68,40 @@ export async function runTurn(
   // jazz is holding it open. Surfacing it as such is the difference between "your agent is
   // waiting for you" and "something broke".
   if (response.status === 202) {
-    const parked = (await response.json().catch(() => null)) as { runId?: string } | null;
-    return { kind: "needs-you", runId: parked?.runId ?? "unknown" };
+    const parked = (await response.json().catch(() => null)) as
+      | {
+          runId?: string;
+          pending?: {
+            kind?: string;
+            message?: string;
+            question?: string;
+            suggestions?: HumanQuestion["suggestions"];
+            allowCustom?: boolean;
+            allowMultiple?: boolean;
+          };
+        }
+      | null;
+    const pending = parked?.pending;
+    if (pending?.kind === "question" && typeof pending.question === "string") {
+      return {
+        kind: "needs-you",
+        runId: parked?.runId ?? "unknown",
+        pending: {
+          kind: "question",
+          question: {
+            question: pending.question,
+            suggestions: pending.suggestions ?? [],
+            allowCustom: pending.allowCustom === true,
+            allowMultiple: pending.allowMultiple === true,
+          },
+        },
+      };
+    }
+    return {
+      kind: "needs-you",
+      runId: parked?.runId ?? "unknown",
+      pending: { kind: "approval", ...(typeof pending?.message === "string" ? { message: pending.message } : {}) },
+    };
   }
 
   if (response.status === 404) {
@@ -107,6 +146,7 @@ export async function answerParkedRun(
   runId: string,
   approved: boolean,
   note?: string,
+  questionResponse?: string,
 ): Promise<TurnResult> {
   let response: Response;
   try {
@@ -116,7 +156,11 @@ export async function answerParkedRun(
         authorization: `Bearer ${daemon.token}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ approved, ...(note !== undefined ? { note } : {}) }),
+      body: JSON.stringify({
+        approved,
+        ...(note !== undefined ? { note } : {}),
+        ...(questionResponse !== undefined ? { response: questionResponse } : {}),
+      }),
     });
   } catch {
     return { kind: "failed", reason: "jazz daemon is not reachable — is `jazz daemon` running?" };

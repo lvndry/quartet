@@ -244,6 +244,20 @@ async function handleApi(pathname: string, request: Request, bridge: Bridge): Pr
       return json({ ok: true });
     }
 
+    case "/api/reopen": {
+      const conversationId = text("conversationId");
+      if (conversationId.length === 0) return json({ error: "conversationId is required" }, 400);
+      bridge.send({ t: "conversation.reopen", conversationId });
+      return json({ ok: true });
+    }
+
+    case "/api/history": {
+      const conversationId = text("conversationId");
+      if (conversationId.length === 0) return json({ error: "conversationId is required" }, 400);
+      bridge.requestHistory(conversationId);
+      return json({ ok: true });
+    }
+
     case "/api/approve": {
       const conversationId = text("conversationId");
       const runId = text("runId");
@@ -252,11 +266,13 @@ async function handleApi(pathname: string, request: Request, bridge: Bridge): Pr
       }
       const approved = body["approved"] === true;
       const note = text("note");
+      const response = text("response");
       await bridge.resolveApproval(
         conversationId,
         runId,
         approved,
         note.length > 0 ? note : undefined,
+        response.length > 0 ? response : undefined,
       );
       return json({ ok: true });
     }

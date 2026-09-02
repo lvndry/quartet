@@ -48,7 +48,7 @@ function roomIsQuiet(conversation: Conversation): boolean {
  */
 function nearingLimit(conversation: Conversation): string | undefined {
   const { limit, budgetRemaining, spentUSD, spendIncomplete } = conversation;
-  if (conversation.stopped) return undefined;
+  if (conversation.state !== "live") return undefined;
   if (limit.kind === "turns") {
     if (budgetRemaining === 0) return undefined;
     return budgetRemaining <= 1 ? "last turn" : undefined;
@@ -338,13 +338,15 @@ function LimitPicker({
         </span>
       )}
 
-      <button
-        className="btn stop"
-        type="button"
-        onClick={() => void onAct("stop", { conversationId: conversation.id })}
-      >
-        Stop
-      </button>
+      {conversation.state !== "closed" && (
+        <button
+          className="btn stop"
+          type="button"
+          onClick={() => void onAct("stop", { conversationId: conversation.id })}
+        >
+          Stop
+        </button>
+      )}
     </span>
   );
 }
@@ -423,6 +425,7 @@ export default function App(): React.JSX.Element {
           <Chat
             conversation={conversation}
             messages={state.messages[conversation.id] ?? []}
+            atStart={state.atStart[conversation.id] ?? true}
             asides={state.asides[conversation.id] ?? []}
             activity={state.activity[conversation.id]}
             presence={state.presence[conversation.id]}
@@ -591,6 +594,7 @@ function Sidebar({
 function Chat({
   conversation,
   messages,
+  atStart,
   asides,
   activity,
   presence,
@@ -599,6 +603,8 @@ function Chat({
 }: {
   conversation: Conversation;
   messages: Message[];
+  /** False when the room has messages older than the ones loaded. */
+  atStart: boolean;
   asides: Aside[];
   activity: Activity | undefined;
   presence: PeerPresence | undefined;
@@ -606,6 +612,7 @@ function Chat({
   onAct: (path: string, body: Record<string, unknown>) => Promise<void>;
 }): React.JSX.Element {
   const [draft, setDraft] = useState("");
+  const [questionDraft, setQuestionDraft] = useState("");
   const bottom = useRef<HTMLDivElement>(null);
 
   // Asides are yours alone, so they are merged in for display only — they were never sent
@@ -626,6 +633,21 @@ function Chat({
   const seen = useRef(timeline.length);
   const [unread, setUnread] = useState(0);
 
+  /**
+   * How far from the bottom the view was when older messages were asked for.
+   *
+   * Prepending to a scroller leaves `scrollTop` alone while the content above the viewport
+   * grows, which shoves the page down under whoever was reading it. Measuring from the
+   * bottom instead survives however many messages arrive.
+   */
+  const restore = useRef<number | undefined>(undefined);
+
+  const loadEarlier = useCallback(() => {
+    const element = scroller.current;
+    restore.current = element === null ? 0 : element.scrollHeight - element.scrollTop;
+    void onAct("history", { conversationId: conversation.id });
+  }, [conversation.id, onAct]);
+
   const toBottom = useCallback(() => {
     bottom.current?.scrollIntoView({ block: "end", behavior: "smooth" });
     pinned.current = true;
@@ -640,12 +662,26 @@ function Chat({
   }, [conversation.id]);
 
   useEffect(() => {
+    // Read and cleared unconditionally: a page that turns out to be empty still has to give
+    // the anchor up, or it would hijack the scroll of whatever arrives next.
+    const anchor = restore.current;
+    restore.current = undefined;
+
     const added = timeline.length - seen.current;
     seen.current = timeline.length;
     if (added <= 0) return;
+
+    // Older messages are not new arrivals. They belong above the viewport, they are not
+    // unread, and the view stays where the reader left it.
+    if (anchor !== undefined) {
+      const element = scroller.current;
+      if (element !== null) element.scrollTop = element.scrollHeight - anchor;
+      return;
+    }
+
     if (pinned.current) bottom.current?.scrollIntoView({ block: "end" });
     else setUnread((count) => count + added);
-  }, [timeline.length]);
+  }, [timeline.length, atStart]);
 
   useEffect(() => {
     if (pinned.current) bottom.current?.scrollIntoView({ block: "end" });
@@ -676,6 +712,11 @@ function Chat({
 
       <div className="pane-scroll" ref={scroller} onScroll={onScroll}>
         <div className="thread">
+          {!atStart && (
+            <button className="earlier" type="button" onClick={loadEarlier}>
+              Load earlier messages
+            </button>
+          )}
           {timeline.map((item, index) => {
             if ("aside" in item) {
               return (
@@ -750,44 +791,94 @@ function Chat({
             <div className="needs-you">
               <span className="bar" />
               <span className="msg-body">
-                <span className="text">Your agent wants to use a tool that needs your approval.</span>
-                <span className="composer-row">
-                  <button
-                    className="btn go"
-                    type="button"
-                    onClick={() =>
-                      void onAct("approve", {
-                        conversationId: conversation.id,
-                        runId: activity.runId,
-                        approved: true,
-                      })
-                    }
-                  >
-                    Approve
-                  </button>
-                  <button
-                    className="btn stop"
-                    type="button"
-                    onClick={() =>
-                      void onAct("approve", {
-                        conversationId: conversation.id,
-                        runId: activity.runId,
-                        approved: false,
-                      })
-                    }
-                  >
-                    Deny
-                  </button>
-                </span>
+                {activity.pending?.kind === "question" ? (
+                  <>
+                    <span className="text">{activity.pending.question.question}</span>
+                    <span className="composer-row">
+                      {activity.pending.question.suggestions.map((suggestion) => (
+                        <button
+                          className="btn"
+                          key={suggestion.value}
+                          type="button"
+                          onClick={() =>
+                            void onAct("approve", {
+                              conversationId: conversation.id,
+                              runId: activity.runId,
+                              approved: false,
+                              response: suggestion.value,
+                            })
+                          }
+                        >
+                          {suggestion.label ?? suggestion.value}
+                        </button>
+                      ))}
+                    </span>
+                    {activity.pending.question.allowCustom && (
+                      <span className="composer-row">
+                        <input
+                          className="field"
+                          aria-label="Your answer"
+                          value={questionDraft}
+                          onChange={(event) => setQuestionDraft(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" && questionDraft.trim().length > 0) {
+                              void onAct("approve", {
+                                conversationId: conversation.id,
+                                runId: activity.runId,
+                                approved: false,
+                                response: questionDraft.trim(),
+                              });
+                              setQuestionDraft("");
+                            }
+                          }}
+                        />
+                        <button
+                          className="btn go"
+                          disabled={questionDraft.trim().length === 0}
+                          type="button"
+                          onClick={() => {
+                            void onAct("approve", {
+                              conversationId: conversation.id,
+                              runId: activity.runId,
+                              approved: false,
+                              response: questionDraft.trim(),
+                            });
+                            setQuestionDraft("");
+                          }}
+                        >
+                          Send
+                        </button>
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <span className="text">
+                      {activity.pending?.message ?? "Your agent wants to use a tool that needs your approval."}
+                    </span>
+                    <span className="composer-row">
+                      <button className="btn go" type="button" onClick={() => void onAct("approve", { conversationId: conversation.id, runId: activity.runId, approved: true })}>Approve</button>
+                      <button className="btn stop" type="button" onClick={() => void onAct("approve", { conversationId: conversation.id, runId: activity.runId, approved: false })}>Deny</button>
+                    </span>
+                  </>
+                )}
               </span>
             </div>
           )}
 
-          {conversation.stopped && activity?.state !== "thinking" && !presence?.thinking && (
-            <span className="line">Stopped. Change the limit or say something to continue.</span>
-          )}
+          {conversation.state === "halted" &&
+            activity?.state !== "thinking" &&
+            !presence?.thinking && (
+              <span className="line">Stopped. Change the limit or say something to continue.</span>
+            )}
 
-          {!conversation.stopped &&
+          {conversation.state === "closed" &&
+            activity?.state !== "thinking" &&
+            !presence?.thinking && (
+              <span className="line">Closed — an agent said goodbye.</span>
+            )}
+
+          {conversation.state === "live" &&
             roomIsQuiet(conversation) &&
             activity?.state !== "thinking" &&
             activity?.state !== "needs-you" &&
@@ -809,40 +900,60 @@ function Chat({
         )}
       </div>
 
-      <div className="composer">
-        <div className="composer-row">
-          <textarea
-            className="field"
-            placeholder="Tell your agent what to do…"
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                if (draft.trim().length === 0) return;
+      {conversation.state === "closed" ? (
+        <div className="composer">
+          <div className="composer-row">
+            <button
+              className="btn go"
+              type="button"
+              onClick={() => void onAct("reopen", { conversationId: conversation.id })}
+            >
+              Reopen this conversation
+            </button>
+          </div>
+          <span className="composer-note">
+            An agent ended this one. Reopening is its own decision — raising the allowance
+            will not restart it. Opening a fresh room with @
+            {conversation.participants.find((handle) => handle !== meHandle) ?? "them"} keeps
+            this record where it ended.
+          </span>
+        </div>
+      ) : (
+        <div className="composer">
+          <div className="composer-row">
+            <textarea
+              className="field"
+              placeholder="Tell your agent what to do…"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  if (draft.trim().length === 0) return;
+                  void onAct("nudge", { conversationId: conversation.id, text: draft.trim() });
+                  setDraft("");
+                }
+              }}
+            />
+            <button
+              className="btn go"
+              type="button"
+              disabled={draft.trim().length === 0}
+              onClick={() => {
                 void onAct("nudge", { conversationId: conversation.id, text: draft.trim() });
                 setDraft("");
-              }
-            }}
-          />
-          <button
-            className="btn go"
-            type="button"
-            disabled={draft.trim().length === 0}
-            onClick={() => {
-              void onAct("nudge", { conversationId: conversation.id, text: draft.trim() });
-              setDraft("");
-            }}
-          >
-            Steer
-          </button>
+              }}
+            >
+              Steer
+            </button>
+          </div>
+          <span className="composer-note">
+            Goes to your agent, not to @
+            {conversation.participants.find((handle) => handle !== meHandle) ?? "them"} — your
+            agent decides what to say. To end the conversation, use Stop.
+          </span>
         </div>
-        <span className="composer-note">
-          Goes to your agent, not to @
-          {conversation.participants.find((handle) => handle !== meHandle) ?? "them"} — your agent
-          decides what to say. To end the conversation, use Stop.
-        </span>
-      </div>
+      )}
     </section>
   );
 }

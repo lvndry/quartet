@@ -57,15 +57,31 @@ export class Orchestrator {
       turnsLeft: this.store.budget(conversationId),
       spentUSD: spend.usd,
       spendIncomplete: spend.incomplete,
-      stopped: this.store.isStopped(conversationId),
+      roomState: this.store.roomState(conversationId),
       inFlight: this.turns.get(conversationId) ?? {},
     };
   }
 
+  /**
+   * Persist everything the policy just decided, in-flight turns included.
+   *
+   * The turn bookkeeping used to live only in `this.turns`, while the charge for it went
+   * straight to disk. A hub restart mid-turn therefore left a conversation paid up and
+   * permanently silent: no entry to replay on the next hello, no deadline left to fire, and
+   * nothing in the transcript to say why. `recover` reads these rows back.
+   */
   private write(conversationId: string, state: TurnState): void {
     this.store.setBudget(conversationId, state.turnsLeft);
-    this.store.setStopped(conversationId, state.stopped);
+    this.store.setState(conversationId, state.roomState);
     this.store.setSpend(conversationId, state.spentUSD, state.spendIncomplete);
+
+    const before = this.turns.get(conversationId) ?? {};
+    for (const agentId of Object.keys(before)) {
+      if (state.inFlight[agentId] === undefined) this.store.clearInFlight(conversationId, agentId);
+    }
+    for (const [agentId, entry] of Object.entries(state.inFlight)) {
+      this.store.saveInFlight(conversationId, agentId, entry);
+    }
     this.turns.set(conversationId, state.inFlight);
   }
 
@@ -178,6 +194,35 @@ export class Orchestrator {
     this.apply(conversationId, { kind: "stop" });
   }
 
+  reopen(conversationId: string): void {
+    this.apply(conversationId, { kind: "reopen" });
+  }
+
+  /**
+   * Pick up the turns the previous process was waiting on.
+   *
+   * Called once at boot, before any bridge can connect. Nothing is dispatched here — there
+   * are no sockets yet — so each turn only gets its deadline back, measured from when it
+   * was charged rather than from now. A bridge that reconnects has its work re-delivered by
+   * `replayTurns`; one that never does trips the deadline and the room says so.
+   *
+   * A deadline already past arms at zero and fires on the next tick, which is deliberately
+   * after the caller has finished wiring the hub up.
+   *
+   * `now` is a parameter so a test can place a recovered turn either side of its deadline
+   * without waiting three minutes for one.
+   */
+  recover(now: number = Date.now()): void {
+    for (const { conversationId, agentId, dispatchedAt, entry } of this.store.allInFlight()) {
+      this.turns.set(conversationId, {
+        ...(this.turns.get(conversationId) ?? {}),
+        [agentId]: entry,
+      });
+      const elapsed = now - new Date(dispatchedAt).getTime();
+      this.armDeadline(conversationId, agentId, Math.max(0, TURN_DEADLINE_MS - elapsed));
+    }
+  }
+
   /**
    * A socket dropped. The turn stays in flight: a laptop sleep or a replaced
    * connection must not eat a charged dispatch. The deadline still fires if they
@@ -220,7 +265,7 @@ export class Orchestrator {
       limit: this.store.limitFor(conversationId),
       spentUSD: spend.usd,
       spendIncomplete: spend.incomplete,
-      stopped: this.store.isStopped(conversationId),
+      state: this.store.roomState(conversationId),
     };
     for (const agentId of participants) this.deliver(agentId, frame);
   }
