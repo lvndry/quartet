@@ -44,6 +44,77 @@ function nameThem(handles: readonly string[]): string {
   return `${tagged.slice(0, -1).join(", ")} and ${String(tagged[tagged.length - 1])}`;
 }
 
+/**
+ * Every fingerprint on screen, cut down to the shortest prefix that still tells them apart.
+ *
+ * The same trick git uses for commit hashes: nobody needs the full sixty-four-bit digest to
+ * tell two contacts apart, they need enough of it to tell *these* contacts apart. Purely a
+ * display convenience, recomputed locally from whatever is currently on screen — an invite's
+ * fingerprint check and a KeyConflict alarm still compare the full value, never this one.
+ */
+function shortFingerprints(fingerprints: Record<string, string>): Record<string, string> {
+  const hexByDid = Object.entries(fingerprints).map(
+    ([did, full]) => [did, full.replaceAll("-", "")] as const,
+  );
+  const short: Record<string, string> = {};
+  for (const [did, hex] of hexByDid) {
+    let length = 4;
+    while (
+      length < hex.length &&
+      hexByDid.some(
+        ([otherDid, otherHex]) => otherDid !== did && otherHex.startsWith(hex.slice(0, length)),
+      )
+    ) {
+      length += 1;
+    }
+    short[did] = hex.slice(0, length);
+  }
+  return short;
+}
+
+/**
+ * Your own handle, with a short tag rather than a bare one.
+ *
+ * The short form is only ever for reading at a glance — it exists so a second @otto in your
+ * directory doesn't look identical to the first. Handing your tag to somebody inviting you is
+ * a copy, not a transcription: clicking it copies the full fingerprint underneath, which is
+ * the value that actually gets checked.
+ */
+function WhoAmI({
+  handle,
+  fingerprint,
+  short,
+}: {
+  handle: string;
+  fingerprint: string | undefined;
+  short: string | undefined;
+}): React.JSX.Element {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <span className="whoami">
+      @{handle}
+      {short !== undefined && (
+        <button
+          type="button"
+          className="tag-value"
+          title="Click to copy your full tag — give it to anyone inviting you who wants to verify it's you before trusting the hub."
+          onClick={() => {
+            if (fingerprint === undefined) return;
+            void navigator.clipboard.writeText(`@${handle}#${fingerprint}`).then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            });
+          }}
+        >
+          #{short}
+          {copied ? " · copied" : ""}
+        </button>
+      )}
+    </span>
+  );
+}
+
 function monogram(handle: string): string {
   return handle.slice(0, 2).toUpperCase();
 }
@@ -423,6 +494,8 @@ export default function App(): React.JSX.Element {
     [state.conversations, selected],
   );
 
+  const shortFp = useMemo(() => shortFingerprints(state.fingerprints), [state.fingerprints]);
+
   useEffect(() => {
     if (!state.connectedToHub) return;
     void call("watch", conversation === undefined ? {} : { conversationId: conversation.id });
@@ -448,14 +521,17 @@ export default function App(): React.JSX.Element {
           Quar<span>tet</span>
         </div>
         {state.me !== undefined && (
-          <span
-            className="whoami"
-            title="Give this whole line to anyone inviting you. The part after # is what proves the handle is yours."
-          >
-            @{state.me.handle}
-            {state.me.did !== undefined && (
-              <span className="fingerprint">#{state.fingerprints[state.me.did] ?? "unkeyed"}</span>
-            )}
+          <WhoAmI
+            handle={state.me.handle}
+            fingerprint={
+              state.me.did !== undefined ? state.fingerprints[state.me.did] ?? "unkeyed" : undefined
+            }
+            short={state.me.did !== undefined ? shortFp[state.me.did] ?? "unkeyed" : undefined}
+          />
+        )}
+        {state.myModel !== undefined && (
+          <span className="model-badge" title="What your agent is running, reported by jazz">
+            {state.myModel}
           </span>
         )}
         <div className="spacer" />
@@ -474,6 +550,7 @@ export default function App(): React.JSX.Element {
       <div className="columns">
         <Sidebar
           state={state}
+          shortFingerprints={shortFp}
           selectedId={conversation?.id}
           open={navOpen}
           onSelect={(id) => {
@@ -526,12 +603,14 @@ export default function App(): React.JSX.Element {
 
 function Sidebar({
   state,
+  shortFingerprints,
   selectedId,
   open,
   onSelect,
   onAct,
 }: {
   state: ReturnType<typeof useBridge>;
+  shortFingerprints: Record<string, string>;
   selectedId: string | undefined;
   open: boolean;
   onSelect: (id: string) => void;
@@ -671,7 +750,7 @@ function Sidebar({
               </span>
               {entry.agent.did !== undefined && (
                 <span className="row-sub fingerprint">
-                  #{state.fingerprints[entry.agent.did] ?? "unkeyed"}
+                  #{shortFingerprints[entry.agent.did] ?? "unkeyed"}
                 </span>
               )}
             </span>

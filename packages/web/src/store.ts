@@ -61,6 +61,8 @@ export interface LedgerEntry {
 export interface BridgeState {
   connectedToHub: boolean;
   me?: Agent;
+  /** `provider/model` for the jazz agent answering on this machine. */
+  myModel?: string;
   connections: Connection[];
   conversations: Conversation[];
   invites: Invite[];
