@@ -27,6 +27,7 @@
     "vite": "^8.2.2"
   },
   "dependencies": {
+    "cloudflared": "^0.7.3",
     "hono": "^4.13.5",
     "katex": "^0.18.5",
     "react": "^19.2.8",

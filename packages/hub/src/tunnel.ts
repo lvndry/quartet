@@ -1,91 +1,68 @@
 /**
  * @fileoverview A public URL for this hub, for the "run it for a friend" case.
  *
- * Shells out to `cloudflared`'s quick tunnels rather than embedding a tunnel client or
- * reaching for ngrok: quick tunnels need no account and no token, which is the whole point of
- * a flag meant to remove ceremony, not add a signup step in front of it. They also proxy
- * WebSocket traffic cleanly and show no browser interstitial — both of which matter here,
- * since the hub's real protocol runs over a `/socket` upgrade, not just plain JSON requests.
+ * Built on the `cloudflared` npm package rather than assuming the binary is already on the
+ * machine: Cloudflare has no pure-JS tunnel client, only the Go binary, so "no install step"
+ * means downloading that binary ourselves the first time it's needed rather than asking
+ * somebody to `brew install` it first. Quick tunnels specifically — not ngrok — because they
+ * need no account and no authtoken, and they proxy WebSocket traffic without the browser
+ * interstitial ngrok's free tier shows, both of which matter for the hub's `/socket` upgrade.
  */
 
-const READY_TIMEOUT_MS = 20_000;
+import { bin, install, Tunnel } from "cloudflared";
+
+const READY_TIMEOUT_MS = 30_000;
 
 export type TunnelResult =
-  | { readonly kind: "ok"; readonly url: string; readonly process: Bun.Subprocess }
-  | { readonly kind: "missing-binary" }
+  | { readonly kind: "ok"; readonly url: string; readonly stop: () => void }
+  | { readonly kind: "download-failed"; readonly detail: string }
   | { readonly kind: "timed-out" }
   | { readonly kind: "failed"; readonly detail: string };
 
-/** The URL cloudflared prints once a quick tunnel is live, pulled out of its own banner. */
-export function parseTunnelUrl(output: string): string | undefined {
-  return /https:\/\/[a-z0-9-]+\.trycloudflare\.com/.exec(output)?.[0];
-}
+type Attempt = TunnelResult | { readonly kind: "missing-binary" };
 
 /**
  * Starts a quick tunnel to `http://localhost:<port>` and waits for its public URL.
  *
- * cloudflared writes its banner — URL included — to stderr, not stdout, so that is the
- * stream read here. The process is left running on success; the caller owns killing it on
- * shutdown. `binary` is overridable so tests can point this at a stand-in rather than
- * requiring `cloudflared` on the machine running them.
+ * Tries to run first rather than checking the filesystem beforehand — the OS already tells
+ * us precisely when a binary is missing, on the same spawn we needed to make anyway. Only on
+ * that failure does this fetch the binary — a one-time cost of a few dozen megabytes, the
+ * same download `brew install cloudflared` would make, just triggered by us instead of asked
+ * of the person running the hub — and try once more.
  */
-export async function startTunnel(
-  port: number,
-  binary = "cloudflared",
-  readyTimeoutMs = READY_TIMEOUT_MS,
-): Promise<TunnelResult> {
-  let child: Bun.Subprocess;
-  try {
-    child = Bun.spawn(
-      [binary, "tunnel", "--url", `http://localhost:${String(port)}`, "--no-autoupdate"],
-      { stdout: "ignore", stderr: "pipe" },
-    );
-  } catch {
-    return { kind: "missing-binary" };
-  }
-
-  const stderr = child.stderr;
-  if (!(stderr instanceof ReadableStream)) {
-    child.kill();
-    return { kind: "failed", detail: "cloudflared's stderr was not readable" };
-  }
-  const reader = stderr.getReader();
-  const decoder = new TextDecoder();
-  let buffered = "";
-  const timeout = setTimeout(() => void reader.cancel(), readyTimeoutMs);
+export async function startTunnel(port: number, readyTimeoutMs = READY_TIMEOUT_MS): Promise<TunnelResult> {
+  const first = await attempt(port, readyTimeoutMs);
+  if (first.kind !== "missing-binary") return first;
 
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffered += decoder.decode(value, { stream: true });
-      const url = parseTunnelUrl(buffered);
-      if (url !== undefined) {
-        // The tunnel keeps writing to stderr as it runs. Nobody is reading it after this
-        // point unless something drains it, and an unread pipe eventually applies backpressure
-        // that could stall cloudflared itself — so draining continues quietly in the background.
-        void drainForever(reader);
-        return { kind: "ok", url, process: child };
-      }
-    }
+    await install(bin);
   } catch (error) {
-    child.kill();
-    return { kind: "failed", detail: error instanceof Error ? error.message : String(error) };
-  } finally {
-    clearTimeout(timeout);
+    return { kind: "download-failed", detail: error instanceof Error ? error.message : String(error) };
   }
 
-  child.kill();
-  return { kind: "timed-out" };
+  const second = await attempt(port, readyTimeoutMs);
+  return second.kind === "missing-binary"
+    ? { kind: "failed", detail: "cloudflared was downloaded but still would not run" }
+    : second;
 }
 
-async function drainForever(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
-  try {
-    for (;;) {
-      const { done } = await reader.read();
-      if (done) return;
-    }
-  } catch {
-    // The process exited or the pipe broke; nothing left to drain.
-  }
+function attempt(port: number, readyTimeoutMs: number): Promise<Attempt> {
+  const child = Tunnel.quick(`http://localhost:${String(port)}`);
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      child.stop();
+      resolve({ kind: "timed-out" });
+    }, readyTimeoutMs);
+
+    child.once("url", (url) => {
+      clearTimeout(timeout);
+      resolve({ kind: "ok", url, stop: child.stop });
+    });
+
+    child.once("error", (error: NodeJS.ErrnoException) => {
+      clearTimeout(timeout);
+      resolve(error.code === "ENOENT" ? { kind: "missing-binary" } : { kind: "failed", detail: error.message });
+    });
+  });
 }

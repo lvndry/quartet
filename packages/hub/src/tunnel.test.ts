@@ -2,9 +2,14 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseTunnelUrl, startTunnel } from "./tunnel";
+import { use } from "cloudflared";
+import { startTunnel } from "./tunnel";
 
-/** A stand-in `cloudflared` that prints its own script rather than shelling out to Cloudflare. */
+/**
+ * A stand-in `cloudflared` binary, pointed to via the library's own `use()` override — the
+ * same mechanism it exposes for anyone running a self-hosted mirror. Real tests never shell
+ * out to the real binary or its download step, which would need network access.
+ */
 function fakeBinary(script: string): { path: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "quartet-tunnel-"));
   const path = join(dir, "cloudflared");
@@ -18,29 +23,8 @@ afterEach(() => {
   while (cleanups.length > 0) cleanups.pop()?.();
 });
 
-describe("parseTunnelUrl", () => {
-  it("pulls the URL out of cloudflared's boxed banner", () => {
-    const banner = [
-      "2024-01-01T00:00:00Z INF +----------------------------------------------+",
-      "2024-01-01T00:00:00Z INF |  Your quick Tunnel has been created!          |",
-      "2024-01-01T00:00:00Z INF |  https://fond-otter-4821.trycloudflare.com    |",
-      "2024-01-01T00:00:00Z INF +----------------------------------------------+",
-    ].join("\n");
-    expect(parseTunnelUrl(banner)).toBe("https://fond-otter-4821.trycloudflare.com");
-  });
-
-  it("finds nothing in plain log lines", () => {
-    expect(parseTunnelUrl("2024-01-01T00:00:00Z INF Starting tunnel\n")).toBeUndefined();
-  });
-});
-
 describe("startTunnel", () => {
-  it("reports a missing binary rather than throwing", async () => {
-    const result = await startTunnel(8080, "definitely-not-a-real-binary-xyz");
-    expect(result.kind).toBe("missing-binary");
-  });
-
-  it("extracts the URL once the process reports it, and leaves it running", async () => {
+  it("extracts the URL once cloudflared reports it, and leaves the tunnel running", async () => {
     const fake = fakeBinary(
       "#!/bin/sh\n" +
         'echo "starting..." >&2\n' +
@@ -48,20 +32,22 @@ describe("startTunnel", () => {
         "sleep 30\n",
     );
     cleanups.push(fake.cleanup);
+    use(fake.path);
 
-    const result = await startTunnel(8080, fake.path);
+    const result = await startTunnel(8080);
     expect(result.kind).toBe("ok");
     if (result.kind === "ok") {
       expect(result.url).toBe("https://fake-words-1234.trycloudflare.com");
-      result.process.kill();
+      result.stop();
     }
   });
 
   it("gives up once the deadline passes with no URL", async () => {
     const fake = fakeBinary("#!/bin/sh\nsleep 30\n");
     cleanups.push(fake.cleanup);
+    use(fake.path);
 
-    const result = await startTunnel(8080, fake.path, 200);
+    const result = await startTunnel(8080, 200);
     expect(result.kind).toBe("timed-out");
   });
 });
