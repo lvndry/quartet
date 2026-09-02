@@ -205,6 +205,9 @@ export class HubStore {
         conversation_id TEXT NOT NULL REFERENCES conversations(id),
         agent_id        TEXT NOT NULL REFERENCES agents(id),
         joined_at       TEXT NOT NULL,
+        -- When this member's agent said goodbye. Durable, because a hub restart must not
+        -- resurrect an agent whose owner is no longer paying for it to talk.
+        bowed_out_at    TEXT,
         PRIMARY KEY (conversation_id, agent_id)
       );
 
@@ -258,6 +261,8 @@ export class HubStore {
     // Rooms written before membership was its own table have theirs implied by their
     // connection. Seeding from that is exact rather than a guess: a two-party room's members
     // were precisely the two ends of the pair it came from.
+    this.addMissingColumns("conversation_members", { bowed_out_at: "TEXT" });
+
     this.db.exec(`
       INSERT OR IGNORE INTO conversation_members (conversation_id, agent_id, joined_at)
       SELECT c.id, n.a_agent, c.created_at FROM conversations c
@@ -591,6 +596,15 @@ export class HubStore {
       spentUSD: row.spent_usd,
       spendIncomplete: row.spend_incomplete === 1,
       state: HubStore.parseRoomState(row.state),
+      bowedOut: this.db
+        .query<{ handle: string }, [string]>(
+          `SELECT a.handle FROM conversation_members m
+           JOIN agents a ON a.id = m.agent_id
+           WHERE m.conversation_id = ? AND m.bowed_out_at IS NOT NULL
+           ORDER BY m.bowed_out_at, a.handle`,
+        )
+        .all(id)
+        .map((member) => member.handle),
       lastAt: row.last_at,
     };
   }
@@ -651,6 +665,31 @@ export class HubStore {
     ]);
     // A turn owed to somebody who has left is not owed to anybody.
     this.clearInFlight(conversationId, agentId);
+  }
+
+  /**
+   * Which members' agents have said goodbye.
+   *
+   * Ordered so two hubs reading the same room agree, which matters only because the list
+   * reaches the app and a jumping order looks like something changed when nothing did.
+   */
+  bowedOut(conversationId: string): string[] {
+    return this.db
+      .query<{ agent_id: string }, [string]>(
+        `SELECT agent_id FROM conversation_members
+         WHERE conversation_id = ? AND bowed_out_at IS NOT NULL
+         ORDER BY bowed_out_at, agent_id`,
+      )
+      .all(conversationId)
+      .map((row) => row.agent_id);
+  }
+
+  setBowedOut(conversationId: string, agentId: string, bowedOut: boolean): void {
+    this.db.run(
+      `UPDATE conversation_members SET bowed_out_at = ?
+       WHERE conversation_id = ? AND agent_id = ?`,
+      [bowedOut ? nowIso() : null, conversationId, agentId],
+    );
   }
 
   isMember(conversationId: string, agentId: string): boolean {

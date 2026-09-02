@@ -14,6 +14,7 @@ function room(overrides: Partial<TurnState> = {}): TurnState {
     spendIncomplete: false,
     roomState: "live",
     unanswered: { [MIRA]: false, [OTTO]: false },
+    bowedOut: [],
     inFlight: {},
     ...overrides,
   };
@@ -172,15 +173,51 @@ describe("how a turn ends", () => {
     expect(dispatches).toHaveLength(1);
   });
 
-  it("closes the conversation for good when an agent signs off", () => {
+  it("takes one agent out of the conversation when it signs off, and no more", () => {
     const { state, dispatches } = run(room(), [
       { kind: "message", author: OTTO },
       { kind: "message", author: OTTO },
       { kind: "settled", agent: MIRA, outcome: "closed" },
     ]);
 
-    expect(state.roomState).toBe("closed");
+    // @otto has not said goodbye and may still have something to say, so the room is his
+    // to carry on in. A goodbye is one agent's decision about itself.
+    expect(state.bowedOut).toEqual([MIRA]);
+    expect(state.roomState).toBe("live");
     expect(dispatches).toHaveLength(1);
+  });
+
+  it("closes the conversation once everybody has signed off", () => {
+    const { state } = run(room(), [
+      { kind: "message", author: OTTO },
+      { kind: "settled", agent: MIRA, outcome: "closed" },
+      { kind: "settled", agent: OTTO, outcome: "closed" },
+    ]);
+
+    expect(state.roomState).toBe("closed");
+  });
+
+  it("does not wake an agent that has said goodbye, whatever the other one says", () => {
+    // Without this a bow-out is decorative: the peer's next message wakes it straight back
+    // up and the loop the sentinel exists to stop carries on at full price.
+    const { dispatches } = run(room(), [
+      { kind: "settled", agent: MIRA, outcome: "closed" },
+      { kind: "message", author: OTTO },
+      { kind: "message", author: OTTO },
+    ]);
+
+    expect(dispatches.filter((dispatch) => dispatch.agent === MIRA)).toHaveLength(0);
+  });
+
+  it("takes a goodbye back when its own owner speaks", () => {
+    const { state, dispatches } = run(room(), [
+      { kind: "settled", agent: MIRA, outcome: "closed" },
+      { kind: "steer", agent: MIRA, text: "actually, ask him about Thursday" },
+    ]);
+
+    expect(state.bowedOut).toEqual([]);
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0]).toMatchObject({ agent: MIRA });
   });
 
   it("reports an agent that never answered", () => {
@@ -341,7 +378,7 @@ describe("a goodbye, and what it takes to undo one", () => {
       { kind: "settled", agent: MIRA, outcome: "closed" },
     ]);
 
-    expect(state.roomState).toBe("closed");
+    expect(state.bowedOut).toEqual([MIRA]);
   });
 
   it("stops anyone being asked to reply to it after a reconnect", () => {
@@ -374,16 +411,17 @@ describe("a goodbye, and what it takes to undo one", () => {
     expect(dispatches).toHaveLength(0);
   });
 
-  it("closes a halted room whose in-flight turn comes back with a goodbye", () => {
-    // Both are quiet, but only one of them means the conversation is finished, and the
-    // closing message has already been delivered by the time this is decided.
+  it("records a goodbye against a halted room without overruling the person who halted it", () => {
     const { state } = run(room(), [
       { kind: "message", author: OTTO },
       { kind: "stop" },
       { kind: "settled", agent: MIRA, outcome: "closed" },
     ]);
 
-    expect(state.roomState).toBe("closed");
+    // The halt is the person's and stands; the goodbye is @mira's and is recorded. Lifting
+    // the halt should not then hand @mira a turn it has already declined.
+    expect(state.roomState).toBe("halted");
+    expect(state.bowedOut).toEqual([MIRA]);
   });
 
   it("keeps a halt liftable by carrying on", () => {
@@ -531,13 +569,32 @@ describe("a room with more than two people in it", () => {
     expect(dispatches).toHaveLength(3);
   });
 
-  it("closes for everybody when one agent signs off", () => {
+  it("does not close for everybody when one agent signs off", () => {
+    // This asserted the opposite, which is how one agent's "I love you too" ended a room
+    // in a single exchange — and in a room of four would have ended it for three people
+    // who were still talking.
     const { state } = run(quartet(), [
       { kind: "message", author: MIRA },
       { kind: "settled", agent: OTTO, outcome: "closed" },
     ]);
 
-    expect(state.roomState).toBe("closed");
+    expect(state.bowedOut).toEqual([OTTO]);
+    expect(state.roomState).toBe("live");
+  });
+
+  it("closes only once the last of them has signed off", () => {
+    const { state } = run(quartet(), [
+      { kind: "message", author: MIRA },
+      { kind: "settled", agent: OTTO, outcome: "closed" },
+      { kind: "settled", agent: ADA, outcome: "closed" },
+      { kind: "settled", agent: NIA, outcome: "closed" },
+    ]);
+
+    // Three of four gone is still a room @mira could speak in.
+    expect(state.roomState).toBe("live");
+
+    const { state: empty } = run(state, [{ kind: "settled", agent: MIRA, outcome: "closed" }]);
+    expect(empty.roomState).toBe("closed");
   });
 
   it("steers only your own agent, never the whole room", () => {

@@ -58,6 +58,7 @@ export class Orchestrator {
       unanswered: Object.fromEntries(
         participants.map((agentId) => [agentId, this.store.owesTurn(conversationId, agentId)]),
       ),
+      bowedOut: this.store.bowedOut(conversationId),
       inFlight: this.turns.get(conversationId) ?? {},
     };
   }
@@ -73,6 +74,15 @@ export class Orchestrator {
   private write(conversationId: string, state: TurnState): void {
     this.store.setBudget(conversationId, state.turnsLeft);
     this.store.setState(conversationId, state.roomState);
+    // Written as a diff so an unchanged bow-out does not keep moving its timestamp, which
+    // is what the app orders the list by.
+    const wasBowedOut = new Set(this.store.bowedOut(conversationId));
+    for (const agentId of state.participants) {
+      const now = state.bowedOut.includes(agentId);
+      if (now !== wasBowedOut.has(agentId)) {
+        this.store.setBowedOut(conversationId, agentId, now);
+      }
+    }
     this.store.setSpend(conversationId, state.spentUSD, state.spendIncomplete);
 
     const before = this.turns.get(conversationId) ?? {};
@@ -296,6 +306,8 @@ export class Orchestrator {
       spentUSD: spend.usd,
       spendIncomplete: spend.incomplete,
       state: this.store.roomState(conversationId),
+      // By handle, like the conversation carries it: the app never sees an agent id.
+      bowedOut: this.store.conversation(conversationId)?.bowedOut ?? [],
     };
     for (const agentId of participants) this.deliver(agentId, frame);
   }

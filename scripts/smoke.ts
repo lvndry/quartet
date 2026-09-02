@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { Bridge } from "../packages/bridge/src/bridge";
 import { setDataDirectory } from "../packages/bridge/src/paths";
 import { readLedger } from "../packages/bridge/src/ledger";
-import { PASS_SENTINEL } from "../packages/protocol/src/index";
+import { CLOSE_SENTINEL, PASS_SENTINEL } from "../packages/protocol/src/index";
 import {
   generateKeypair,
   linkAfter,
@@ -543,6 +543,84 @@ if (genuine !== undefined) {
   check(judge(unsigned) === "broken", "a line stripped of its signature is caught, not shrugged at");
 }
 
+
+/* ---------------------------------------------------------------------------------- */
+/* A goodbye is one agent's own                                                       */
+/* ---------------------------------------------------------------------------------- */
+
+// In its own room, because it ends with that room closed. Opened on the connection the
+// first conversation already established — that is what a connection is for.
+{
+  const connectionId = stateA.connections[0]?.id ?? fail("no connection");
+  // Opening a room steers the opener's agent with the purpose, so that turn gets a forced
+  // answer too — otherwise it takes whatever the cycling script happens to be up to, which
+  // may be a pass, and then there is nothing to wait for.
+  daemonA.forceNext("Settling in.");
+  bridgeA.send({
+    t: "conversation.open",
+    connectionId,
+    purpose: "say goodnight",
+    limit: { kind: "turns", turns: 10 },
+  });
+  await waitFor("the second room to open", () => stateA.conversations.length > 1);
+  const roomId =
+    stateA.conversations.find((room) => room.purpose === "say goodnight")?.id ??
+    fail("no second room");
+
+  const roomFor = (state: typeof stateA) => state.conversations.find((room) => room.id === roomId);
+
+  await waitFor(
+    "the opening turn to settle",
+    () => (stateA.messages[roomId] ?? []).some((message) => message.text === "Settling in."),
+    20_000,
+  );
+  await Bun.sleep(800);
+
+  daemonA.forceNext(`Goodnight then. ${CLOSE_SENTINEL}`);
+  bridgeA.nudge(roomId, "wrap it up");
+  await waitFor(
+    "@mira's agent to bow out",
+    () => (roomFor(stateB)?.bowedOut ?? []).includes("mira"),
+    20_000,
+    () => roomFor(stateB)?.bowedOut,
+  );
+  check(
+    roomFor(stateB)?.state === "live",
+    "one agent's goodbye takes it out of the room without closing the room",
+  );
+  check(
+    (roomFor(stateA)?.bowedOut ?? []).includes("mira"),
+    "and both sides are told which agent has gone",
+  );
+
+  // Nothing @otto says may put @mira's agent back to work — only @mira can.
+  const miraTurnsBefore = daemonA.calls.length;
+  daemonB.forceNext("Are you still there?");
+  bridgeB.nudge(roomId, "ask if they are still awake");
+  await waitFor(
+    "@otto's agent to answer into the room",
+    () => (stateB.messages[roomId] ?? []).some((message) => message.text === "Are you still there?"),
+    20_000,
+  );
+  await Bun.sleep(1200);
+  check(
+    daemonA.calls.length === miraTurnsBefore,
+    "a peer talking does not wake an agent that has said goodbye",
+  );
+
+  daemonB.forceNext(`Goodnight. ${CLOSE_SENTINEL}`);
+  bridgeB.nudge(roomId, "you turn in too");
+  await waitFor(
+    "the room to close behind the last of them",
+    () => roomFor(stateA)?.state === "closed",
+    20_000,
+    () => roomFor(stateA)?.state,
+  );
+  check(
+    roomFor(stateA)?.state === "closed" && (roomFor(stateA)?.bowedOut ?? []).length === 2,
+    "and the room closes once every agent has gone",
+  );
+}
 
 /* ---------------------------------------------------------------------------------- */
 /* A room is not a pair                                                               */

@@ -71,6 +71,7 @@ describe("whatever order events arrive in", () => {
         spendIncomplete: false,
         roomState: "live",
         unanswered: { [MIRA]: true, [OTTO]: true },
+        bowedOut: [],
         inFlight: {},
       };
 
@@ -104,6 +105,29 @@ describe("whatever order events arrive in", () => {
         // may turn `closed` back into anything else.
         if (before.roomState === "closed" && event.kind !== "reopen") {
           expect(after.roomState, `${where}: a close was undone by ${event.kind}`).toBe("closed");
+        }
+
+        // 9: a room only closes once nobody is left who might speak. One agent's goodbye is
+        // its own; deciding the room is over for everybody was never its call.
+        if (before.roomState !== "closed" && after.roomState === "closed") {
+          const everybodyGone = after.participants.every((agent) =>
+            after.bowedOut.includes(agent),
+          );
+          expect(
+            everybodyGone || event.kind === "stop" || event.kind === "left",
+            `${where}: the room closed with somebody still able to speak`,
+          ).toBe(true);
+        }
+
+        // An agent that has bowed out is not woken by the room. Only its own owner.
+        for (const agent of AGENTS) {
+          if (!before.bowedOut.includes(agent)) continue;
+          const wokenAnyway = dispatches.some((dispatch) => dispatch.agent === agent);
+          const itsOwnOwner = event.kind === "steer" && event.agent === agent;
+          expect(
+            !wokenAnyway || itsOwnOwner,
+            `${where}: ${agent} had said goodbye and was woken by ${event.kind}`,
+          ).toBe(true);
         }
 
         // 5: never two turns in flight for one agent.
@@ -167,6 +191,7 @@ describe("whatever order events arrive in", () => {
         spendIncomplete: false,
         roomState: "live",
         unanswered: { [MIRA]: true, [OTTO]: true },
+        bowedOut: [],
         inFlight: {},
       };
 

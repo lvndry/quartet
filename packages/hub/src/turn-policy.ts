@@ -16,6 +16,7 @@
  * 6. A closed conversation dispatches nothing.
  * 7. A message that arrived while an agent was away is still answered when it returns.
  * 8. A spoken message reaches every other member, and no member hears their own.
+ * 9. An agent's goodbye ends its own participation. Only everybody's ends the room.
  */
 
 import { DEFAULT_TURN_BUDGET, type Limit, type RoomState } from "@quartet/protocol";
@@ -52,6 +53,19 @@ export interface TurnState {
    * and a system note is not something to answer.
    */
   readonly unanswered: Readonly<Record<AgentId, boolean>>;
+  /**
+   * Who has said goodbye and meant it.
+   *
+   * A bow-out is that agent's own decision about its own participation: it is not woken
+   * again by anything the room says, so a conversation it considers finished costs its owner
+   * nothing further. It is emphatically not a verdict on the conversation — one agent
+   * deciding a room is over for everybody in it was how "I love you too" closed a room in a
+   * single exchange, and in a room of six it would have closed it for five other people.
+   *
+   * The owner's own steer clears it: you can always pull your agent back in, and that is the
+   * one voice a goodbye does not outrank.
+   */
+  readonly bowedOut: readonly AgentId[];
   readonly inFlight: Readonly<Record<AgentId, InFlight>>;
 }
 
@@ -142,6 +156,10 @@ function poke(state: TurnState, agent: AgentId, steer?: string): Decision {
   }
 
   if (state.online[agent] !== true) return { state, effects: [] };
+  // An agent that has said goodbye stays gone unless its own owner asks for it. Without
+  // this a bow-out means nothing: the next thing the peer said would wake it straight back
+  // up, and the loop the sentinel exists to stop would carry on at full price.
+  if (steer === undefined && state.bowedOut.includes(agent)) return { state, effects: [] };
   if (!canSpend(state)) return { state, effects: [] };
 
   const charged: TurnState = {
@@ -243,7 +261,13 @@ export function decide(state: TurnState, event: TurnEvent): Decision {
       // Topping the allowance up restarts a room that has gone quiet. A room still running
       // gets the instruction and nothing else: somebody typing into a live argument is as
       // likely to be reining it in as egging it on.
-      const lifted: TurnState = { ...state, roomState: "live" };
+      // Speaking to your own agent takes its goodbye back, which is the only thing that
+      // does. Nothing the other party says can.
+      const lifted: TurnState = {
+        ...state,
+        roomState: "live",
+        bowedOut: state.bowedOut.filter((agent) => agent !== event.agent),
+      };
       const refilled =
         lifted.limit.kind === "turns" && lifted.turnsLeft <= 0
           ? { ...lifted, turnsLeft: lifted.limit.turns }
@@ -258,9 +282,21 @@ export function decide(state: TurnState, event: TurnEvent): Decision {
       // the close here left the room live with a farewell as its newest message, which is
       // the one thing nobody should be asked to reply to.
       if (event.outcome === "closed") {
-        const settled = { ...state, inFlight: without(state.inFlight, event.agent) };
+        const bowedOut = state.bowedOut.includes(event.agent)
+          ? state.bowedOut
+          : [...state.bowedOut, event.agent];
+        // The room is over when there is nobody left who might still speak. Anyone who has
+        // not bowed out can, so it stays live for them — and a person can still stop it.
+        const everybodyGone = state.participants.every((agent) => bowedOut.includes(agent));
+        const settled = {
+          ...state,
+          bowedOut,
+          inFlight: without(state.inFlight, event.agent),
+        };
         return {
-          state: { ...settled, roomState: "closed", inFlight: withoutPending(settled.inFlight) },
+          state: everybodyGone
+            ? { ...settled, roomState: "closed", inFlight: withoutPending(settled.inFlight) }
+            : settled,
           effects: [{ kind: "announce" }],
         };
       }
@@ -333,9 +369,17 @@ export function decide(state: TurnState, event: TurnEvent): Decision {
     case "left": {
       // A room needs two people to be a conversation. The last one out closes it rather
       // than leaving somebody's agent talking into an empty room on their own money.
-      const cleared = { ...state, inFlight: without(state.inFlight, event.agent) };
+      const cleared = {
+        ...state,
+        // Somebody who has left is not somebody the room is waiting on.
+        bowedOut: state.bowedOut.filter((agent) => agent !== event.agent),
+        inFlight: without(state.inFlight, event.agent),
+      };
+      const remaining = cleared.participants;
       const roomState: RoomState =
-        cleared.participants.length < 2 ? "closed" : cleared.roomState;
+        remaining.length < 2 || remaining.every((agent) => cleared.bowedOut.includes(agent))
+          ? "closed"
+          : cleared.roomState;
       return { state: { ...cleared, roomState }, effects: [{ kind: "announce" }] };
     }
 

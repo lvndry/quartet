@@ -554,6 +554,7 @@ export class Bridge {
                 spentUSD: frame.spentUSD,
                 spendIncomplete: frame.spendIncomplete,
                 state: frame.state,
+                bowedOut: frame.bowedOut,
               }
             : conversation,
         );
