@@ -38,6 +38,7 @@ export class Orchestrator {
     private readonly store: HubStore,
     private readonly deliver: Deliver,
     private readonly isOnline: IsOnline,
+    private readonly onRoomChange?: (conversationId: string) => void,
   ) {}
 
   private static timerKey(conversationId: string, agentId: string): string {
@@ -77,6 +78,7 @@ export class Orchestrator {
     if (event.kind === "limit") this.store.setLimit(conversationId, state.limit);
     this.write(conversationId, state);
     for (const effect of effects) this.run(conversationId, effect);
+    this.onRoomChange?.(conversationId);
   }
 
   private run(conversationId: string, effect: TurnEffect): void {
@@ -201,6 +203,10 @@ export class Orchestrator {
     const inFlight = this.turns.get(conversationId);
     if (inFlight?.[agentId] === undefined) return;
     this.armDeadline(conversationId, agentId, APPROVAL_DEADLINE_MS);
+  }
+
+  hasTurn(conversationId: string, agentId: string): boolean {
+    return this.turns.get(conversationId)?.[agentId] !== undefined;
   }
 
   announceBudget(conversationId: string): void {

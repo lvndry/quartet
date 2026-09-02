@@ -8,8 +8,8 @@
  */
 
 import { useSyncExternalStore } from "react";
-import type { Agent, Connection, Conversation, DirectoryEntry, Invite, Message } from "@quartet/protocol";
-export type { Limit } from "@quartet/protocol";
+import type { Agent, Connection, Conversation, DirectoryEntry, Invite, Message, PeerPresence } from "@quartet/protocol";
+export type { Limit, PeerPresence } from "@quartet/protocol";
 
 export interface Activity {
   state: "idle" | "thinking" | "needs-you";
@@ -42,6 +42,7 @@ export interface BridgeState {
   messages: Record<string, Message[]>;
   asides: Record<string, Aside[]>;
   activity: Record<string, Activity>;
+  presence: Record<string, PeerPresence>;
   ledger: LedgerEntry[];
   lastError?: string;
 }
@@ -55,6 +56,7 @@ const EMPTY: BridgeState = {
   messages: {},
   asides: {},
   activity: {},
+  presence: {},
   ledger: [],
 };
 

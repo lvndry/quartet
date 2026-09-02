@@ -21,6 +21,7 @@ import {
 } from "@quartet/protocol";
 import { HubStore } from "./db";
 import { Orchestrator } from "./orchestrator";
+import { RoomPresence } from "./presence";
 
 const PORT = Number(process.env["PORT"] ?? 8080);
 const DB_PATH = process.env["QUARTET_DB"] ?? "quartet.sqlite";
@@ -42,7 +43,13 @@ function send(agentId: string, frame: ServerFrame): void {
   sockets.get(agentId)?.send(JSON.stringify(frame));
 }
 
-const orchestrator = new Orchestrator(store, send, isOnline);
+let presence!: RoomPresence;
+const orchestrator = new Orchestrator(store, send, isOnline, (conversationId) =>
+  presence.announce(conversationId),
+);
+presence = new RoomPresence(store, send, isOnline, (conversationId, agentId) =>
+  orchestrator.hasTurn(conversationId, agentId),
+);
 
 function agentView(agentId: string): Agent | undefined {
   const row = store.agentById(agentId);
@@ -161,6 +168,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     send(row.id, { t: "directory", people: directoryFor(row.id) });
     orchestrator.replayTurns(row.id);
     broadcastPresence();
+    presence.announceAll(row.id);
     return;
   }
 
@@ -192,7 +200,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         send(agentId, { t: "error", detail: "you are already connected" });
         return;
       }
-      const invite = store.createInvite(agentId, target.id, frame.purpose);
+      const invite = store.createInvite(agentId, target.id, frame.purpose, frame.limit);
       if (invite === undefined) return;
       send(agentId, { t: "invite", invite });
       send(target.id, { t: "invite", invite });
@@ -211,14 +219,8 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       const to = store.agentById(invite.to_agent);
       if (from === undefined || to === undefined) return;
 
-      const settled = {
-        id: invite.id,
-        fromHandle: from.handle,
-        toHandle: to.handle,
-        purpose: invite.purpose,
-        status: frame.accept ? ("accepted" as const) : ("declined" as const),
-        at: invite.created_at,
-      };
+      const settled = store.inviteView(invite.id);
+      if (settled === undefined) return;
       send(from.id, { t: "invite", invite: settled });
       send(to.id, { t: "invite", invite: settled });
       if (!frame.accept) return;
@@ -226,7 +228,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       // Accepting establishes the relationship *and* opens the first conversation, because
       // the invite's purpose line is already the first thing somebody wanted to talk about.
       const connectionId = store.createConnection(invite.from_agent, invite.to_agent);
-      const conversation = store.createConversation(connectionId, invite.purpose);
+      const conversation = store.createConversation(connectionId, invite.purpose, settled.limit);
       if (conversation === undefined) return;
 
       for (const participant of [from.id, to.id]) {
@@ -347,6 +349,18 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       return;
     }
 
+    case "watch": {
+      if (frame.conversationId !== undefined) {
+        const participants = store.conversationParticipantIds(frame.conversationId);
+        if (participants === undefined || !participants.includes(agentId)) {
+          send(agentId, { t: "error", detail: "you are not in that conversation" });
+          return;
+        }
+      }
+      presence.watch(agentId, frame.conversationId);
+      return;
+    }
+
     case "waiting": {
       const participants = store.conversationParticipantIds(frame.conversationId);
       if (participants === undefined || !participants.includes(agentId)) {
@@ -408,6 +422,7 @@ const server = Bun.serve<SocketData, never>({
       if (sockets.get(agentId) !== socket) return;
       sockets.delete(agentId);
       orchestrator.onDisconnect(agentId);
+      presence.clear(agentId);
       broadcastPresence();
     },
   },

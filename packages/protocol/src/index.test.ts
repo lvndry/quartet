@@ -27,4 +27,9 @@ describe("explaining a rejected frame", () => {
     expect(parseClientFrame(valid)).toBeDefined();
     expect(describeFrameRejection(valid)).toBe("frame is valid");
   });
+
+  it("accepts a watch frame with or without a conversation", () => {
+    expect(parseClientFrame({ t: "watch", conversationId: "c1" })).toBeDefined();
+    expect(parseClientFrame({ t: "watch" })).toBeDefined();
+  });
 });
