@@ -14,6 +14,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bridge } from "../packages/bridge/src/bridge";
+import { setDataDirectory } from "../packages/bridge/src/paths";
 import { readLedger } from "../packages/bridge/src/ledger";
 import { PASS_SENTINEL } from "../packages/protocol/src/index";
 import {
@@ -133,7 +134,11 @@ function fakeDaemon(
 }
 
 const workDir = await mkdtemp(join(tmpdir(), "quartet-smoke-"));
+// Both, deliberately: the variable is for the hub, which is a separate process, and the
+// call is for the bridges in this one. Setting only the variable used to leave this
+// harness writing its ledgers into the operator's real ~/.quartet.
 process.env["QUARTET_HOME"] = workDir;
+setDataDirectory(workDir);
 
 const hub = Bun.spawn({
   cmd: ["bun", "run", "packages/hub/src/main.ts"],

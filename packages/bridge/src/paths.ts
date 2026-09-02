@@ -8,27 +8,43 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-let dataDirectory = process.env["QUARTET_HOME"] ?? join(homedir(), ".quartet");
+/**
+ * Set by `--data-dir`, and the last word when it is.
+ *
+ * `undefined` means nobody passed the flag, so the environment decides — read at call time
+ * rather than captured here. Capturing it was a trap: a module body that sets
+ * `QUARTET_HOME` runs *after* its own imports, so anything importing this first got the
+ * default and the variable was silently ignored. `bun run smoke` did exactly that and wrote
+ * its ledgers into the operator's real `~/.quartet`.
+ */
+let override: string | undefined;
 
 /** Call before anything reads a path — the CLI does this while parsing its flags. */
 export function setDataDirectory(path: string): void {
-  dataDirectory = path.startsWith("~") ? join(homedir(), path.slice(1)) : path;
+  override = expand(path);
 }
 
 export function getDataDirectory(): string {
-  return dataDirectory;
+  if (override !== undefined) return override;
+  const fromEnvironment = process.env["QUARTET_HOME"];
+  if (fromEnvironment !== undefined && fromEnvironment.length > 0) return expand(fromEnvironment);
+  return join(homedir(), ".quartet");
+}
+
+function expand(path: string): string {
+  return path.startsWith("~") ? join(homedir(), path.slice(1)) : path;
 }
 
 export function configPath(): string {
-  return join(dataDirectory, "config.json");
+  return join(getDataDirectory(), "config.json");
 }
 
 export function ledgerPath(): string {
-  return join(dataDirectory, "sent.jsonl");
+  return join(getDataDirectory(), "sent.jsonl");
 }
 
 export function asidesPath(): string {
-  return join(dataDirectory, "asides.jsonl");
+  return join(getDataDirectory(), "asides.jsonl");
 }
 
 /**
@@ -39,15 +55,15 @@ export function asidesPath(): string {
  * it does not share a file with anything that gets overwritten in the ordinary course of use.
  */
 export function identityPath(): string {
-  return join(dataDirectory, "identity.json");
+  return join(getDataDirectory(), "identity.json");
 }
 
 /** Which key each handle is known by here. Not a secret — losing it costs a warning, not safety. */
 export function knownPath(): string {
-  return join(dataDirectory, "known.json");
+  return join(getDataDirectory(), "known.json");
 }
 
 /** How far each conversation's signature chain has reached. Derived, and not secret. */
 export function journalPath(): string {
-  return join(dataDirectory, "chain.json");
+  return join(getDataDirectory(), "chain.json");
 }

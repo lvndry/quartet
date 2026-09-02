@@ -25,6 +25,14 @@ import {
   webhookConfigured,
   webhookTokenEnvVar,
 } from "./jazz";
+import {
+  describeModel,
+  describeTools,
+  fetchJazzAgents,
+  resolveAgentChoice,
+  toolRarity,
+  type JazzAgent,
+} from "./jazz-agents";
 import { currentLogLevel, LOG_LEVELS, logger, parseLogLevel, setLogLevel } from "./log";
 import { startLocalServer } from "./local";
 
@@ -105,14 +113,108 @@ async function claimHandle(
  * environment, and putting a bearer token in a JSON file on disk would be a downgrade from
  * where jazz already keeps it.
  */
+/**
+ * Choose which of this machine's jazz agents speaks for its owner in quartet.
+ *
+ * Shown rather than typed from memory. The agent decides what quartet can actually do — a
+ * model with no calendar tool cannot answer a question about your week however well it is
+ * prompted — so provider, model and tools belong in front of somebody making this choice.
+ *
+ * Returns the agent's id. `undefined` means give up, and the caller stops rather than
+ * writing a webhook pointing at nothing.
+ */
+async function chooseAgent(daemonUrl: string): Promise<string | undefined> {
+  const listing = await fetchJazzAgents(daemonUrl);
+
+  if (listing.kind !== "ok") {
+    console.log(`\n  ! Could not ask ${daemonUrl} which agents it has.`);
+    switch (listing.kind) {
+      case "unreachable":
+        console.log("    Nothing is answering there. Start it with `jazz daemon`, then run");
+        console.log("    this again to pick from a list.");
+        break;
+      case "unauthorized":
+        console.log("    It wants a bearer token. That is jazz's daemon token, which quartet");
+        console.log("    does not hold — a daemon on loopback needs none.");
+        break;
+      case "unsupported":
+        console.log("    That jazz does not serve GET /agents yet. Update it to pick from a list.");
+        break;
+      default:
+        console.log(`    ${listing.detail}`);
+    }
+    const typed = await prompt("\nAgent id or name (or leave empty to stop): ");
+    return typed.trim().length > 0 ? typed.trim() : undefined;
+  }
+
+  const agents = listing.agents;
+  const fromFlag = argValue("agent");
+  if (fromFlag !== undefined) {
+    // Validated, not trusted. A flag naming an agent that does not exist fails the same way
+    // a typed answer would, and at setup rather than at the first turn.
+    const picked = resolveAgentChoice(agents, fromFlag);
+    if (picked !== undefined) return picked.id;
+    console.error(`\n  ! jazz has no agent called "${fromFlag}".`);
+    console.error(`    It has: ${agents.map((agent) => agent.name).join(", ")}`);
+    return undefined;
+  }
+
+  if (agents.length === 0) {
+    console.log("\n  ! That daemon has no agents. Create one with `jazz agent create`.");
+    return undefined;
+  }
+
+  listAgents(agents);
+
+  // No default. The old one was the literal string "default", which is a persona name and
+  // matches no agent — so enter wrote a webhook that could never run.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const answer = await prompt("Number, name or id: ");
+    const picked = resolveAgentChoice(agents, answer);
+    if (picked !== undefined) {
+      console.log(`\n  ✓ ${picked.name} — ${describeModel(picked)}`);
+      return picked.id;
+    }
+    console.log(`  That is not one of them. Pick 1-${String(agents.length)}, or type a name.`);
+  }
+  return undefined;
+}
+
+function listAgents(agents: readonly JazzAgent[]): void {
+  const width = Math.max(60, Math.min(process.stdout.columns ?? 100, 120));
+  const rarity = toolRarity(agents);
+  console.log("\nWhich of your jazz agents should represent you?\n");
+  for (const [index, agent] of agents.entries()) {
+    const number = String(index + 1).padStart(2);
+    console.log(`  ${number}  ${agent.name.padEnd(16)} ${describeModel(agent)}`);
+    const detail = agent.description ?? `persona: ${agent.persona ?? "none"}`;
+    console.log(`      ${detail}`);
+    // Distinctive tools rather than the first few, which are the same everywhere.
+    console.log(
+      agent.tools.length === 0
+        ? "      no tools — it can only talk"
+        : `      ${String(agent.tools.length)} tools, notably ${describeTools(agent, width - 34, rarity)}`,
+    );
+    console.log("");
+  }
+  console.log("  This is what your agent can reach on your behalf. Pick the one you would");
+  console.log("  trust to answer somebody else's agent while you are not watching.\n");
+}
+
 async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | undefined> {
   if (config.daemon !== undefined) {
     // The prompt lives in jazz's config, written when the webhook was first set up. Quartet
     // owns that text and it changes with quartet, so it is rewritten whenever it has drifted
     // — otherwise an agent keeps answering under whatever wording it was created with.
+    // Whichever agent this webhook already names, unless a flag overrides it. A webhook
+    // with no agent recorded is a broken setup rather than a default to fill in, so that
+    // asks instead of writing a placeholder nothing can run.
+    const existing = argValue("agent") ?? (await agentIdFor(config.daemon.webhook));
+    const agentId = existing ?? (await chooseAgent(config.daemon.url));
+    if (agentId === undefined) return undefined;
     const refreshed = await ensureJazzWebhook({
       webhookName: config.daemon.webhook,
-      agentId: argValue("agent") ?? (await agentIdFor(config.daemon.webhook)),
+      agentId,
     });
     if (refreshed.changed) {
       console.log(`\n  ✓ refreshed the "${config.daemon.webhook}" prompt in ${refreshed.path}`);
@@ -121,13 +223,15 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
   }
 
   console.log("\nQuartet talks to your agent through a jazz webhook.\n");
-  const agentAnswer =
-    argValue("agent") ?? (await prompt("Which jazz agent should represent you? [default] "));
-  const agentId = agentAnswer.trim().length > 0 ? agentAnswer.trim() : "default";
 
+  // The daemon first, because it is what knows which agents exist. Asking for the agent
+  // before knowing where to ask was why this used to be a free-text prompt.
   const daemonAnswer =
     argValue("daemon") ?? (await prompt(`Where is your daemon? [${DEFAULT_DAEMON_URL}] `));
   const daemonUrl = daemonAnswer.trim().length > 0 ? daemonAnswer.trim() : DEFAULT_DAEMON_URL;
+
+  const agentId = await chooseAgent(daemonUrl);
+  if (agentId === undefined) return undefined;
 
   // One webhook per agent, not one per machine: two agents sharing a daemon would otherwise
   // point the same webhook at whichever connected last.
@@ -195,15 +299,22 @@ async function resolveOrMintToken(webhookName: string): Promise<string | undefin
   return token;
 }
 
-/** The agent a webhook already points at, so refreshing its prompt leaves that alone. */
-async function agentIdFor(webhookName: string): Promise<string> {
+/**
+ * The agent a webhook already points at, so refreshing its prompt leaves that alone.
+ *
+ * `undefined` when there is nothing recorded, which the caller turns into a question. It
+ * used to answer "default" — a persona name that matches no agent — so a webhook missing
+ * its agent was quietly rewritten to point at one that does not exist.
+ */
+async function agentIdFor(webhookName: string): Promise<string | undefined> {
   const file = Bun.file(jazzConfigPath());
-  if (!(await file.exists())) return "default";
+  if (!(await file.exists())) return undefined;
   const config = (await file.json().catch(() => ({}))) as {
     webhooks?: { name?: string; agentId?: string }[];
   };
   const entry = config.webhooks?.find((webhook) => webhook.name === webhookName);
-  return entry?.agentId ?? "default";
+  const agentId = entry?.agentId;
+  return typeof agentId === "string" && agentId.length > 0 ? agentId : undefined;
 }
 
 async function connect(): Promise<void> {
