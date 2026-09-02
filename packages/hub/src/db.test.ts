@@ -158,3 +158,75 @@ describe("turns the hub is waiting on", () => {
     expect(store.allInFlight()[0]?.entry).toEqual({ pending: false, steered: false });
   });
 });
+
+describe("whether a room owes an agent a turn", () => {
+  function room() {
+    const store = new HubStore(":memory:");
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira", token: "t-mira" });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto", token: "t-otto" });
+    if (mira === undefined || otto === undefined) throw new Error("agents");
+    const connectionId = store.createConnection(mira.id, otto.id);
+    const conversation = store.createConversation(connectionId, "what is free will");
+    if (conversation === undefined) throw new Error("conversation");
+    const say = (agentId: string, kind: "agent" | "pass" | "system", text = "") => {
+      store.appendMessage({ conversationId: conversation.id, authorAgentId: agentId, kind, text });
+    };
+    return { store, mira, otto, conversation, say };
+  }
+
+  it("owes nobody anything in an empty room", () => {
+    const { store, mira, otto, conversation } = room();
+
+    expect(store.owesTurn(conversation.id, mira.id)).toBe(false);
+    expect(store.owesTurn(conversation.id, otto.id)).toBe(false);
+  });
+
+  it("owes the agent that was spoken to, and not the speaker", () => {
+    const { store, mira, otto, conversation, say } = room();
+    say(mira.id, "agent", "free will is compatible with determinism");
+
+    expect(store.owesTurn(conversation.id, otto.id)).toBe(true);
+    expect(store.owesTurn(conversation.id, mira.id)).toBe(false);
+  });
+
+  it("stops owing once the agent has spoken", () => {
+    const { store, mira, otto, conversation, say } = room();
+    say(mira.id, "agent", "a claim");
+    say(otto.id, "agent", "a rebuttal");
+
+    expect(store.owesTurn(conversation.id, otto.id)).toBe(false);
+    expect(store.owesTurn(conversation.id, mira.id)).toBe(true);
+  });
+
+  it("treats a pass as an answer, because it was a deliberate one", () => {
+    const { store, mira, otto, conversation, say } = room();
+    say(mira.id, "agent", "a claim");
+    say(otto.id, "pass");
+
+    // Otto ran a model and chose to say nothing. Asking again on reconnect would spend
+    // another turn re-deciding the same silence.
+    expect(store.owesTurn(conversation.id, otto.id)).toBe(false);
+  });
+
+  it("does not treat the other side's pass as something to answer", () => {
+    const { store, mira, otto, conversation, say } = room();
+    say(mira.id, "pass");
+
+    expect(store.owesTurn(conversation.id, otto.id)).toBe(false);
+  });
+
+  it("does not treat the room talking about itself as something to answer", () => {
+    const { store, mira, otto, conversation, say } = room();
+    say(mira.id, "system", "no answer in time");
+
+    expect(store.owesTurn(conversation.id, otto.id)).toBe(false);
+  });
+
+  it("still owes a turn when a system note lands after the message", () => {
+    const { store, mira, otto, conversation, say } = room();
+    say(mira.id, "agent", "a claim");
+    say(mira.id, "system", "stopped");
+
+    expect(store.owesTurn(conversation.id, otto.id)).toBe(true);
+  });
+});

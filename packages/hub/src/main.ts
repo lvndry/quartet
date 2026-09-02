@@ -192,6 +192,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     sendWelcome(row.id);
     send(row.id, { t: "directory", people: directoryFor(row.id) });
     orchestrator.replayTurns(row.id);
+    orchestrator.onArrived(row.id);
     broadcastPresence();
     presence.announceAll(row.id);
     return;
