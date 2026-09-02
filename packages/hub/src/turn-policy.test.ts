@@ -12,7 +12,7 @@ function room(overrides: Partial<TurnState> = {}): TurnState {
     turnsLeft: 6,
     spentUSD: 0,
     spendIncomplete: false,
-    stopped: false,
+    roomState: "live",
     inFlight: {},
     ...overrides,
   };
@@ -117,11 +117,11 @@ describe("an owner's instruction", () => {
   });
 
   it("lifts a stop, because typing is how a person restarts a room", () => {
-    const { state, dispatches } = run(room({ stopped: true }), [
+    const { state, dispatches } = run(room({ roomState: "halted" }), [
       { kind: "steer", agent: MIRA, text: "carry on" },
     ]);
 
-    expect(state.stopped).toBe(false);
+    expect(state.roomState).toBe("live");
     expect(dispatches).toHaveLength(1);
   });
 });
@@ -178,7 +178,7 @@ describe("how a turn ends", () => {
       { kind: "settled", agent: MIRA, outcome: "closed" },
     ]);
 
-    expect(state.stopped).toBe(true);
+    expect(state.roomState).toBe("closed");
     expect(dispatches).toHaveLength(1);
   });
 
@@ -294,7 +294,83 @@ describe("spending rules", () => {
     expect(canSpend(room({ limit: { kind: "none" }, turnsLeft: 0 }))).toBe(true);
   });
 
-  it("refuses everything once stopped, whatever the limit says", () => {
-    expect(canSpend(room({ limit: { kind: "none" }, stopped: true }))).toBe(false);
+  it("refuses everything once closed, whatever the limit says", () => {
+    expect(canSpend(room({ limit: { kind: "none" }, roomState: "closed" }))).toBe(false);
+  });
+
+  it("refuses everything once halted, whatever the limit says", () => {
+    expect(canSpend(room({ limit: { kind: "none" }, roomState: "halted" }))).toBe(false);
+  });
+});
+
+describe("a goodbye, and what it takes to undo one", () => {
+  it("survives somebody choosing a new allowance", () => {
+    // The bug this replaces: `stopped` was one boolean, and picking a limit cleared it. An
+    // agent could sign off and the room would come back because a person nudged a number.
+    const { state, dispatches } = run(room({ roomState: "closed" }), [
+      { kind: "limit", limit: { kind: "turns", turns: 20 } },
+    ]);
+
+    expect(state.roomState).toBe("closed");
+    expect(state.limit).toEqual({ kind: "turns", turns: 20 });
+    expect(dispatches).toHaveLength(0);
+  });
+
+  it("survives being typed at", () => {
+    const { state, dispatches } = run(room({ roomState: "closed" }), [
+      { kind: "steer", agent: MIRA, text: "no, keep going" },
+    ]);
+
+    expect(state.roomState).toBe("closed");
+    expect(dispatches).toHaveLength(0);
+  });
+
+  it("survives a person pressing stop on top of it", () => {
+    const { state } = run(room({ roomState: "closed" }), [{ kind: "stop" }]);
+
+    expect(state.roomState).toBe("closed");
+  });
+
+  it("gives way to a deliberate reopen, and then runs again", () => {
+    const { state, dispatches } = run(room({ roomState: "closed" }), [
+      { kind: "reopen" },
+      { kind: "steer", agent: MIRA, text: "one more thing" },
+    ]);
+
+    expect(state.roomState).toBe("live");
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0]).toMatchObject({ agent: MIRA, steer: "one more thing" });
+  });
+
+  it("leaves a reopened room's spent allowance for the next steer to top up", () => {
+    const { state, dispatches } = run(room({ roomState: "closed", turnsLeft: 0 }), [
+      { kind: "reopen" },
+    ]);
+
+    expect(state.roomState).toBe("live");
+    expect(state.turnsLeft).toBe(0);
+    expect(dispatches).toHaveLength(0);
+  });
+
+  it("closes a halted room whose in-flight turn comes back with a goodbye", () => {
+    // Both are quiet, but only one of them means the conversation is finished, and the
+    // closing message has already been delivered by the time this is decided.
+    const { state } = run(room(), [
+      { kind: "message", author: OTTO },
+      { kind: "stop" },
+      { kind: "settled", agent: MIRA, outcome: "closed" },
+    ]);
+
+    expect(state.roomState).toBe("closed");
+  });
+
+  it("keeps a halt liftable by carrying on", () => {
+    const { state, dispatches } = run(room({ roomState: "halted" }), [
+      { kind: "limit", limit: { kind: "turns", turns: 4 } },
+    ]);
+
+    expect(state.roomState).toBe("live");
+    expect(state.turnsLeft).toBe(4);
+    expect(dispatches).toHaveLength(0);
   });
 });

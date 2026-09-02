@@ -69,9 +69,21 @@ async function waitFor(
  * `replies` is consumed in order so a conversation can be scripted to a definite end — the
  * point is to watch the orchestration terminate, not to watch a model improvise.
  */
-function fakeDaemon(port: number, replies: string[]): { stop: () => void; calls: unknown[] } {
+function fakeDaemon(
+  port: number,
+  replies: string[],
+): { stop: () => void; calls: unknown[]; forceNext: (answer: string) => void } {
   const calls: unknown[] = [];
   let index = 0;
+  /**
+   * A one-shot answer that jumps the queue.
+   *
+   * The script below cycles, so which line an agent gives on any particular turn depends on
+   * how many turns have already run — fine for the conversation itself, useless for a test
+   * that needs *this* turn to be a pass. Forcing it says what the assertion depends on
+   * instead of hoping the arithmetic still lands there.
+   */
+  let forced: string | undefined;
   const server = Bun.serve({
     port,
     hostname: "127.0.0.1",
@@ -89,14 +101,26 @@ function fakeDaemon(port: number, replies: string[]): { stop: () => void; calls:
       // Cycles rather than falling silent, so the only thing that can end a room here is the
       // budget — an agent that runs out of script would end it by mutual silence instead and
       // the exhaustion assertion below would pass without ever testing exhaustion.
-      const answer = replies[index % replies.length] ?? PASS_SENTINEL;
-      index += 1;
+      let answer: string;
+      if (forced !== undefined) {
+        answer = forced;
+        forced = undefined;
+      } else {
+        answer = replies[index % replies.length] ?? PASS_SENTINEL;
+        index += 1;
+      }
       return new Response(JSON.stringify({ ok: true, answer }), {
         headers: { "content-type": "application/json" },
       });
     },
   });
-  return { stop: () => server.stop(true), calls };
+  return {
+    stop: () => server.stop(true),
+    calls,
+    forceNext: (answer: string) => {
+      forced = answer;
+    },
+  };
 }
 
 const workDir = await mkdtemp(join(tmpdir(), "quartet-smoke-"));
@@ -104,7 +128,14 @@ process.env["QUARTET_HOME"] = workDir;
 
 const hub = Bun.spawn({
   cmd: ["bun", "run", "packages/hub/src/main.ts"],
-  env: { ...process.env, PORT: String(HUB_PORT), QUARTET_DB: join(workDir, "hub.sqlite") },
+  env: {
+    ...process.env,
+    PORT: String(HUB_PORT),
+    QUARTET_DB: join(workDir, "hub.sqlite"),
+    // This run claims a handful of handles, several of them deliberately bad ones. The real
+    // ceiling is exercised on its own below rather than by letting it trip mid-scenario.
+    QUARTET_REGISTRATION_BURST: "8",
+  },
   stdout: "pipe",
   stderr: "pipe",
 });
@@ -186,6 +217,19 @@ const forged = await fetch(`${hubUrl}/agents`, {
   }),
 });
 check(forged.status === 401, "a claim signed by another key is refused");
+
+// The ceiling is raised for this run so the cases above fit, but it still has to bite: a
+// script working through a handle list is exactly what it is there to stop.
+let refusal: Response | undefined;
+for (let attempt = 0; attempt < 8 && refusal === undefined; attempt += 1) {
+  const response = await claim(`spare${String(attempt)}`, generateKeypair());
+  if (response.status === 429) refusal = response;
+}
+check(refusal !== undefined, "claiming handles in a run eventually hits the ceiling");
+check(
+  refusal?.headers.get("retry-after") !== null,
+  "and the refusal says how long to wait rather than just saying no",
+);
 
 const bridgeA = new Bridge(
   hubUrl,
@@ -343,6 +387,9 @@ check(
 // lands on it must not be followed by another message from @mira.
 {
   const messagesBefore = (stateA.messages[conversationId] ?? []).length;
+  // The next turn is a pass, deliberately rather than by counting where the script's cycle
+  // happens to be. Passing and then speaking anyway is how "stop" looks obeyed and ignored.
+  daemonA.forceNext(PASS_SENTINEL);
   bridgeA.nudge(conversationId, "that is enough now");
   await waitFor(
     "the steered turn to settle",

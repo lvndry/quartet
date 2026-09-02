@@ -67,6 +67,16 @@ export class Attestor {
    */
   private readonly journal: Journal;
 
+  /**
+   * Where each author had reached *within the window currently being replayed*.
+   *
+   * A welcome re-delivers a bounded slice of each room, and its first line for an author is
+   * not their first line ever — what came before it may simply be older than the window.
+   * Compared against the running position instead, every reconnect would report a gap, which
+   * is the false alarm that makes the real one worthless.
+   */
+  private readonly windowChain = new Map<string, string>();
+
   constructor(keypair: Keypair, journal: Journal = new Journal()) {
     this.keypair = keypair;
     this.journal = journal;
@@ -79,6 +89,23 @@ export class Attestor {
 
   get did(): string {
     return this.keypair.did;
+  }
+
+  /** A replayed transcript is about to arrive; judge it against itself, not against history. */
+  startWindow(): void {
+    this.windowChain.clear();
+  }
+
+  /**
+   * Take the replayed window as the new running position.
+   *
+   * Called after a welcome, whose window ends at the newest line, and deliberately *not*
+   * after a page of older history — recording a link from further back would rewind the
+   * chain, and the next line to arrive live would look like it had something missing before
+   * it. Older pages are checked for their own internal continuity and nothing more.
+   */
+  settleWindow(): void {
+    for (const [key, link] of this.windowChain) this.journal.recordSeen(key, link);
   }
 
   /** Answer the hub's opening challenge — this agent's whole side of signing in. */
@@ -109,7 +136,7 @@ export class Attestor {
    * a bridge that trusted its own messages on the way home would be trusting the hub to have
    * relayed them unchanged, which is the assumption being removed.
    */
-  check(message: Message, context: Context): Verdict {
+  check(message: Message, context: Context, options: { replay?: boolean } = {}): Verdict {
     const signature = message.signature;
     if (signature === undefined) {
       // Missing is only unremarkable when the hub is speaking in its own voice. From an
@@ -146,10 +173,14 @@ export class Attestor {
     if (!verified) return broken("the signature does not match what was said");
 
     const key = chainKey(message);
-    const expected = this.journal.lastSeen(key);
+    const link = linkAfter(signature.value);
     // Advance whatever the verdict. A gap is worth reporting once, at the line where it shows;
     // carrying it forward would mark every later line broken for one missing early one.
-    this.journal.recordSeen(key, linkAfter(signature.value));
+    const replay = options.replay === true;
+    const expected = replay ? this.windowChain.get(key) : this.journal.lastSeen(key);
+    if (replay) this.windowChain.set(key, link);
+    else this.journal.recordSeen(key, link);
+
     if (expected !== undefined && signature.prev !== expected) {
       // The line itself is genuine — it just is not the next one. Something between here and
       // its author is missing, which a signature alone could never have shown.

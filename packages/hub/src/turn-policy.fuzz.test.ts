@@ -40,7 +40,8 @@ function randomEvent(next: () => number, state: TurnState): TurnEvent {
       outcome: pick(next, ["spoke", "passed", "closed", "failed"] as const),
     };
   }
-  if (roll < 0.82) return { kind: "stop" };
+  if (roll < 0.80) return { kind: "stop" };
+  if (roll < 0.82) return { kind: "reopen" };
   if (roll < 0.88) return { kind: "spend", usd: next() * 0.02, incomplete: next() < 0.2 };
   if (roll < 0.94) {
     return {
@@ -67,7 +68,7 @@ describe("whatever order events arrive in", () => {
         turnsLeft: 6,
         spentUSD: 0,
         spendIncomplete: false,
-        stopped: false,
+        roomState: "live",
         inFlight: {},
       };
 
@@ -81,10 +82,25 @@ describe("whatever order events arrive in", () => {
         );
         const where = `seed ${String(seed)} step ${String(step)} on ${event.kind}`;
 
-        // 3 and 6: a stopped conversation dispatches nothing, and only a person lifts it.
-        if (before.stopped && event.kind !== "steer" && event.kind !== "limit") {
-          expect(dispatches, `${where}: dispatched while stopped`).toHaveLength(0);
-          expect(after.stopped, `${where}: stop lifted itself`).toBe(true);
+        // 3 and 6: a room that is not live dispatches nothing, and nothing but a person's
+        // own action brings it back. A halt is lifted by carrying on — speaking, or choosing
+        // a new allowance — while a close needs the deliberate reopen and nothing else.
+        const lifts: readonly TurnEvent["kind"][] =
+          before.roomState === "halted" ? ["steer", "limit", "reopen"] : ["reopen"];
+        if (before.roomState !== "live" && !lifts.includes(event.kind)) {
+          expect(dispatches, `${where}: dispatched while ${before.roomState}`).toHaveLength(0);
+          // Not that the state is unchanged — a halted room whose in-flight turn comes back
+          // with a goodbye becomes closed, and that is the honest reading of what happened.
+          // What may not happen is a quiet room deciding on its own to run again.
+          expect(after.roomState, `${where}: a ${before.roomState} room revived itself`).not.toBe(
+            "live",
+          );
+        }
+
+        // A goodbye is final until somebody reopens the room: no event other than that one
+        // may turn `closed` back into anything else.
+        if (before.roomState === "closed" && event.kind !== "reopen") {
+          expect(after.roomState, `${where}: a close was undone by ${event.kind}`).toBe("closed");
         }
 
         // 5: never two turns in flight for one agent.
@@ -146,7 +162,7 @@ describe("whatever order events arrive in", () => {
         turnsLeft: 0,
         spentUSD: 0,
         spendIncomplete: false,
-        stopped: false,
+        roomState: "live",
         inFlight: {},
       };
 
