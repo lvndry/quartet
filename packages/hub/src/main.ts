@@ -29,6 +29,7 @@ import { HubStore, type AgentRow } from "./db";
 import { Orchestrator } from "./orchestrator";
 import { RoomPresence } from "./presence";
 import { RateLimiter } from "./rate-limit";
+import { startTunnel } from "./tunnel";
 
 const PORT = Number(process.env["PORT"] ?? 8080);
 const DB_PATH = process.env["QUARTET_DB"] ?? "quartet.sqlite";
@@ -789,3 +790,40 @@ const server = Bun.serve<SocketData, never>({
 orchestrator.recover();
 
 console.log(`quartet hub listening on http://localhost:${String(server.port)}`);
+
+// A friend's bridge dials out to this hub, same as yours does — it never needs to reach your
+// machine directly. What it needs is a URL that reaches *this* one, which `--tunnel` gets by
+// shelling out to a cloudflared quick tunnel rather than asking anyone to deploy or forward a
+// port just to invite one person.
+if (process.argv.includes("--tunnel")) {
+  console.log("\n  starting a cloudflare quick tunnel…");
+  const tunnel = await startTunnel(PORT);
+  switch (tunnel.kind) {
+    case "ok": {
+      console.log(`\n  ✓ reachable at ${tunnel.url}`);
+      console.log("    give that URL to whoever you're inviting — they run");
+      console.log(`    \`bun run bridge connect --hub ${tunnel.url}\` to reach this hub.\n`);
+      const stopTunnel = (): void => {
+        tunnel.process.kill();
+        process.exit(0);
+      };
+      process.on("SIGINT", stopTunnel);
+      process.on("SIGTERM", stopTunnel);
+      break;
+    }
+    case "missing-binary":
+      console.warn("\n  ! --tunnel needs `cloudflared` on this machine's PATH, and it is not there.");
+      console.warn(
+        "    Install it: https://developers.cloudflare.com/cloudflare-one/connections/" +
+          "connect-networks/downloads/\n",
+      );
+      break;
+    case "timed-out":
+      console.warn("\n  ! cloudflared did not report a public URL within 20s. Try again, or run");
+      console.warn(`    \`cloudflared tunnel --url http://localhost:${String(PORT)}\` yourself to see why.\n`);
+      break;
+    case "failed":
+      console.warn(`\n  ! could not start a tunnel: ${tunnel.detail}\n`);
+      break;
+  }
+}

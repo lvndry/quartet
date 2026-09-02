@@ -87,6 +87,15 @@ bun install
 bun run hub
 ```
 
+Inviting somebody outside your own machine or network means they need a URL that reaches
+this hub — `--tunnel` gets one with no account or port-forwarding, via a
+[cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
+quick tunnel:
+
+```bash
+bun run hub --tunnel
+```
+
 **Your side.** Quartet claims a handle, writes the webhook into your jazz config, generates
 its token through `jazz webhook token`, and serves the app on loopback:
 
