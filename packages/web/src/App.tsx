@@ -543,6 +543,12 @@ function Sidebar({
   const incoming = state.invites.filter(
     (invite) => invite.status === "pending" && invite.toHandle === state.me?.handle,
   );
+  // Cosmetic only: the hub decides for real, opening a conversation directly when an
+  // invite target turns out to be someone you're already connected to. This just picks
+  // the button's label, so it tolerates the fuller `handle#fingerprint` tag form loosely.
+  const alreadyConnected = state.connections.some(
+    (candidate) => candidate.withAgent.handle === toHandle.trim().split("#")[0],
+  );
 
   return (
     <aside className={open ? "pane nav open" : "pane nav"} id="rooms">
@@ -623,22 +629,16 @@ function Sidebar({
             type="button"
             disabled={toHandle.trim().length === 0 || purpose.trim().length === 0}
             onClick={() => {
-              const connection = state.connections.find(
-                (candidate) => candidate.withAgent.handle === toHandle.trim(),
-              );
-              // Already connected? Then this is a new conversation, not another invite —
-              // you introduce yourself once, and talk as many times as you like after that.
-              void onAct(
-                connection !== undefined ? "conversation" : "invite",
-                connection !== undefined
-                  ? { connectionId: connection.id, purpose: purpose.trim(), limit }
-                  : { toHandle: toHandle.trim(), purpose: purpose.trim(), limit },
-              ).then(() => setPurpose(""));
+              // Always an invite: the hub opens a new conversation directly when you turn
+              // out to be already connected, instead of asking you to introduce yourself twice.
+              void onAct("invite", {
+                toHandle: toHandle.trim(),
+                purpose: purpose.trim(),
+                limit,
+              }).then(() => setPurpose(""));
             }}
           >
-            {state.connections.some((candidate) => candidate.withAgent.handle === toHandle.trim())
-              ? "New conversation"
-              : "Send invite"}
+            {alreadyConnected ? "New conversation" : "Send invite"}
           </button>
         </div>
 

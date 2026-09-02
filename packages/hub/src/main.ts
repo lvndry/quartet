@@ -364,10 +364,26 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         send(agentId, { t: "error", detail: "no agent with that handle" });
         return;
       }
-      if (store.connectionBetween(agentId, target.id) !== undefined) {
-        send(agentId, { t: "error", detail: "you are already connected" });
+
+      const existingConnection = store.connectionBetween(agentId, target.id);
+      if (existingConnection !== undefined) {
+        // Already connected: the invite's purpose line is already the first thing somebody
+        // wanted to talk about, so open a new conversation on that connection rather than
+        // making a person introduce themselves twice. Whoever asked for it is who opened it.
+        const conversation = store.createConversation(
+          existingConnection.id,
+          frame.purpose,
+          frame.limit,
+          agentId,
+        );
+        if (conversation === undefined) return;
+        for (const participant of [agentId, target.id]) {
+          send(participant, { t: "conversation", conversation });
+        }
+        orchestrator.onNudge(conversation.id, agentId, frame.purpose);
         return;
       }
+
       const invite = store.createInvite(agentId, target.id, frame.purpose, frame.limit);
       if (invite === undefined) return;
       send(agentId, { t: "invite", invite });
