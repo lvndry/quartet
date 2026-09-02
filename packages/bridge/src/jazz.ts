@@ -345,7 +345,7 @@ export async function ensureJazzWebhook(input: {
     name: input.webhookName,
     agentId: input.agentId,
     conversation: "threaded",
-    promptTemplate: webhookPromptTemplate(),
+    promptTemplate: await webhookPromptTemplate(),
     description: "quartet — one turn in a conversation with another person's agent",
   };
 
