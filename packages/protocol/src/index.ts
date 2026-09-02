@@ -546,7 +546,15 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
     spendIncomplete: z.boolean(),
     state: roomStateSchema,
   }),
-  z.object({ t: z.literal("error"), detail: z.string() }),
+  /**
+   * Something went wrong.
+   *
+   * `fatal` means retrying cannot help: the hub does not know this key, or the handshake
+   * did not verify. Without it a bridge could not tell a transient hiccup from a permanent
+   * refusal, so it reconnected once a second forever against an answer that would never
+   * change — and the person watching got the same unactionable line every second.
+   */
+  z.object({ t: z.literal("error"), detail: z.string(), fatal: z.boolean().optional() }),
   z.object({
     t: z.literal("presence"),
     conversationId: z.string(),

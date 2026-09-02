@@ -169,6 +169,20 @@ function withinClaimWindow(at: string): boolean {
  * Nothing secret comes back. The key is the credential, and it never left the machine that
  * made it, so there is no token here to leak, to lose, or to have to rotate.
  */
+/**
+ * Which handle, if any, this key has claimed here.
+ *
+ * The bridge needs this because its own config is a cache, not the truth. It used to treat
+ * "I have a handle written down" as proof the hub knew the key, so a hub whose database had
+ * been replaced — or an agent registered before keys existed — left the bridge saying hello
+ * with a key nobody had claimed, being refused, and retrying forever.
+ */
+app.get("/agents/by-did/:did", (context) => {
+  const row = store.agentByDid(context.req.param("did"));
+  if (row === undefined) return context.json({ error: "no agent has claimed that key" }, 404);
+  return context.json({ agent: store.toAgent(row, isOnline(row.id)) });
+});
+
 app.post("/agents", async (context) => {
   // Charged before the body is even read, so a flood of malformed requests costs the same
   // as a flood of valid ones.
@@ -213,6 +227,13 @@ app.post("/agents", async (context) => {
     did,
   });
   if (created === undefined) {
+    // A handle left over from before agents had keys can be adopted by the first key that
+    // asks for it, because nothing can authenticate as it otherwise and its transcripts
+    // would be stranded. See `HubStore.adoptHandle` for why that is not a land grab.
+    const adopted = store.adoptHandle(handle.data, did);
+    if (adopted !== undefined) {
+      return context.json({ agent: store.toAgent(adopted, false), adopted: true }, 200);
+    }
     const taken = store.agentByDid(did) !== undefined;
     return context.json(
       { error: taken ? "that key already claimed a handle" : "that handle is taken" },
@@ -303,14 +324,14 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     const challenge = socket.data.challenge;
     if (challenge === undefined || frame.challenge !== challenge) {
       socket.send(
-        JSON.stringify({ t: "error", detail: "answer the challenge for this socket" } satisfies ServerFrame),
+        JSON.stringify({ t: "error", detail: "answer the challenge for this socket", fatal: true } satisfies ServerFrame),
       );
       socket.close();
       return;
     }
     if (!verifyChallenge(frame.did, challenge, frame.signature)) {
       socket.send(
-        JSON.stringify({ t: "error", detail: "that signature does not match that did" } satisfies ServerFrame),
+        JSON.stringify({ t: "error", detail: "that signature does not match that did", fatal: true } satisfies ServerFrame),
       );
       socket.close();
       return;
@@ -318,7 +339,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     const row = store.agentByDid(frame.did);
     if (row === undefined) {
       socket.send(
-        JSON.stringify({ t: "error", detail: "no agent has claimed that key" } satisfies ServerFrame),
+        JSON.stringify({ t: "error", detail: "no agent has claimed that key", fatal: true } satisfies ServerFrame),
       );
       socket.close();
       return;

@@ -352,6 +352,27 @@ export class HubStore {
     return this.db.query<AgentRow, [string]>("SELECT * FROM agents WHERE did = ?").get(did) ?? undefined;
   }
 
+  /**
+   * Give a key to a handle that has none, and answer whether it worked.
+   *
+   * A handle with no did was registered before agents had keys, and nothing can ever
+   * authenticate as it: the handshake asks for a signature and there is no key to check one
+   * against. So such a row is not somebody's identity being squatted, it is a dead name with
+   * a conversation history hanging off it — and adopting it is the only way that history
+   * survives the move to keys. Deleting the row instead would take the transcripts with it.
+   *
+   * The caller has already verified the claimant's signature. Refuses once a row has a key,
+   * because at that point the handle belongs to whoever holds it, and this stops being a
+   * migration and becomes a way to take somebody's name.
+   */
+  adoptHandle(handle: string, did: string): AgentRow | undefined {
+    const existing = this.agentByHandle(handle);
+    if (existing === undefined || existing.did !== null) return undefined;
+    if (this.agentByDid(did) !== undefined) return undefined;
+    this.db.run("UPDATE agents SET did = ? WHERE id = ?", [did, existing.id]);
+    return this.agentById(existing.id);
+  }
+
   agentByHandle(handle: string): AgentRow | undefined {
     return this.db.query<AgentRow, [string]>("SELECT * FROM agents WHERE handle = ?").get(handle) ?? undefined;
   }

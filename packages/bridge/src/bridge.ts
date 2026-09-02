@@ -121,6 +121,14 @@ const RECONNECT_MAX_MS = 30_000;
 export class Bridge {
   private socket?: WebSocket;
   private reconnectDelay = RECONNECT_MIN_MS;
+  /**
+   * The hub refused us for a reason retrying cannot change.
+   *
+   * Kept so the socket's `close` handler does not immediately dial again. A key the hub has
+   * never heard of is the same answer every second, and a loop of it drowns out the one line
+   * that says what to do about it.
+   */
+  private refused: string | undefined;
   private closing = false;
   private readonly listeners = new Set<(state: BridgeState) => void>();
 
@@ -420,6 +428,11 @@ export class Bridge {
       this.connectedToHub = false;
       this.publish();
       if (this.closing) return;
+      if (this.refused !== undefined) {
+        // A permanent refusal. Say it once and stop, rather than once a second forever.
+        hubLog.error(`the hub refused this bridge: ${this.refused}`);
+        return;
+      }
       // Backoff, because a hub that is down stays down for a while and hammering it helps
       // nobody. Capped so a laptop that slept overnight still rejoins within half a minute.
       hubLog.warn("disconnected, retrying", { in: `${String(this.reconnectDelay)}ms` });
@@ -436,6 +449,7 @@ export class Bridge {
   private async onFrame(frame: ReturnType<typeof parseServerFrame> & object): Promise<void> {
     switch (frame.t) {
       case "welcome":
+        this.refused = undefined;
         hubLog.info(`signed in as @${frame.me.handle}`, {
           conversations: frame.conversations.length,
           invites: frame.invites.length,
@@ -596,6 +610,12 @@ export class Bridge {
       case "error":
         hubLog.error(frame.detail);
         this.lastError = frame.detail;
+        if (frame.fatal === true) {
+          this.refused = frame.detail;
+          hubLog.error("not retrying — this needs a person", {
+            fix: "run `quartet connect` again to claim this key on this hub",
+          });
+        }
         this.publish();
         return;
 

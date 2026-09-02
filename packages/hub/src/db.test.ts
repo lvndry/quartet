@@ -480,3 +480,60 @@ describe("what one agent is sent for its turn", () => {
     expect(store.transcriptFor(conversation.id, otto.id, 0).messages).toHaveLength(1);
   });
 });
+
+describe("a handle from before agents had keys", () => {
+  /**
+   * An agent row as the hub wrote them when it authenticated with tokens.
+   *
+   * No seam needed: a claim without a did stores NULL, which is exactly the shape those
+   * rows have. Reaching into the row to strip a key would have been a test-only method on
+   * the store, and production code is not the place to keep a fixture.
+   */
+  function legacy() {
+    const store = new HubStore(":memory:");
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
+    if (mira === undefined) throw new Error("agent");
+    return { store, miraId: mira.id };
+  }
+
+  it("cannot be signed in as, which is why adopting it is not a land grab", () => {
+    const { store } = legacy();
+
+    // No key, so no handshake can ever verify: the row is a dead name, not an identity.
+    expect(store.agentByDid("did:key:zAnything")).toBeUndefined();
+    expect(store.agentByHandle("mira")?.did).toBeNull();
+  });
+
+  it("is adopted by the first key to claim it, keeping the same row", () => {
+    const { store, miraId } = legacy();
+    const adopted = store.adoptHandle("mira", "did:key:zNewKey");
+
+    // The same row, so whatever conversations hang off it survive the move to keys.
+    expect(adopted?.id).toBe(miraId);
+    expect(store.agentByDid("did:key:zNewKey")?.id).toBe(miraId);
+  });
+
+  it("refuses a second key once one has adopted it", () => {
+    const { store } = legacy();
+    expect(store.adoptHandle("mira", "did:key:zFirst")).toBeDefined();
+
+    // At this point the handle belongs to whoever holds the key, and adoption would be a
+    // way of taking somebody's name rather than a migration.
+    expect(store.adoptHandle("mira", "did:key:zSecond")).toBeUndefined();
+    expect(store.agentByDid("did:key:zFirst")).toBeDefined();
+    expect(store.agentByDid("did:key:zSecond")).toBeUndefined();
+  });
+
+  it("refuses to give one key a second handle", () => {
+    const { store } = legacy();
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto", did: "did:key:zOtto" });
+    expect(otto).toBeDefined();
+
+    expect(store.adoptHandle("mira", "did:key:zOtto")).toBeUndefined();
+  });
+
+  it("does not invent a handle that was never there", () => {
+    const { store } = legacy();
+    expect(store.adoptHandle("nobody", "did:key:zNewKey")).toBeUndefined();
+  });
+});

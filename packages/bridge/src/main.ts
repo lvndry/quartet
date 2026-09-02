@@ -57,6 +57,28 @@ async function prompt(question: string): Promise<string> {
   return next.done === true ? "" : next.value.trim();
 }
 
+/**
+ * The handle this key has on this hub, as the hub sees it.
+ *
+ * The config is a cache of this and nothing more. Trusting it instead was a dead end: a hub
+ * whose database had been replaced, or an agent registered before keys existed, left the
+ * bridge saying hello with a key nobody had claimed. Because a handle was written down,
+ * `connect` never claimed one, so it could never recover — it just retried forever.
+ *
+ * `undefined` means the hub does not know this key. `null` means the hub could not be asked,
+ * which is not the same thing and must not trigger a claim.
+ */
+async function handleOnHub(hubUrl: string, did: string): Promise<string | undefined | null> {
+  const response = await fetch(new URL(`/agents/by-did/${encodeURIComponent(did)}`, hubUrl)).catch(
+    () => undefined,
+  );
+  if (response === undefined) return null;
+  if (response.status === 404) return undefined;
+  if (!response.ok) return null;
+  const body = (await response.json().catch(() => null)) as { agent?: { handle?: string } } | null;
+  return body?.agent?.handle ?? null;
+}
+
 async function claimHandle(
   hubUrl: string,
   keypair: Keypair,
@@ -220,7 +242,21 @@ async function connect(): Promise<void> {
     process.exit(1);
   }
 
-  if (config.handle === undefined) {
+  // Ask the hub what it knows about this key rather than believing what is written down
+  // here. The two disagree whenever a hub's database is replaced, or when a handle was
+  // registered before agents had keys — and a bridge that trusts its own note in that case
+  // is refused on every handshake with no way to put it right.
+  const known = await handleOnHub(hubUrl, keypair.did);
+  if (known === null && config.handle === undefined) {
+    console.error(`\nCould not reach the hub at ${hubUrl}. Is it running?`);
+    process.exit(1);
+  }
+  if (known === undefined) {
+    if (config.handle !== undefined) {
+      console.log(`\n  ! ${hubUrl} does not know this machine's key.`);
+      console.log(`    It has "@${config.handle}" written down here, but a handle is only`);
+      console.log("    yours once this hub has seen the key behind it. Claiming one now.");
+    }
     const claimed = await claimHandle(hubUrl, keypair);
     if (claimed === undefined) process.exit(1);
     config = { ...config, hubUrl, handle: claimed.handle };
@@ -228,6 +264,12 @@ async function connect(): Promise<void> {
     console.log(`\n  ✓ claimed ${tag(claimed.handle, keypair.did) ?? `@${claimed.handle}`}`);
     console.log("    Give that whole line to anyone inviting you — the part after # is what");
     console.log("    proves the handle is yours and not somebody wearing your name.");
+  } else if (known !== null && known !== config.handle) {
+    // The hub is the authority, so its answer replaces whatever was cached — including a
+    // handle somebody typed wrong once and has been stuck with since.
+    console.log(`\n  ✓ this key is @${known} on this hub`);
+    config = { ...config, hubUrl, handle: known };
+    await saveConfig(config);
   }
 
   const withDaemon = await ensureDaemon({ ...config, hubUrl });
