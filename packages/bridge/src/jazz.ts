@@ -73,7 +73,15 @@ function isTimeout(error: unknown): boolean {
   return name === "TimeoutError" || name === "AbortError";
 }
 
-/** Header jazz reads a loopback progress URL from. Must match its own constant. */
+/**
+ * Header jazz reads a loopback progress URL from. Must match its own constant.
+ *
+ * No companion subscription header, deliberately. Jazz narrows to named event kinds when
+ * asked and sends everything when not, and everything is what quartet wants: a room is the
+ * one place a person is watching a turn, so anything the daemon can say about one belongs
+ * here. Naming kinds would also pin this to the list jazz sends today and quietly opt out
+ * of any it learns to send later.
+ */
 const PROGRESS_HEADER = "x-jazz-progress-url";
 
 export async function runTurn(
