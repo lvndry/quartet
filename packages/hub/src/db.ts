@@ -41,6 +41,16 @@ export interface AgentRow {
   created_at: string;
 }
 
+interface InviteRow {
+  id: string;
+  from_agent: string;
+  to_agent: string;
+  purpose: string;
+  status: string;
+  created_at: string;
+  limit_json: string | null;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -90,7 +100,8 @@ export class HubStore {
         to_agent    TEXT NOT NULL REFERENCES agents(id),
         purpose     TEXT NOT NULL,
         status      TEXT NOT NULL,
-        created_at  TEXT NOT NULL
+        created_at  TEXT NOT NULL,
+        limit_json  TEXT NOT NULL DEFAULT '{"kind":"turns","turns":50}'
       );
 
       CREATE TABLE IF NOT EXISTS conversations (
@@ -137,6 +148,16 @@ export class HubStore {
       if (!columns.includes(column)) {
         this.db.exec(`ALTER TABLE conversations ADD COLUMN ${column} ${definition}`);
       }
+    }
+
+    const inviteColumns = this.db
+      .query<{ name: string }, []>("PRAGMA table_info(invites)")
+      .all()
+      .map((column) => column.name);
+    if (!inviteColumns.includes("limit_json")) {
+      this.db.exec(
+        `ALTER TABLE invites ADD COLUMN limit_json TEXT NOT NULL DEFAULT '{"kind":"turns","turns":${String(DEFAULT_TURN_BUDGET)}}'`,
+      );
     }
   }
 
@@ -245,27 +266,35 @@ export class HubStore {
 
   /* ---------------- invites ---------------- */
 
-  createInvite(fromAgent: string, toAgent: string, purpose: string): Invite | undefined {
+  createInvite(
+    fromAgent: string,
+    toAgent: string,
+    purpose: string,
+    limit: Limit = DEFAULT_LIMIT,
+  ): Invite | undefined {
     const from = this.agentById(fromAgent);
     const to = this.agentById(toAgent);
     if (from === undefined || to === undefined) return undefined;
     const id = newId("inv");
     const at = nowIso();
     this.db.run(
-      "INSERT INTO invites (id, from_agent, to_agent, purpose, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)",
-      [id, fromAgent, toAgent, purpose, at],
+      "INSERT INTO invites (id, from_agent, to_agent, purpose, status, created_at, limit_json) VALUES (?, ?, ?, ?, 'pending', ?, ?)",
+      [id, fromAgent, toAgent, purpose, at, JSON.stringify(limit)],
     );
-    return { id, fromHandle: from.handle, toHandle: to.handle, purpose, status: "pending", at };
+    return this.inviteView(id);
   }
 
-  inviteById(id: string): { id: string; from_agent: string; to_agent: string; purpose: string; status: string; created_at: string } | undefined {
+  inviteById(id: string): InviteRow | undefined {
     return (
       this.db
-        .query<{ id: string; from_agent: string; to_agent: string; purpose: string; status: string; created_at: string }, [string]>(
-          "SELECT * FROM invites WHERE id = ?",
-        )
+        .query<InviteRow, [string]>("SELECT * FROM invites WHERE id = ?")
         .get(id) ?? undefined
     );
+  }
+
+  inviteView(id: string): Invite | undefined {
+    const row = this.inviteById(id);
+    return row === undefined ? undefined : this.toInvite(row);
   }
 
   setInviteStatus(id: string, status: "accepted" | "declined"): void {
@@ -274,25 +303,29 @@ export class HubStore {
 
   pendingInvitesFor(agentId: string): Invite[] {
     const rows = this.db
-      .query<{ id: string; from_agent: string; to_agent: string; purpose: string; status: string; created_at: string }, [string, string]>(
+      .query<InviteRow, [string, string]>(
         "SELECT * FROM invites WHERE (to_agent = ? OR from_agent = ?) AND status = 'pending' ORDER BY created_at DESC",
       )
       .all(agentId, agentId);
     return rows.flatMap((row) => {
-      const from = this.agentById(row.from_agent);
-      const to = this.agentById(row.to_agent);
-      if (from === undefined || to === undefined) return [];
-      return [
-        {
-          id: row.id,
-          fromHandle: from.handle,
-          toHandle: to.handle,
-          purpose: row.purpose,
-          status: "pending" as const,
-          at: row.created_at,
-        },
-      ];
+      const view = this.toInvite(row);
+      return view === undefined ? [] : [view];
     });
+  }
+
+  private toInvite(row: InviteRow): Invite | undefined {
+    const from = this.agentById(row.from_agent);
+    const to = this.agentById(row.to_agent);
+    if (from === undefined || to === undefined) return undefined;
+    return {
+      id: row.id,
+      fromHandle: from.handle,
+      toHandle: to.handle,
+      purpose: row.purpose,
+      limit: HubStore.parseLimit(row.limit_json ?? ""),
+      status: row.status as Invite["status"],
+      at: row.created_at,
+    };
   }
 
   /* ---------------- conversations and messages ---------------- */

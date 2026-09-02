@@ -1,29 +1,19 @@
 /**
- * @fileoverview Everything your agent has said to somebody else, kept on your machine.
+ * @fileoverview Everything your agent has said to somebody else, kept on this machine.
  *
- * Written when the hub confirms a message, not when the bridge sends one. That distinction
- * is load-bearing: the hub also appends messages on your behalf — the invite's opening line
- * is one — and a ledger built from what the bridge remembers sending would silently miss
- * them. Recording on confirmation means the list is everything actually attributed to you,
- * whoever put it there.
+ * Written when the hub confirms a message, and again on welcome for any confirmed line
+ * this process never got to append — a crash between `appended` and disk used to drop
+ * that line. Catch-up copies only messages already attributed to you. The hub still has
+ * no route that accepts this file.
  *
- * So the claim is narrow and true: if it is not here, it did not cross. That is much less
- * than "here is what my agent chose not to reveal" — nothing in the system can know which
- * facts an agent decided to omit — but it is the whole reason the panel sits beside the
- * conversation rather than in a settings page.
- *
- * The gap it accepts: a message confirmed by the hub while this process is dying is lost to
- * the local file. Reconciling against hub history on reconnect would close it and is not
- * done yet.
- *
- * Append-only JSONL, unparseable lines skipped, same discipline as jazz's own logs: a
- * process killed mid-write should cost the last line, not the file. It never leaves this
- * machine — the hub has no route that accepts it.
+ * Append-only JSONL. A process killed mid-write should cost the last line, not the file.
+ * A write that fails is reported; the room is not silently treated as complete.
  */
 
 import { dirname } from "node:path";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { ledgerPath } from "./paths";
+import type { Message } from "@quartet/protocol";
+import { asidesPath, ledgerPath } from "./paths";
 
 export { ledgerPath };
 
@@ -32,22 +22,25 @@ export interface LedgerEntry {
   readonly id: string;
   readonly at: string;
   readonly conversationId: string;
-  /** Who it went to. Recorded per entry so the file stays readable on its own. */
   readonly to: string;
   readonly text: string;
-  /** Present when the owner asked for this turn, so you can see what prompted what. */
   readonly steer?: string;
 }
 
-export async function recordSent(entry: LedgerEntry): Promise<void> {
+export interface AsideRecord {
+  readonly at: string;
+  readonly conversationId: string;
+  readonly text: string;
+}
+
+export async function recordSent(entry: LedgerEntry): Promise<string | undefined> {
   const path = ledgerPath();
   try {
     await mkdir(dirname(path), { recursive: true });
     await appendFile(path, `${JSON.stringify(entry)}\n`, "utf-8");
-  } catch {
-    // Losing a line must not fail the message that produced it. The tradeoff is real and
-    // uncomfortable: a full disk produces silent gaps in the one record whose value is being
-    // complete, and nothing here detects that yet.
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : "could not write the local record";
   }
 }
 
@@ -63,11 +56,59 @@ export async function readLedger(conversationId?: string): Promise<LedgerEntry[]
     if (line.trim().length === 0) continue;
     try {
       const parsed = JSON.parse(line) as LedgerEntry;
+      if (typeof parsed.id !== "string" || typeof parsed.text !== "string") continue;
       if (conversationId === undefined || parsed.conversationId === conversationId) {
         entries.push(parsed);
       }
     } catch {
       // A partial final line from an interrupted write. Skipping it is the recovery.
+    }
+  }
+  return entries;
+}
+
+/** Confirmed agent lines of yours that the local file does not yet have. */
+export function missingOutgoing(
+  messages: readonly Message[],
+  meHandle: string,
+  knownIds: ReadonlySet<string>,
+): Message[] {
+  return messages.filter(
+    (message) =>
+      message.kind === "agent" &&
+      message.authorHandle === meHandle &&
+      !knownIds.has(message.id),
+  );
+}
+
+export async function recordAside(aside: AsideRecord): Promise<string | undefined> {
+  const path = asidesPath();
+  try {
+    await mkdir(dirname(path), { recursive: true });
+    await appendFile(path, `${JSON.stringify(aside)}\n`, "utf-8");
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : "could not write your aside";
+  }
+}
+
+export async function readAsides(): Promise<AsideRecord[]> {
+  let raw: string;
+  try {
+    raw = await readFile(asidesPath(), "utf-8");
+  } catch {
+    return [];
+  }
+  const entries: AsideRecord[] = [];
+  for (const line of raw.split("\n")) {
+    if (line.trim().length === 0) continue;
+    try {
+      const parsed = JSON.parse(line) as AsideRecord;
+      if (typeof parsed.text === "string" && typeof parsed.conversationId === "string") {
+        entries.push(parsed);
+      }
+    } catch {
+      // Same discipline as the ledger: a torn last line is skipped.
     }
   }
   return entries;

@@ -190,9 +190,14 @@ bridgeA.send({
   t: "invite.send",
   toHandle: "otto",
   purpose: PURPOSE,
+  limit: { kind: "turns", turns: 12 },
 });
 await waitFor("the invite to land with @otto", () => stateB.invites.length > 0);
 check(stateB.invites[0]?.fromHandle === "mira", "the invite reached @otto with its purpose line");
+check(
+  stateB.invites[0]?.limit.kind === "turns" && stateB.invites[0].limit.turns === 12,
+  "the invite carried the inviter's limit",
+);
 
 const inviteId = stateB.invites[0]?.id ?? fail("no invite id");
 bridgeB.send({ t: "invite.respond", inviteId, accept: true });
@@ -202,6 +207,18 @@ await waitFor("a conversation to exist on both sides", () =>
 );
 const conversationId = stateA.conversations[0]?.id ?? fail("no conversation");
 check(true, "accepting the invite connected them and opened a conversation");
+check(
+  stateA.conversations[0]?.limit.kind === "turns" && stateA.conversations[0].limit.turns === 12,
+  "accepting used the inviter's limit, not a second pick",
+);
+
+bridgeA.send({ t: "watch", conversationId });
+await waitFor(
+  "@otto to see @mira watching",
+  () => stateB.presence[conversationId]?.watching === true,
+);
+check(stateB.presence[conversationId]?.online === true, "@mira shows as online in the room");
+check(stateB.presence[conversationId]?.watching === true, "@otto can see @mira is watching");
 
 await waitFor(
   "both agents to speak and one to pass",

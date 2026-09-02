@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Conversation, Message } from "@quartet/protocol";
 import { DEFAULT_TURN_BUDGET, MAX_SPEND_USD, MAX_TURN_BUDGET } from "@quartet/protocol";
 import { MessageBody } from "./Message";
-import { call, useBridge, useSocketLive, type Activity, type Aside, type Limit } from "./store";
+import { call, useBridge, useSocketLive, type Activity, type Aside, type Limit, type PeerPresence } from "./store";
 
 function monogram(handle: string): string {
   return handle.slice(0, 2).toUpperCase();
@@ -151,6 +151,109 @@ function describeLimit(limit: Limit): string {
   return "unlimited";
 }
 
+/**
+ * A limit you are about to send with an invite or a new room — not yet attached to one.
+ */
+function LimitDraft({
+  value,
+  onChange,
+}: {
+  value: Limit;
+  onChange: (limit: Limit) => void;
+}): React.JSX.Element {
+  const committed =
+    value.kind === "turns" ? String(value.turns) : value.kind === "cost" ? String(value.usd) : "";
+  const [draft, setDraft] = useState(committed);
+  const [editing, setEditing] = useState(false);
+
+  useEffect(() => {
+    if (!editing) setDraft(committed);
+  }, [committed, editing]);
+
+  function apply(raw: string): void {
+    const amount = Number(raw);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setDraft(committed);
+      return;
+    }
+    if (value.kind === "cost") onChange({ kind: "cost", usd: Math.min(amount, MAX_SPEND_USD) });
+    else onChange({ kind: "turns", turns: Math.min(Math.round(amount), MAX_TURN_BUDGET) });
+  }
+
+  return (
+    <span className="limit">
+      <select
+        className="limit-select"
+        aria-label="Limit this conversation by"
+        value={value.kind}
+        onChange={(event) => {
+          const kind = event.target.value as Limit["kind"];
+          onChange(
+            kind === "none"
+              ? { kind: "none" }
+              : kind === "cost"
+                ? { kind: "cost", usd: 1 }
+                : { kind: "turns", turns: DEFAULT_TURN_BUDGET },
+          );
+        }}
+      >
+        <option value="turns">turns</option>
+        <option value="cost">spend</option>
+        <option value="none">unlimited</option>
+      </select>
+      {value.kind !== "none" && (
+        <span className="limit-value">
+          {value.kind === "cost" && <span className="limit-prefix">$</span>}
+          <input
+            className="limit-input"
+            aria-label={value.kind === "cost" ? "Spend limit in dollars" : "Turn limit"}
+            inputMode="decimal"
+            value={draft}
+            onFocus={() => setEditing(true)}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={(event) => {
+              setEditing(false);
+              const typed = event.currentTarget.value;
+              if (typed !== committed) apply(typed);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+              if (event.key === "Escape") {
+                setDraft(committed);
+                event.currentTarget.blur();
+              }
+            }}
+          />
+        </span>
+      )}
+    </span>
+  );
+}
+
+function PeerStatus({
+  other,
+  presence,
+}: {
+  other: string;
+  presence: PeerPresence | undefined;
+}): React.JSX.Element {
+  if (presence === undefined || !presence.online) {
+    return <span className="peer away">@{other} is away</span>;
+  }
+  if (presence.thinking) {
+    return (
+      <span className="peer live">
+        @{other}’s agent is thinking
+        {presence.since !== undefined && <Elapsed since={presence.since} />}
+      </span>
+    );
+  }
+  if (presence.watching) {
+    return <span className="peer live">@{other} is watching</span>;
+  }
+  return <span className="peer">@{other} is here</span>;
+}
+
 function LimitPicker({
   conversation,
   onAct,
@@ -250,12 +353,18 @@ export default function App(): React.JSX.Element {
   const live = useSocketLive();
   const [selected, setSelected] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
+  const [navOpen, setNavOpen] = useState(false);
 
   const conversation: Conversation | undefined = useMemo(
     () =>
       state.conversations.find((candidate) => candidate.id === selected) ?? state.conversations[0],
     [state.conversations, selected],
   );
+
+  useEffect(() => {
+    if (!state.connectedToHub) return;
+    void call("watch", conversation === undefined ? {} : { conversationId: conversation.id });
+  }, [conversation?.id, state.connectedToHub]);
 
   async function act(path: string, body: Record<string, unknown>): Promise<void> {
     setError(await call(path, body));
@@ -264,6 +373,15 @@ export default function App(): React.JSX.Element {
   return (
     <div className="app">
       <header className="topbar">
+        <button
+          className="nav-toggle"
+          type="button"
+          aria-expanded={navOpen}
+          aria-controls="rooms"
+          onClick={() => setNavOpen((open) => !open)}
+        >
+          Rooms
+        </button>
         <div className="wordmark">
           Quar<span>tet</span>
         </div>
@@ -275,15 +393,25 @@ export default function App(): React.JSX.Element {
         </span>
       </header>
 
+      <div
+        className={navOpen ? "nav-scrim open" : "nav-scrim"}
+        onClick={() => setNavOpen(false)}
+        aria-hidden="true"
+      />
+
       <div className="columns">
         <Sidebar
           state={state}
           selectedId={conversation?.id}
-          onSelect={setSelected}
+          open={navOpen}
+          onSelect={(id) => {
+            setSelected(id);
+            setNavOpen(false);
+          }}
           onAct={act}
         />
         {conversation === undefined ? (
-          <section className="pane">
+          <section className="pane chat">
             <div className="placeholder">
               <p>
                 No conversations yet. Find someone you know and invite them — the line you
@@ -297,6 +425,7 @@ export default function App(): React.JSX.Element {
             messages={state.messages[conversation.id] ?? []}
             asides={state.asides[conversation.id] ?? []}
             activity={state.activity[conversation.id]}
+            presence={state.presence[conversation.id]}
             meHandle={state.me?.handle ?? ""}
             onAct={act}
           />
@@ -317,22 +446,25 @@ export default function App(): React.JSX.Element {
 function Sidebar({
   state,
   selectedId,
+  open,
   onSelect,
   onAct,
 }: {
   state: ReturnType<typeof useBridge>;
   selectedId: string | undefined;
+  open: boolean;
   onSelect: (id: string) => void;
   onAct: (path: string, body: Record<string, unknown>) => Promise<void>;
 }): React.JSX.Element {
   const [toHandle, setToHandle] = useState("");
   const [purpose, setPurpose] = useState("");
+  const [limit, setLimit] = useState<Limit>({ kind: "turns", turns: DEFAULT_TURN_BUDGET });
   const incoming = state.invites.filter(
     (invite) => invite.status === "pending" && invite.toHandle === state.me?.handle,
   );
 
   return (
-    <aside className="pane">
+    <aside className={open ? "pane nav open" : "pane nav"} id="rooms">
       <div className="pane-scroll">
         {incoming.length > 0 && (
           <>
@@ -343,8 +475,8 @@ function Sidebar({
                 <div className="msg-text">“{invite.purpose}”</div>
                 <div className="aside-note">
                   Accepting starts @{invite.fromHandle}’s agent on this topic — not this
-                  sentence as their first line. Default is {DEFAULT_TURN_BUDGET} turns.
-                  They see what yours says, not what you type.
+                  sentence as their first line. They set the room to {describeLimit(invite.limit)}.
+                  You can change it after. They see what yours says, not what you type.
                 </div>
                 <div className="composer-row">
                   <button
@@ -404,6 +536,7 @@ function Sidebar({
             value={purpose}
             onChange={(event) => setPurpose(event.target.value)}
           />
+          <LimitDraft value={limit} onChange={setLimit} />
           <button
             className="btn go"
             type="button"
@@ -417,8 +550,8 @@ function Sidebar({
               void onAct(
                 connection !== undefined ? "conversation" : "invite",
                 connection !== undefined
-                  ? { connectionId: connection.id, purpose: purpose.trim() }
-                  : { toHandle: toHandle.trim(), purpose: purpose.trim() },
+                  ? { connectionId: connection.id, purpose: purpose.trim(), limit }
+                  : { toHandle: toHandle.trim(), purpose: purpose.trim(), limit },
               ).then(() => setPurpose(""));
             }}
           >
@@ -460,6 +593,7 @@ function Chat({
   messages,
   asides,
   activity,
+  presence,
   meHandle,
   onAct,
 }: {
@@ -467,6 +601,7 @@ function Chat({
   messages: Message[];
   asides: Aside[];
   activity: Activity | undefined;
+  presence: PeerPresence | undefined;
   meHandle: string;
   onAct: (path: string, body: Record<string, unknown>) => Promise<void>;
 }): React.JSX.Element {
@@ -514,7 +649,7 @@ function Chat({
 
   useEffect(() => {
     if (pinned.current) bottom.current?.scrollIntoView({ block: "end" });
-  }, [activity?.state]);
+  }, [activity?.state, presence?.thinking]);
 
   function onScroll(): void {
     const element = scroller.current;
@@ -526,11 +661,15 @@ function Chat({
   }
 
   return (
-    <section className="pane">
+    <section className="pane chat">
       <div className="chat-head">
         <span className="chat-purpose" title={conversation.purpose}>
           {shortPurpose(conversation.purpose)}
         </span>
+        <PeerStatus
+          other={conversation.participants.find((handle) => handle !== meHandle) ?? "them"}
+          presence={presence}
+        />
         <Budget conversation={conversation} />
         <LimitPicker conversation={conversation} onAct={onAct} />
       </div>
@@ -589,7 +728,21 @@ function Chat({
                 <i />
                 <i />
               </span>
+              <span className="activity-who">your agent</span>
               <Elapsed since={activity.since ?? Date.now()} />
+            </div>
+          )}
+
+          {presence?.thinking && (
+            <div className="activity theirs">
+              <span className="bars" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+                <i />
+              </span>
+              <span className="activity-who">@{presence.handle}’s agent</span>
+              {presence.since !== undefined && <Elapsed since={presence.since} />}
             </div>
           )}
 
@@ -630,14 +783,15 @@ function Chat({
             </div>
           )}
 
-          {conversation.stopped && activity?.state !== "thinking" && (
+          {conversation.stopped && activity?.state !== "thinking" && !presence?.thinking && (
             <span className="line">Stopped. Change the limit or say something to continue.</span>
           )}
 
           {!conversation.stopped &&
             roomIsQuiet(conversation) &&
             activity?.state !== "thinking" &&
-            activity?.state !== "needs-you" && (
+            activity?.state !== "needs-you" &&
+            !presence?.thinking && (
               <span className="line">
                 {conversation.limit.kind === "cost"
                   ? "Room quiet — spend limit reached. Raise it or say something to continue."
@@ -701,7 +855,7 @@ function Ledger({
   other: string | undefined;
 }): React.JSX.Element {
   return (
-    <aside className="pane">
+    <aside className="pane ledger">
       <div className="pane-title">
         {other === undefined ? "What your agent has said" : `What your agent said to @${other}`}
       </div>
@@ -720,7 +874,7 @@ function Ledger({
       <div className="led-foot">
         This is the complete list. Nothing else crossed.
         <br />
-        Stored on this machine — the hub never receives it.
+        Stored on this machine. A restart fills any line the hub already confirmed.
       </div>
     </aside>
   );

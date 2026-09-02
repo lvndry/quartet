@@ -22,10 +22,18 @@ import {
   type Invite,
   type Message,
   type Agent,
+  type PeerPresence,
 } from "@quartet/protocol";
 import type { DaemonSettings } from "./config";
 import { answerParkedRun, runTurn, type TurnResult } from "./jazz";
-import { recordSent, readLedger, type LedgerEntry } from "./ledger";
+import {
+  missingOutgoing,
+  readAsides,
+  readLedger,
+  recordAside,
+  recordSent,
+  type LedgerEntry,
+} from "./ledger";
 import { logger } from "./log";
 import { buildPayload } from "./prompt";
 
@@ -52,6 +60,7 @@ export interface BridgeState {
   readonly messages: Record<string, Message[]>;
   readonly asides: Record<string, Aside[]>;
   readonly activity: Record<string, Activity>;
+  readonly presence: Record<string, PeerPresence>;
   readonly ledger: LedgerEntry[];
   readonly lastError?: string;
 }
@@ -78,6 +87,7 @@ export class Bridge {
   private readonly messages = new Map<string, Message[]>();
   private readonly asides = new Map<string, Aside[]>();
   private readonly activity = new Map<string, Activity>();
+  private readonly presence = new Map<string, PeerPresence>();
   private ledger: LedgerEntry[] = [];
   private lastError: string | undefined;
   /**
@@ -87,6 +97,8 @@ export class Bridge {
    * confirms, by which point the turn that produced it is long over.
    */
   private readonly pendingSteer = new Map<string, string>();
+  /** Frames that arrived while the socket was down. Flushed after welcome, after hello. */
+  private readonly outbound: ClientFrame[] = [];
 
   constructor(
     private readonly hubUrl: string,
@@ -96,6 +108,12 @@ export class Bridge {
 
   async start(): Promise<void> {
     this.ledger = await readLedger();
+    for (const aside of await readAsides()) {
+      this.asides.set(aside.conversationId, [
+        ...(this.asides.get(aside.conversationId) ?? []),
+        aside,
+      ]);
+    }
     this.open();
   }
 
@@ -121,6 +139,7 @@ export class Bridge {
       messages: Object.fromEntries(this.messages),
       asides: Object.fromEntries(this.asides),
       activity: Object.fromEntries(this.activity),
+      presence: Object.fromEntries(this.presence),
       ledger: this.ledger,
       ...(this.lastError !== undefined ? { lastError: this.lastError } : {}),
     };
@@ -131,9 +150,13 @@ export class Bridge {
     for (const listener of this.listeners) listener(state);
   }
 
-  /** Send a frame to the hub. Dropped silently when offline — the hub resends state on reconnect. */
+  /** Send a frame to the hub. Queued while offline and flushed after the next welcome. */
   send(frame: ClientFrame): void {
-    if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(frame));
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(frame));
+      return;
+    }
+    this.outbound.push(frame);
   }
 
   /**
@@ -148,6 +171,12 @@ export class Bridge {
     this.asides.set(conversationId, [...(this.asides.get(conversationId) ?? []), aside]);
     log.info("you → your agent", { conversation: conversationId, chars: text.length });
     this.publish();
+    void recordAside(aside).then((error) => {
+      if (error !== undefined) {
+        this.lastError = `your instruction was shown but not saved: ${error}`;
+        this.publish();
+      }
+    });
     this.send({ t: "nudge", conversationId, steer: text });
   }
 
@@ -211,6 +240,7 @@ export class Bridge {
         this.connections = frame.connections;
         this.conversations = frame.conversations;
         this.invites = frame.invites;
+        this.presence.clear();
         this.messages.clear();
         for (const message of frame.messages) {
           const list = this.messages.get(message.conversationId) ?? [];
@@ -218,6 +248,8 @@ export class Bridge {
             this.messages.set(message.conversationId, [...list, message]);
           }
         }
+        await this.catchUpLedger(frame.messages);
+        this.flushOutbound();
         this.publish();
         return;
 
@@ -302,6 +334,11 @@ export class Bridge {
     );
         return;
 
+      case "presence":
+        this.presence.set(frame.conversationId, frame.other);
+        this.publish();
+        return;
+
       case "error":
         hubLog.error(frame.detail);
         this.lastError = frame.detail;
@@ -313,12 +350,26 @@ export class Bridge {
     }
   }
 
+  private flushOutbound(): void {
+    const queued = this.outbound.splice(0);
+    for (const frame of queued) this.send(frame);
+  }
+
+  /** Any confirmed line of ours the file missed — crash between hub ack and disk. */
+  private async catchUpLedger(messages: readonly Message[]): Promise<void> {
+    const me = this.me?.handle;
+    if (me === undefined) return;
+    const known = new Set(this.ledger.map((entry) => entry.id));
+    for (const message of missingOutgoing(messages, me, known)) {
+      await this.recordOutgoing(message);
+    }
+  }
+
   /**
    * Write one confirmed outgoing message into the local record.
    *
-   * Driven by the hub's confirmation rather than by our own send, so messages the hub
-   * appends on our behalf — the invite's opening line, most obviously — are recorded too.
-   * Without that, the ledger would quietly omit the first thing your agent ever said.
+   * Driven by the hub's confirmation rather than by our own send. Welcome catch-up uses
+   * the same path so a crash between confirm and disk does not leave a permanent hole.
    */
   private async recordOutgoing(message: Message): Promise<void> {
     if (message.kind !== "agent") return;
@@ -341,7 +392,11 @@ export class Bridge {
       ...(steer !== undefined ? { steer } : {}),
     };
     this.ledger = [...this.ledger, entry];
-    await recordSent(entry);
+    const error = await recordSent(entry);
+    if (error !== undefined) {
+      this.lastError = `the room has this line; the local record could not save it: ${error}`;
+      log.error("ledger write failed", { id: entry.id, error });
+    }
   }
 
   /**

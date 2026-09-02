@@ -26,3 +26,7 @@ export function configPath(): string {
 export function ledgerPath(): string {
   return join(dataDirectory, "sent.jsonl");
 }
+
+export function asidesPath(): string {
+  return join(dataDirectory, "asides.jsonl");
+}

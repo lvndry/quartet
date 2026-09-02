@@ -310,8 +310,10 @@ if (hasFlag("help") || command === "help") {
 } else if (command === "where") {
   const { configPath } = await import("./config");
   const { ledgerPath } = await import("./ledger");
+  const { asidesPath } = await import("./paths");
   console.log(`config  ${configPath()}`);
   console.log(`ledger  ${ledgerPath()}`);
+  console.log(`asides  ${asidesPath()}`);
 } else if (command === "connect") {
   await connect();
 } else {

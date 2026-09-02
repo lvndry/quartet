@@ -171,7 +171,18 @@ async function handleApi(pathname: string, request: Request, bridge: Bridge): Pr
       if (toHandle.length === 0 || purpose.length === 0) {
         return json({ error: "a handle and a purpose line are both required" }, 400);
       }
-      bridge.send({ t: "invite.send", toHandle, purpose });
+      const inviteLimit = body["limit"];
+      const parsedInviteLimit =
+        inviteLimit === undefined ? undefined : limitSchema.safeParse(inviteLimit);
+      if (parsedInviteLimit !== undefined && !parsedInviteLimit.success) {
+        return json({ error: parsedInviteLimit.error.issues[0]?.message ?? "invalid limit" }, 400);
+      }
+      bridge.send({
+        t: "invite.send",
+        toHandle,
+        purpose,
+        ...(parsedInviteLimit?.data !== undefined ? { limit: parsedInviteLimit.data } : {}),
+      });
       return json({ ok: true });
     }
 
@@ -188,7 +199,17 @@ async function handleApi(pathname: string, request: Request, bridge: Bridge): Pr
       if (connectionId.length === 0 || purpose.length === 0) {
         return json({ error: "a connection and a purpose line are both required" }, 400);
       }
-      bridge.send({ t: "conversation.open", connectionId, purpose });
+      const openLimit = body["limit"];
+      const parsedOpenLimit = openLimit === undefined ? undefined : limitSchema.safeParse(openLimit);
+      if (parsedOpenLimit !== undefined && !parsedOpenLimit.success) {
+        return json({ error: parsedOpenLimit.error.issues[0]?.message ?? "invalid limit" }, 400);
+      }
+      bridge.send({
+        t: "conversation.open",
+        connectionId,
+        purpose,
+        ...(parsedOpenLimit?.data !== undefined ? { limit: parsedOpenLimit.data } : {}),
+      });
       return json({ ok: true });
     }
 
@@ -242,6 +263,15 @@ async function handleApi(pathname: string, request: Request, bridge: Bridge): Pr
 
     case "/api/directory": {
       bridge.send({ t: "directory.list" });
+      return json({ ok: true });
+    }
+
+    case "/api/watch": {
+      const conversationId = text("conversationId");
+      bridge.send({
+        t: "watch",
+        ...(conversationId.length > 0 ? { conversationId } : {}),
+      });
       return json({ ok: true });
     }
 

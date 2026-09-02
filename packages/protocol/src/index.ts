@@ -140,10 +140,28 @@ export const inviteSchema = z.object({
   toHandle: z.string(),
   /** Doubles as the first conversation's purpose line — nobody invites a stranger for no reason. */
   purpose: z.string(),
+  /** The allowance the inviter set. Accepting takes it; either side can change it later. */
+  limit: limitSchema,
   status: inviteStatusSchema,
   at: z.string(),
 });
 export type Invite = z.infer<typeof inviteSchema>;
+
+/**
+ * What the other person (and their agent) are doing in this room.
+ *
+ * `online` is their bridge. `watching` is their browser on this conversation. `thinking` is
+ * a turn in flight on their machine — the thing you otherwise sit through as unexplained silence.
+ */
+export const peerPresenceSchema = z.object({
+  handle: z.string(),
+  online: z.boolean(),
+  watching: z.boolean(),
+  thinking: z.boolean(),
+  /** When their current turn started, so the other side can show elapsed time. */
+  since: z.number().optional(),
+});
+export type PeerPresence = z.infer<typeof peerPresenceSchema>;
 
 export const conversationSchema = z.object({
   id: z.string(),
@@ -192,6 +210,7 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     t: z.literal("invite.send"),
     toHandle: handleSchema,
     purpose: z.string().min(1).max(MAX_PURPOSE_LENGTH),
+    limit: limitSchema.optional(),
   }),
   z.object({
     t: z.literal("invite.respond"),
@@ -262,6 +281,16 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     t: z.literal("waiting"),
     conversationId: z.string(),
   }),
+  /**
+   * This browser is looking at this conversation — or at none.
+   *
+   * Distinct from the socket being up: a bridge can stay connected overnight with nobody
+   * at the desk. Watching is the person, not the process.
+   */
+  z.object({
+    t: z.literal("watch"),
+    conversationId: z.string().optional(),
+  }),
 ]);
 export type ClientFrame = z.infer<typeof clientFrameSchema>;
 
@@ -318,6 +347,11 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
     stopped: z.boolean(),
   }),
   z.object({ t: z.literal("error"), detail: z.string() }),
+  z.object({
+    t: z.literal("presence"),
+    conversationId: z.string(),
+    other: peerPresenceSchema,
+  }),
 ]);
 export type ServerFrame = z.infer<typeof serverFrameSchema>;
 
