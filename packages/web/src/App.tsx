@@ -1,7 +1,8 @@
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Conversation, Message } from "@quartet/protocol";
-import { MAX_SPEND_USD, MAX_TURN_BUDGET } from "@quartet/protocol";
+import { DEFAULT_TURN_BUDGET, MAX_SPEND_USD, MAX_TURN_BUDGET } from "@quartet/protocol";
+import { MessageBody } from "./Message";
 import { call, useBridge, useSocketLive, type Activity, type Aside, type Limit } from "./store";
 
 function monogram(handle: string): string {
@@ -26,6 +27,17 @@ function Elapsed({ since }: { since: number }): React.JSX.Element {
       {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}
     </span>
   );
+}
+
+/** Whether the room has spent its allowance and is waiting on a person. */
+function roomIsQuiet(conversation: Conversation): boolean {
+  if (conversation.limit.kind === "turns") return conversation.budgetRemaining === 0;
+  if (conversation.limit.kind === "cost") {
+    return conversation.spendIncomplete
+      ? conversation.budgetRemaining === 0
+      : conversation.spentUSD >= conversation.limit.usd;
+  }
+  return false;
 }
 
 /**
@@ -177,7 +189,7 @@ function LimitPicker({
         ? { kind: "none" }
         : kind === "cost"
           ? { kind: "cost", usd: 1 }
-          : { kind: "turns", turns: 20 };
+          : { kind: "turns", turns: DEFAULT_TURN_BUDGET };
     void onAct("limit", { conversationId: conversation.id, limit: next });
   }
 
@@ -274,8 +286,8 @@ export default function App(): React.JSX.Element {
           <section className="pane">
             <div className="placeholder">
               <p>
-                No conversations yet. Find someone in the directory and invite them — the line
-                you write is what your agents start talking about.
+                No conversations yet. Find someone you know and invite them — the line you
+                write is a topic for your agent, not a message in the room.
               </p>
             </div>
           </section>
@@ -329,6 +341,11 @@ function Sidebar({
               <div key={invite.id} className="form">
                 <div className="row-title">@{invite.fromHandle} wants to talk</div>
                 <div className="msg-text">“{invite.purpose}”</div>
+                <div className="aside-note">
+                  Accepting starts @{invite.fromHandle}’s agent on this topic — not this
+                  sentence as their first line. Default is {DEFAULT_TURN_BUDGET} turns.
+                  They see what yours says, not what you type.
+                </div>
                 <div className="composer-row">
                   <button
                     className="btn go"
@@ -558,7 +575,7 @@ function Chat({
                   <span className="msg-who">
                     @{message.authorHandle} · {clock(message.at)}
                   </span>
-                  <span className="msg-text">{message.text}</span>
+                  <MessageBody text={message.text} />
                 </span>
               </div>
             );
@@ -581,7 +598,34 @@ function Chat({
               <span className="bar" />
               <span className="msg-body">
                 <span className="text">Your agent wants to use a tool that needs your approval.</span>
-                <span className="hint">jazz runs answer {activity.runId}</span>
+                <span className="composer-row">
+                  <button
+                    className="btn go"
+                    type="button"
+                    onClick={() =>
+                      void onAct("approve", {
+                        conversationId: conversation.id,
+                        runId: activity.runId,
+                        approved: true,
+                      })
+                    }
+                  >
+                    Approve
+                  </button>
+                  <button
+                    className="btn stop"
+                    type="button"
+                    onClick={() =>
+                      void onAct("approve", {
+                        conversationId: conversation.id,
+                        runId: activity.runId,
+                        approved: false,
+                      })
+                    }
+                  >
+                    Deny
+                  </button>
+                </span>
               </span>
             </div>
           )}
@@ -591,9 +635,9 @@ function Chat({
           )}
 
           {!conversation.stopped &&
-            conversation.limit.kind !== "none" &&
-            conversation.budgetRemaining === 0 &&
-            activity?.state !== "thinking" && (
+            roomIsQuiet(conversation) &&
+            activity?.state !== "thinking" &&
+            activity?.state !== "needs-you" && (
               <span className="line">
                 {conversation.limit.kind === "cost"
                   ? "Room quiet — spend limit reached. Raise it or say something to continue."
@@ -636,7 +680,7 @@ function Chat({
               setDraft("");
             }}
           >
-            Send
+            Steer
           </button>
         </div>
         <span className="composer-note">
@@ -659,14 +703,16 @@ function Ledger({
   return (
     <aside className="pane">
       <div className="pane-title">
-        {other === undefined ? "What your agent has said" : `Everything you've told @${other}`}
+        {other === undefined ? "What your agent has said" : `What your agent said to @${other}`}
       </div>
       <div className="pane-scroll">
         {entries.length === 0 && <div className="empty">Nothing has crossed yet.</div>}
         {entries.map((entry) => (
           <div className="led-row" key={entry.id}>
             <span className="led-meta">{clock(entry.at)}</span>
-            <span className="led-text">{entry.text}</span>
+            <span className="led-text" title={entry.text}>
+              {entry.text}
+            </span>
             {entry.steer !== undefined && <span className="led-steer">you asked: {entry.steer}</span>}
           </div>
         ))}
