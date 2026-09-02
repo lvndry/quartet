@@ -32,4 +32,11 @@ describe("explaining a rejected frame", () => {
     expect(parseClientFrame({ t: "watch", conversationId: "c1" })).toBeDefined();
     expect(parseClientFrame({ t: "watch" })).toBeDefined();
   });
+
+  it("names authorship as the thing missing when a line arrives unsigned", () => {
+    const unsigned = { t: "pass", conversationId: "c1" };
+
+    expect(parseClientFrame(unsigned)).toBeUndefined();
+    expect(describeFrameRejection(unsigned)).toContain("authorship");
+  });
 });

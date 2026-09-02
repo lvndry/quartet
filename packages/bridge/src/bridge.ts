@@ -22,9 +22,13 @@ import {
   type Invite,
   type Message,
   type Agent,
+  type Limit,
   type PeerPresence,
 } from "@quartet/protocol";
+import { fingerprint, parseTag } from "@quartet/identity";
 import type { DaemonSettings } from "./config";
+import type { Attestor, Verdict } from "./attest";
+import { KnownKeys, type Conflict } from "./known";
 import { answerParkedRun, runTurn, type TurnResult } from "./jazz";
 import {
   missingOutgoing,
@@ -62,6 +66,32 @@ export interface BridgeState {
   readonly activity: Record<string, Activity>;
   readonly presence: Record<string, PeerPresence>;
   readonly ledger: LedgerEntry[];
+  /**
+   * What checking each message's signature concluded, by message id.
+   *
+   * Carried beside the messages rather than folded into them: a verdict is this machine's
+   * conclusion, not part of what was said, and putting it inside a Message would make it
+   * look like something the hub had told us.
+   */
+  readonly verdicts: Record<string, Verdict>;
+  /**
+   * Handles whose key has changed since this machine first saw them.
+   *
+   * Surfaced rather than resolved. A changed key is a new device or a reinstall about as
+   * often as it is an attack, and a bridge cannot tell the two apart — but a person who
+   * compares a fingerprint can, and they cannot do that if nobody tells them.
+   */
+  readonly keyConflicts: Conflict[];
+  /**
+   * The readable short form of every key this bridge can name, by did.
+   *
+   * Computed here because the app runs in a browser and the digest comes from `node:crypto`.
+   * Shipping the derived string rather than teaching the page to hash keeps one implementation
+   * of what a fingerprint is, which is the only way two of them can never disagree.
+   */
+  readonly fingerprints: Record<string, string>;
+  /** Set when this machine's pin file could not be read, so no key here is vouched for. */
+  readonly keyStoreProblem?: string;
   readonly lastError?: string;
 }
 
@@ -100,13 +130,19 @@ export class Bridge {
   /** Frames that arrived while the socket was down. Flushed after welcome, after hello. */
   private readonly outbound: ClientFrame[] = [];
 
+  private readonly verdicts = new Map<string, Verdict>();
+
+
   constructor(
     private readonly hubUrl: string,
-    private readonly agentToken: string,
     private readonly daemon: DaemonSettings,
+    private readonly attestor: Attestor,
+    private readonly known: KnownKeys = new KnownKeys(),
   ) {}
 
   async start(): Promise<void> {
+    await this.attestor.ready();
+    await this.known.load();
     this.ledger = await readLedger();
     for (const aside of await readAsides()) {
       this.asides.set(aside.conversationId, [
@@ -129,6 +165,7 @@ export class Bridge {
   }
 
   snapshot(): BridgeState {
+    const keyStoreProblem = this.known.problem();
     return {
       connectedToHub: this.connectedToHub,
       ...(this.me !== undefined ? { me: this.me } : {}),
@@ -141,6 +178,10 @@ export class Bridge {
       activity: Object.fromEntries(this.activity),
       presence: Object.fromEntries(this.presence),
       ledger: this.ledger,
+      verdicts: Object.fromEntries(this.verdicts),
+      keyConflicts: this.known.all(),
+      fingerprints: this.fingerprints(),
+      ...(keyStoreProblem !== undefined ? { keyStoreProblem } : {}),
       ...(this.lastError !== undefined ? { lastError: this.lastError } : {}),
     };
   }
@@ -180,6 +221,135 @@ export class Bridge {
     this.send({ t: "nudge", conversationId, steer: text });
   }
 
+  /**
+   * The key a handle is known by here, from whatever the hub has shown us about them.
+   *
+   * Undefined for a stranger, which is the honest answer and the reason phase four exists:
+   * until somebody compares a fingerprint out of band, "the key the hub says is theirs" is
+   * all any of this can mean. What it does buy immediately is *continuity* — the hub cannot
+   * change the key behind a handle later without every line after it failing to verify.
+   */
+  /** Short forms for every key on screen: mine, the directory's, and both sides of a conflict. */
+  private fingerprints(): Record<string, string> {
+    const dids = [
+      this.attestor.did,
+      ...this.directory.flatMap((entry) => (entry.agent.did !== undefined ? [entry.agent.did] : [])),
+      ...this.connections.flatMap((entry) =>
+        entry.withAgent.did !== undefined ? [entry.withAgent.did] : [],
+      ),
+      ...this.known.all().flatMap((conflict) => [conflict.pinned, conflict.offered]),
+    ];
+    const out: Record<string, string> = {};
+    for (const did of dids) {
+      const short = fingerprint(did);
+      if (short !== undefined) out[did] = short;
+    }
+    return out;
+  }
+
+  private didFor(handle: string): string | undefined {
+    if (handle === this.me?.handle) return this.attestor.did;
+    // The pin wins over whatever the hub is saying now. That is the entire point of holding
+    // one: a directory entry is the hub's claim, and a pin is what this machine concluded
+    // the first time — possibly after somebody read the fingerprint out loud.
+    return this.known.did(handle);
+  }
+
+  /**
+   * Feed every key the hub has mentioned through the pin file.
+   *
+   * Run on each directory and connection update rather than only at first contact, because a
+   * hub that wanted to swap a key would naturally do it between sessions, when nobody is
+   * looking at the screen it would appear on.
+   */
+  private pinKnownKeys(): void {
+    const seen: { handle: string; did: string | undefined }[] = [
+      ...this.directory.map((entry) => ({
+        handle: entry.agent.handle,
+        did: entry.agent.did,
+      })),
+      ...this.connections.map((entry) => ({
+        handle: entry.withAgent.handle,
+        did: entry.withAgent.did,
+      })),
+    ];
+    for (const { handle, did } of seen) {
+      if (did === undefined || handle === this.me?.handle) continue;
+      const conflict = this.known.offer(handle, did);
+      if (conflict !== undefined) {
+        hubLog.error(
+          `@${handle} is being offered under a different key than the one pinned here. ` +
+            "Nothing from them will verify until you compare fingerprints and decide.",
+        );
+      }
+    }
+  }
+
+  /** Judge one message and remember the verdict for the app. */
+  private judge(message: Message): Verdict {
+    const verdict = this.attestor.check(message, {
+      expectedDid: this.didFor(message.authorHandle),
+    });
+    this.verdicts.set(message.id, verdict);
+    if (verdict.state === "broken") {
+      hubLog.error(`a message from @${message.authorHandle} did not check out: ${verdict.why}`);
+    }
+    return verdict;
+  }
+
+  /**
+   * Invite somebody, by handle or by the fuller form somebody hands out: `@mira#4f2a-…`.
+   *
+   * When a fingerprint is given it is checked against the key the hub is offering, and a
+   * mismatch stops the invite rather than warning about it. This is the one moment where a
+   * person has independent knowledge of who they mean — they were told out of band — so it is
+   * the one moment where refusing beats proceeding and explaining afterwards.
+   *
+   * A bare handle goes through, and the key gets pinned on first sight like any other. That
+   * is weaker, and it is the user's call to make rather than this function's.
+   */
+  invite(target: string, purpose: string, limit?: Limit): { error: string } | undefined {
+    const parsed = parseTag(target);
+    if (parsed === undefined) {
+      return { error: `"${target}" is not a handle or a handle#fingerprint` };
+    }
+
+    const offered = this.directory.find((entry) => entry.agent.handle === parsed.handle)?.agent.did;
+    if (parsed.fingerprint !== undefined) {
+      if (offered === undefined) {
+        return {
+          error: `this hub has no key for @${parsed.handle}, so the fingerprint proves nothing`,
+        };
+      }
+      if (fingerprint(offered) !== parsed.fingerprint) {
+        return {
+          error:
+            `@${parsed.handle} on this hub has fingerprint ${fingerprint(offered) ?? "none"}, ` +
+            `not ${parsed.fingerprint}. Do not send this until you know why.`,
+        };
+      }
+      // Checked by a person, so it supersedes anything pinned on a hub's say-so alone.
+      void this.known.repin(parsed.handle, offered);
+    }
+
+    this.send({
+      t: "invite.send",
+      toHandle: parsed.handle,
+      purpose,
+      ...(limit !== undefined ? { limit } : {}),
+    });
+    return undefined;
+  }
+
+  /** Accept a handle's new key, after a person has looked at the fingerprints and decided. */
+  async trustNewKey(handle: string): Promise<void> {
+    const conflict = this.known.conflict(handle);
+    if (conflict === undefined) return;
+    await this.known.repin(handle, conflict.offered);
+    hubLog.info(`re-pinned @${handle} to its new key`);
+    this.publish();
+  }
+
   private open(): void {
     const url = new URL("/socket", this.hubUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -191,7 +361,8 @@ export class Bridge {
       this.connectedToHub = true;
       this.lastError = undefined;
       hubLog.info("connected", { url: this.hubUrl });
-      socket.send(JSON.stringify({ t: "hello", agentToken: this.agentToken } satisfies ClientFrame));
+      // Nothing is said until the hub asks. The introduction is a signature over the
+      // challenge it is about to send, so there is no secret to present and none to steal.
       this.publish();
     });
 
@@ -242,19 +413,36 @@ export class Bridge {
         this.invites = frame.invites;
         this.presence.clear();
         this.messages.clear();
+        // Keys first: judging a transcript before knowing which key each handle signs with
+        // would mark a room full of perfectly good lines as coming from strangers.
+        this.pinKnownKeys();
         for (const message of frame.messages) {
           const list = this.messages.get(message.conversationId) ?? [];
           if (!list.some((existing) => existing.id === message.id)) {
             this.messages.set(message.conversationId, [...list, message]);
           }
+          // A replayed transcript is checked like anything else. It arrives from the hub on
+          // every reconnect, and taking it on trust would make reconnecting the way to launder
+          // a line that could not survive being checked when it was new.
+          this.judge(message);
         }
         await this.catchUpLedger(frame.messages);
         this.flushOutbound();
         this.publish();
         return;
 
+      case "challenge":
+        this.send({
+          t: "hello",
+          did: this.attestor.did,
+          challenge: frame.nonce,
+          signature: this.attestor.answer(frame.nonce),
+        });
+        return;
+
       case "directory":
         this.directory = frame.people;
+        this.pinKnownKeys();
         this.publish();
         return;
 
@@ -277,6 +465,7 @@ export class Bridge {
           frame.conversation,
           ...this.conversations.filter((c) => c.id !== frame.conversation.id),
         ];
+        this.pinKnownKeys();
         this.publish();
         return;
 
@@ -293,8 +482,10 @@ export class Bridge {
         if (!list.some((message) => message.id === frame.message.id)) {
           this.messages.set(frame.message.conversationId, [...list, frame.message]);
         }
+        this.judge(frame.message);
         // Our own message landing means our turn is over; anything else leaves us as we were.
         if (frame.message.authorHandle === this.me?.handle) {
+          this.attestor.confirmOwn(frame.message);
           this.activity.set(frame.message.conversationId, { state: "idle" });
           await this.recordOutgoing(frame.message);
         }
@@ -480,6 +671,7 @@ export class Bridge {
           t: "say",
           conversationId,
           text: result.text,
+          authorship: this.attestor.speak(conversationId, "agent", result.text),
           ...(result.closing ? { closing: true } : {}),
           ...(result.cost.costUSD !== undefined ? { costUSD: result.cost.costUSD } : {}),
           ...(result.cost.incomplete ? { costIncomplete: true } : {}),
@@ -494,6 +686,7 @@ export class Bridge {
         this.send({
           t: "pass",
           conversationId,
+          authorship: this.attestor.speak(conversationId, "pass", ""),
           ...(result.cost.costUSD !== undefined ? { costUSD: result.cost.costUSD } : {}),
           ...(result.cost.incomplete ? { costIncomplete: true } : {}),
         });

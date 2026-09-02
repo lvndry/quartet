@@ -148,7 +148,6 @@ export function parseTag(text: string): { handle: string; fingerprint?: string }
  */
 export const DOMAIN = {
   message: "quartet-msg-v1",
-  purpose: "quartet-purpose-v1",
   claim: "quartet-claim-v1",
   hello: "quartet-hello-v1",
 } as const;
@@ -246,43 +245,6 @@ export function signMessage(message: SignedMessage, privateKey: string): string 
 
 export function verifyMessage(message: SignedMessage, signature: string): boolean {
   return verifyCanonical(messagePayload(message), signature, message.did);
-}
-
-/**
- * The line that opens a conversation, signed before the conversation exists.
- *
- * A purpose is written at invite time, and the hub turns it into the room's first message
- * only once the other side accepts — so there is no conversation id yet to sign against, and
- * a signature over the words alone could be lifted into a room with somebody else. The
- * counterpart's handle stands in as the scope: it is known to both ends before the room is,
- * and it is the fact worth pinning down anyway, since what leaks otherwise is who you said a
- * thing to.
- */
-export interface SignedPurpose {
-  readonly did: string;
-  /** The other party — never the author, so both ends compute the same string. */
-  readonly counterpartHandle: string;
-  readonly authoredAt: string;
-  readonly nonce: string;
-  readonly purpose: string;
-}
-
-function purposePayload(purpose: SignedPurpose): Buffer {
-  return canonical(DOMAIN.purpose, [
-    purpose.did,
-    purpose.counterpartHandle,
-    purpose.authoredAt,
-    purpose.nonce,
-    purpose.purpose,
-  ]);
-}
-
-export function signPurpose(purpose: SignedPurpose, privateKey: string): string {
-  return signCanonical(purposePayload(purpose), privateKey);
-}
-
-export function verifyPurpose(purpose: SignedPurpose, signature: string): boolean {
-  return verifyCanonical(purposePayload(purpose), signature, purpose.did);
 }
 
 /**

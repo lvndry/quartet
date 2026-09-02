@@ -16,10 +16,14 @@ import {
   handleSchema,
   parseClientFrame,
   type Agent,
+  type Authorship,
   type DirectoryEntry,
+  type MessageKind,
   type ServerFrame,
+  type Signature,
 } from "@quartet/protocol";
-import { HubStore } from "./db";
+import { isDid, newNonce, verifyChallenge, verifyClaim, verifyMessage } from "@quartet/identity";
+import { HubStore, type AgentRow } from "./db";
 import { Orchestrator } from "./orchestrator";
 import { RoomPresence } from "./presence";
 
@@ -33,6 +37,8 @@ const sockets = new Map<string, ServerWebSocket<SocketData>>();
 
 interface SocketData {
   agentId?: string;
+  /** Issued when the socket opens; the only string a hello on this socket may answer. */
+  challenge?: string;
 }
 
 function isOnline(agentId: string): boolean {
@@ -111,12 +117,31 @@ const app = new Hono();
 app.get("/health", (context) => context.json({ ok: true }));
 
 /**
- * Claim a handle and get a token.
+ * How far out of step with the hub a claiming machine's clock may be.
  *
- * No password and no email: the token *is* the identity, held by one bridge on one machine.
- * Nothing here proves a handle belongs to who it claims — impersonation is a real gap, and
- * a deliberate one at this scale, where invites are exchanged out of band between people
- * who already know each other.
+ * The window exists so a claim overheard on the wire cannot be replayed at leisure against a
+ * hub that has since forgotten the handle. Ten minutes rather than seconds because the cost
+ * of being strict falls entirely on the honest user with a drifting laptop clock, and a
+ * replay window measured in minutes is not the weak point in any attack worth worrying about.
+ */
+const CLAIM_WINDOW_MS = 10 * 60 * 1000;
+
+function withinClaimWindow(at: string): boolean {
+  const claimed = Date.parse(at);
+  return Number.isFinite(claimed) && Math.abs(Date.now() - claimed) < CLAIM_WINDOW_MS;
+}
+
+/**
+ * Claim a handle.
+ *
+ * A claim carries a `did:key` and a signature over the handle, so a name is handed only to
+ * somebody who demonstrably holds the key that will be signing under it. The hub still cannot
+ * say a key belongs to a particular *person* — fingerprints compared out of band are what
+ * settle that — but from here one key means one handle, and nobody, the hub included, can
+ * quietly put a different key behind a name that somebody already knows.
+ *
+ * Nothing secret comes back. The key is the credential, and it never left the machine that
+ * made it, so there is no token here to leak, to lose, or to have to rotate.
  */
 app.post("/agents", async (context) => {
   const body = (await context.req.json().catch(() => null)) as Record<string, unknown> | null;
@@ -129,17 +154,102 @@ app.post("/agents", async (context) => {
   const displayName = typeof body["displayName"] === "string" ? body["displayName"].trim() : "";
   if (displayName.length === 0) return context.json({ error: "displayName is required" }, 400);
 
-  const token = crypto.randomUUID().replaceAll("-", "");
+  const did = typeof body["did"] === "string" ? body["did"] : undefined;
+  const signature = typeof body["signature"] === "string" ? body["signature"] : undefined;
+  const claimedAt = typeof body["at"] === "string" ? body["at"] : undefined;
+  if (did === undefined || signature === undefined || claimedAt === undefined) {
+    return context.json({ error: "a claim needs a did, an at, and a signature" }, 400);
+  }
+  if (!isDid(did)) return context.json({ error: "that did is not an Ed25519 did:key" }, 400);
+  if (!withinClaimWindow(claimedAt)) {
+    return context.json({ error: "that claim is stale — check this machine's clock" }, 400);
+  }
+  if (!verifyClaim({ did, handle: handle.data, at: claimedAt }, signature)) {
+    return context.json({ error: "that signature does not match the did" }, 401);
+  }
+
   const created = store.createAgent({
     handle: handle.data,
     displayName,
     ...(typeof body["bio"] === "string" ? { bio: body["bio"] } : {}),
-    token,
+    did,
   });
-  if (created === undefined) return context.json({ error: "that handle is taken" }, 409);
+  if (created === undefined) {
+    const taken = store.agentByDid(did) !== undefined;
+    return context.json(
+      { error: taken ? "that key already claimed a handle" : "that handle is taken" },
+      409,
+    );
+  }
 
-  return context.json({ token, agent: store.toAgent(created, false) }, 201);
+  return context.json({ agent: store.toAgent(created, false) }, 201);
 });
+
+/**
+ * Check a signature the hub is about to store and repeat, and turn it into what gets stored.
+ *
+ * The hub cannot forge one of these and does not need to trust one — the far side checks it
+ * again on arrival, which is the check that counts. This pass exists so that a broken
+ * signature is refused at the door with something a person can read, rather than travelling
+ * to somebody else's screen to be reported there as a correspondent who cannot be trusted.
+ * A hub is the wrong place to *establish* authorship and the right place to notice skew.
+ *
+ * Undefined means refuse.
+ */
+function signatureFor(
+  author: AgentRow,
+  authorship: Authorship,
+  covered: { conversationId: string; kind: MessageKind; text: string },
+): Signature | undefined {
+  // An agent that never presented a key cannot start signing mid-life: its did is what the
+  // other side pinned, and accepting a fresh one here would be the hub swapping somebody's
+  // key, which is exactly the move all of this exists to make impossible.
+  const did = author.did;
+  if (did === null) return undefined;
+
+  const signature: Signature = {
+    did,
+    authoredAt: authorship.authoredAt,
+    nonce: authorship.nonce,
+    prev: authorship.prev,
+    value: authorship.signature,
+  };
+
+  const ok = verifyMessage(
+    {
+      did,
+      conversationId: covered.conversationId,
+      kind: covered.kind,
+      authoredAt: authorship.authoredAt,
+      nonce: authorship.nonce,
+      prev: authorship.prev,
+      text: covered.text,
+    },
+    authorship.signature,
+  );
+  return ok ? signature : undefined;
+}
+
+/**
+ * Check what an agent signed, or refuse the frame and say why.
+ *
+ * There is no third answer. Opening a socket means proving a key, so every connected bridge
+ * can sign — a line that arrives without a good signature is version skew or somebody
+ * trying something, and neither should be quietly relayed as merely unverifiable.
+ */
+function signedOrRefused(
+  author: AgentRow | undefined,
+  authorship: Authorship,
+  agentId: string,
+  check: (author: AgentRow, authorship: Authorship) => Signature | undefined,
+): Signature | undefined {
+  const signature = author === undefined ? undefined : check(author, authorship);
+  if (signature === undefined) {
+    send(agentId, { t: "error", detail: "that signature does not check out against your did" });
+    return undefined;
+  }
+  return signature;
+}
 
 function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
   const frame = parseClientFrame(raw);
@@ -152,12 +262,31 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
 
   // Everything except the handshake requires an established identity.
   if (frame.t === "hello") {
-    const row = store.agentByToken(frame.agentToken);
-    if (row === undefined) {
-      socket.send(JSON.stringify({ t: "error", detail: "unknown agent token" } satisfies ServerFrame));
+    const challenge = socket.data.challenge;
+    if (challenge === undefined || frame.challenge !== challenge) {
+      socket.send(
+        JSON.stringify({ t: "error", detail: "answer the challenge for this socket" } satisfies ServerFrame),
+      );
       socket.close();
       return;
     }
+    if (!verifyChallenge(frame.did, challenge, frame.signature)) {
+      socket.send(
+        JSON.stringify({ t: "error", detail: "that signature does not match that did" } satisfies ServerFrame),
+      );
+      socket.close();
+      return;
+    }
+    const row = store.agentByDid(frame.did);
+    if (row === undefined) {
+      socket.send(
+        JSON.stringify({ t: "error", detail: "no agent has claimed that key" } satisfies ServerFrame),
+      );
+      socket.close();
+      return;
+    }
+    // Spent. Without this a socket could be re-introduced as somebody else after the fact.
+    delete socket.data.challenge;
     // Register the new socket first so the outgoing close is stale and does not
     // look like the agent going offline.
     const previous = sockets.get(row.id);
@@ -267,11 +396,21 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         send(agentId, { t: "error", detail: "you are not in that conversation" });
         return;
       }
+      const author = store.agentById(agentId);
+      const said = signedOrRefused(author, frame.authorship, agentId, (row, authorship) =>
+        signatureFor(row, authorship, {
+          conversationId: frame.conversationId,
+          kind: "agent",
+          text: frame.text,
+        }),
+      );
+      if (said === undefined) return;
       const message = store.appendMessage({
         conversationId: frame.conversationId,
         authorAgentId: agentId,
         kind: "agent",
         text: frame.text,
+        signature: said,
       });
       if (message === undefined) return;
       orchestrator.onSpend(frame.conversationId, frame.costUSD, frame.costIncomplete === true);
@@ -333,11 +472,21 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         send(agentId, { t: "error", detail: "you are not in that conversation" });
         return;
       }
+      const passer = store.agentById(agentId);
+      const silence = signedOrRefused(passer, frame.authorship, agentId, (row, authorship) =>
+        signatureFor(row, authorship, {
+          conversationId: frame.conversationId,
+          kind: "pass",
+          text: "",
+        }),
+      );
+      if (silence === undefined) return;
       const message = store.appendMessage({
         conversationId: frame.conversationId,
         authorAgentId: agentId,
         kind: "pass",
         text: "",
+        signature: silence,
       });
       // A pass ran a model, so it cost something and is charged like any other turn.
       orchestrator.onSpend(frame.conversationId, frame.costUSD, frame.costIncomplete === true);
@@ -405,6 +554,13 @@ const server = Bun.serve<SocketData, never>({
     return app.fetch(request);
   },
   websocket: {
+    open(socket) {
+      // Per socket, not per agent: a challenge reused across connections is a recording
+      // somebody can replay, which is most of what a bearer token already was.
+      const nonce = newNonce();
+      socket.data.challenge = nonce;
+      socket.send(JSON.stringify({ t: "challenge", nonce } satisfies ServerFrame));
+    },
     message(socket, raw) {
       let parsed: unknown;
       try {

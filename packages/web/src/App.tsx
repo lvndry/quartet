@@ -3,7 +3,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Conversation, Message } from "@quartet/protocol";
 import { DEFAULT_TURN_BUDGET, MAX_SPEND_USD, MAX_TURN_BUDGET } from "@quartet/protocol";
 import { MessageBody } from "./Message";
-import { call, useBridge, useSocketLive, type Activity, type Aside, type Limit, type PeerPresence } from "./store";
+import {
+  call,
+  useBridge,
+  useSocketLive,
+  type Activity,
+  type Aside,
+  type KeyConflict,
+  type Limit,
+  type PeerPresence,
+  type Verdict,
+} from "./store";
 
 function monogram(handle: string): string {
   return handle.slice(0, 2).toUpperCase();
@@ -385,7 +395,17 @@ export default function App(): React.JSX.Element {
         <div className="wordmark">
           Quar<span>tet</span>
         </div>
-        {state.me !== undefined && <span className="whoami">@{state.me.handle}</span>}
+        {state.me !== undefined && (
+          <span
+            className="whoami"
+            title="Give this whole line to anyone inviting you. The part after # is what proves the handle is yours."
+          >
+            @{state.me.handle}
+            {state.me.did !== undefined && (
+              <span className="fingerprint">#{state.fingerprints[state.me.did] ?? "unkeyed"}</span>
+            )}
+          </span>
+        )}
         <div className="spacer" />
         <span className={live && state.connectedToHub ? "status live" : "status"}>
           <span className="pip" />
@@ -426,6 +446,7 @@ export default function App(): React.JSX.Element {
             asides={state.asides[conversation.id] ?? []}
             activity={state.activity[conversation.id]}
             presence={state.presence[conversation.id]}
+            verdicts={state.verdicts}
             meHandle={state.me?.handle ?? ""}
             onAct={act}
           />
@@ -435,6 +456,11 @@ export default function App(): React.JSX.Element {
           other={conversation?.participants.find((handle) => handle !== state.me?.handle)}
         />
       </div>
+
+      {state.keyStoreProblem !== undefined && (
+        <div className="key-alarm">{state.keyStoreProblem}</div>
+      )}
+      <KeyAlarm conflicts={state.keyConflicts} fingerprints={state.fingerprints} onAct={act} />
 
       {(error ?? state.lastError) !== undefined && (
         <div className="error">{error ?? state.lastError}</div>
@@ -526,7 +552,8 @@ function Sidebar({
         <div className="form">
           <input
             className="field"
-            placeholder="handle, e.g. otto"
+            placeholder="otto, or otto#4f2a-… to check the key"
+            title="A bare handle trusts whichever key this hub offers. Paste the whole tag somebody gave you and it gets checked before anything is sent."
             value={toHandle}
             onChange={(event) => setToHandle(event.target.value)}
           />
@@ -563,12 +590,20 @@ function Sidebar({
 
         <div className="pane-title">Directory</div>
         {state.directory.length === 0 && <div className="empty">Nobody else here yet.</div>}
+        {/* A row fills in the tag rather than the bare handle: clicking somebody should hand
+            you the form that gets checked, not the shorter one that quietly does not. */}
         {state.directory.map((entry) => (
           <button
             key={entry.agent.id}
             type="button"
             className="row"
-            onClick={() => setToHandle(entry.agent.handle)}
+            onClick={() =>
+              setToHandle(
+                entry.agent.did !== undefined && state.fingerprints[entry.agent.did] !== undefined
+                  ? `${entry.agent.handle}#${state.fingerprints[entry.agent.did] ?? ""}`
+                  : entry.agent.handle,
+              )
+            }
           >
             <span className={entry.agent.online ? "monogram on" : "monogram"}>
               {monogram(entry.agent.handle)}
@@ -580,11 +615,69 @@ function Sidebar({
                 {entry.connected ? " · connected" : entry.invitePending ? " · invited" : ""}
                 {entry.agent.online ? "" : " · offline"}
               </span>
+              {entry.agent.did !== undefined && (
+                <span className="row-sub fingerprint">
+                  #{state.fingerprints[entry.agent.did] ?? "unkeyed"}
+                </span>
+              )}
             </span>
           </button>
         ))}
       </div>
     </aside>
+  );
+}
+
+/**
+ * What this machine concluded about a line's signature.
+ *
+ * Silent when it verified. A badge on every good message trains people to stop reading
+ * badges, and the thing worth interrupting somebody for is the exception — so the exception
+ * is the only thing that gets any ink.
+ */
+function Provenance({ verdict }: { verdict: Verdict | undefined }): React.JSX.Element | null {
+  if (verdict === undefined || verdict.state === "signed") return null;
+  if (verdict.state === "unsigned") {
+    return <span className="provenance unsigned">not signed — nothing proves who wrote this</span>;
+  }
+  return <span className="provenance broken">unverified — {verdict.why}</span>;
+}
+
+/**
+ * A handle whose key has changed, and the decision that belongs to a person.
+ *
+ * Deliberately not dismissible without choosing. The whole value of pinning is that the one
+ * moment a key changes is the one moment worth someone's attention, and a banner that can be
+ * waved away is a banner that gets waved away.
+ */
+function KeyAlarm({
+  conflicts,
+  fingerprints,
+  onAct,
+}: {
+  conflicts: KeyConflict[];
+  fingerprints: Record<string, string>;
+  onAct: (path: string, body: Record<string, unknown>) => Promise<void>;
+}): React.JSX.Element | null {
+  if (conflicts.length === 0) return null;
+  return (
+    <div className="key-alarm">
+      {conflicts.map((conflict) => (
+        <div key={conflict.handle}>
+          <strong>@{conflict.handle} is signing with a different key.</strong> This is a new
+          machine or a reinstall about as often as it is somebody else — nothing they send will
+          verify until you decide which. Ask them, out of band, whether their fingerprint is now{" "}
+          <code>{fingerprints[conflict.offered] ?? "unknown"}</code> instead of{" "}
+          <code>{fingerprints[conflict.pinned] ?? "unknown"}</code>.
+          <button
+            type="button"
+            onClick={() => void onAct("/api/trust-key", { handle: conflict.handle })}
+          >
+            It is them — trust the new key
+          </button>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -594,6 +687,7 @@ function Chat({
   asides,
   activity,
   presence,
+  verdicts,
   meHandle,
   onAct,
 }: {
@@ -602,6 +696,7 @@ function Chat({
   asides: Aside[];
   activity: Activity | undefined;
   presence: PeerPresence | undefined;
+  verdicts: Record<string, Verdict>;
   meHandle: string;
   onAct: (path: string, body: Record<string, unknown>) => Promise<void>;
 }): React.JSX.Element {
@@ -715,6 +810,7 @@ function Chat({
                     @{message.authorHandle} · {clock(message.at)}
                   </span>
                   <MessageBody text={message.text} />
+                  <Provenance verdict={verdicts[message.id]} />
                 </span>
               </div>
             );

@@ -41,6 +41,10 @@
         "@quartet/protocol": "workspace:*",
       },
     },
+    "packages/identity": {
+      "name": "@quartet/identity",
+      "version": "0.1.0",
+    },
     "packages/protocol": {
       "name": "@quartet/protocol",
       "version": "0.1.0",
@@ -59,6 +63,8 @@
     "@quartet/bridge": ["@quartet/bridge@workspace:packages/bridge"],
 
     "@quartet/hub": ["@quartet/hub@workspace:packages/hub"],
+
+    "@quartet/identity": ["@quartet/identity@workspace:packages/identity"],
 
     "@quartet/protocol": ["@quartet/protocol@workspace:packages/protocol"],
 
