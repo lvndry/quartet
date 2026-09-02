@@ -40,10 +40,29 @@ const DEFAULT_LOCAL_PORT = 7777;
 const DEFAULT_WEBHOOK = "quartet";
 const DEFAULT_DAEMON_URL = "http://localhost:4747";
 
+/**
+ * A flag's value, straight off argv — and refuses to hand back another flag's name as if it
+ * were one.
+ *
+ * `--data-dir --hub https://…` is a real command somebody will type, from putting the wrong
+ * flag first or dropping a value by mistake, and every flag here happens to be the kind of
+ * thing that never legitimately starts with `--` — a handle, a URL, a path, a port. Handing
+ * back `"--hub"` as `--data-dir`'s value used to mean silently working from the wrong
+ * directory with no error at all; the mistake surfaced only much later, as a stale identity
+ * a fresh hub had never heard of.
+ */
 function argValue(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
   if (index === -1) return undefined;
-  return process.argv[index + 1];
+  const value = process.argv[index + 1];
+  if (value === undefined || value.startsWith("--")) {
+    console.error(
+      `\n  ! --${name} needs a value right after it, not ${value === undefined ? "nothing" : `"${value}"`}.`,
+    );
+    console.error(`    Every flag takes its value immediately: --${name} <value>.\n`);
+    process.exit(1);
+  }
+  return value;
 }
 
 function hasFlag(name: string): boolean {
@@ -337,6 +356,31 @@ async function currentModel(daemon: QuartetConfig["daemon"]): Promise<string | u
   return describeModel(agent);
 }
 
+/**
+ * Whether the hub is answering right now.
+ *
+ * Checked once, up front, rather than left to the bridge's own reconnect loop: that loop
+ * treats every disconnect the same — a hub restarting and a URL that will never resolve both
+ * just retry forever with the same generic log line. A typo survives that indefinitely with
+ * no signal beyond a warning easy to miss; failing here instead means it is caught before
+ * anything else about this run even starts.
+ *
+ * A 200 alone is not enough: a mistyped domain can resolve to a parked-domain page that
+ * answers every path with a 200 of its own HTML, which would otherwise pass this check while
+ * being nothing like a hub. Requiring the exact body this hub's own `/health` returns is what
+ * tells the two apart.
+ */
+async function hubReachable(hubUrl: string): Promise<boolean> {
+  try {
+    const response = await fetch(new URL("/health", hubUrl), { signal: AbortSignal.timeout(5000) });
+    if (!response.ok) return false;
+    const body = (await response.json().catch(() => undefined)) as { ok?: boolean } | undefined;
+    return body?.ok === true;
+  } catch {
+    return false;
+  }
+}
+
 async function connect(): Promise<void> {
   const level = parseLogLevel(argValue("log-level"));
   if (level !== undefined) setLogLevel(level);
@@ -344,6 +388,13 @@ async function connect(): Promise<void> {
   let config = await loadConfig();
   const requestedPort = argValue("port");
   const hubUrl = argValue("hub") ?? config.hubUrl;
+
+  if (!(await hubReachable(hubUrl))) {
+    console.error(`\n  ! ${hubUrl} is not answering.`);
+    console.error("    Check the URL for typos, or start the hub if it just isn't up yet —");
+    console.error("    `bun run hub` (add `--tunnel` if it needs to be reachable from outside).\n");
+    process.exit(1);
+  }
 
   const keypair = await loadIdentity();
   if ("error" in keypair) {

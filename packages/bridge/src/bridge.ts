@@ -456,6 +456,9 @@ export class Bridge {
     socket.addEventListener("close", () => {
       if (this.socket !== socket) return;
       this.connectedToHub = false;
+      // Not on a deliberate shutdown: that is not a failure, and the app is about to close
+      // anyway. Cleared automatically the moment `open` succeeds again.
+      if (!this.closing) this.lastError = `can't reach the hub at ${this.hubUrl} — retrying`;
       this.publish();
       if (this.closing) return;
       // Backoff, because a hub that is down stays down for a while and hammering it helps
