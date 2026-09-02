@@ -24,6 +24,7 @@ import {
   DEFAULT_TURN_BUDGET,
   limitSchema,
   roomStateSchema,
+  TURN_SLICE_MAX,
   WELCOME_TRANSCRIPT_WINDOW,
   type Limit,
   type RoomState,
@@ -75,6 +76,17 @@ const MESSAGE_SELECT = `SELECT m.id, m.conversation_id, a.handle, m.kind, m.text
             m.sig_did, m.sig_at, m.sig_nonce, m.sig_prev, m.sig_value
      FROM messages m
      JOIN agents a ON a.id = m.author_agent`;
+
+/**
+ * What counts as an agent having had its say: its own words, or its own deliberate silence.
+ *
+ * Deliberately not "any message attributed to this agent". A system note is the room
+ * talking about itself, and it is attributed to whoever's action provoked it — so a failed
+ * turn writes a `trouble` note in the agent's own name, and counting that as an answer meant
+ * the retry was suppressed and the message was never answered by anybody. The same
+ * reasoning decides where an agent's next turn starts reading from, so both use this.
+ */
+const OWN_UTTERANCE = "m.kind IN ('agent', 'pass')";
 
 interface InviteRow {
   id: string;
@@ -774,8 +786,8 @@ export class HubStore {
    *
    * - Only another agent's *spoken* message is something to answer. A pass is deliberate
    *   silence and does not wake anybody, and a system note is the room talking about itself.
-   * - Anything this agent has put in the room counts as its answer, a pass included. That
-   *   is what stops a turn being owed twice for the same message.
+   * - This agent having spoken or passed counts as its answer. That is what stops one
+   *   message being answered twice. See `OWN_UTTERANCE` for what does not count.
    *
    * `rowid` rather than `at`, because this is only ever a question of order within one
    * table and rowid is the one column guaranteed to answer it.
@@ -784,13 +796,53 @@ export class HubStore {
     const row = this.db
       .query<{ mine: number | null; theirs: number | null }, [string, string, string, string]>(
         `SELECT
-           (SELECT MAX(rowid) FROM messages WHERE conversation_id = ? AND author_agent = ?) AS mine,
-           (SELECT MAX(rowid) FROM messages
-            WHERE conversation_id = ? AND author_agent <> ? AND kind = 'agent') AS theirs`,
+           (SELECT MAX(m.rowid) FROM messages m
+            WHERE m.conversation_id = ? AND m.author_agent = ? AND ${OWN_UTTERANCE}) AS mine,
+           (SELECT MAX(m.rowid) FROM messages m
+            WHERE m.conversation_id = ? AND m.author_agent <> ? AND m.kind = 'agent') AS theirs`,
       )
       .get(conversationId, agentId, conversationId, agentId);
     if (row === null || row === undefined || row.theirs === null) return false;
     return row.mine === null || row.theirs > row.mine;
+  }
+
+  /**
+   * The slice of a room one agent should be sent for its turn, oldest first.
+   *
+   * Everything it has not had its say on, plus `overlap` messages it has — and `earlier`,
+   * the count of what came before that. It is not the whole room on purpose: the agent
+   * resumes a jazz thread that already holds what it was told before, so re-sending a fixed
+   * window would spend the room's allowance repeating itself, and spend more of it the
+   * longer the conversation ran.
+   *
+   * Capped at `TURN_SLICE_MAX` from the newest end, so an agent that has been away for a
+   * week is given the recent argument rather than a payload nothing will accept.
+   */
+  transcriptFor(
+    conversationId: string,
+    agentId: string,
+    overlap: number,
+    cap: number = TURN_SLICE_MAX,
+  ): { messages: Message[]; earlier: number } {
+    const counts = this.db
+      .query<{ total: number; unanswered: number }, [string, string, string]>(
+        `SELECT
+           (SELECT COUNT(*) FROM messages WHERE conversation_id = ?) AS total,
+           (SELECT COUNT(*) FROM messages m
+            WHERE m.conversation_id = ?
+              AND m.rowid > COALESCE(
+                (SELECT MAX(mine.rowid) FROM messages mine
+                 WHERE mine.conversation_id = m.conversation_id
+                   AND mine.author_agent = ?
+                   AND mine.kind IN ('agent', 'pass')), 0)) AS unanswered`,
+      )
+      .get(conversationId, conversationId, agentId);
+    const total = counts?.total ?? 0;
+    const unanswered = counts?.unanswered ?? 0;
+
+    const want = Math.max(1, Math.min(cap, unanswered + overlap));
+    const messages = this.transcript(conversationId, want);
+    return { messages, earlier: Math.max(0, total - messages.length) };
   }
 
   /* ---------------- turns the hub is waiting on ---------------- */

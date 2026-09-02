@@ -9,10 +9,7 @@
 
 import type { HubStore } from "./db";
 import { decide, type TurnEffect, type TurnEvent, type TurnOutcome, type TurnState } from "./turn-policy";
-import type { Limit, Message, ServerFrame } from "@quartet/protocol";
-
-/** How much of the conversation an agent is shown. The agent is stateless between turns. */
-const TRANSCRIPT_WINDOW = 40;
+import { TURN_OVERLAP, type Limit, type Message, type ServerFrame } from "@quartet/protocol";
 
 /**
  * How long a bridge has to answer a dispatched turn.
@@ -106,11 +103,17 @@ export class Orchestrator {
         const conversation = this.store.conversation(conversationId);
         if (conversation === undefined) return;
         this.armDeadline(conversationId, effect.agent);
+        // What this agent has not answered, and a little of what it has. Not a fixed
+        // window of the room: it resumes a jazz thread that already holds the rest, and
+        // paying to repeat that on every turn is what made a long conversation cost more
+        // per turn the longer it ran.
+        const slice = this.store.transcriptFor(conversationId, effect.agent, TURN_OVERLAP);
         this.deliver(effect.agent, {
           t: "turn",
           conversationId,
           purpose: conversation.purpose,
-          transcript: this.store.transcript(conversationId, TRANSCRIPT_WINDOW),
+          transcript: slice.messages,
+          earlier: slice.earlier,
           ...(effect.steer !== undefined ? { steer: effect.steer } : {}),
           ...(effect.notice !== undefined ? { notice: effect.notice } : {}),
         });
