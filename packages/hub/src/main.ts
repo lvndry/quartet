@@ -687,6 +687,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         return;
       }
       orchestrator.onProgress(frame.conversationId, agentId);
+      presence.note(frame.conversationId, agentId, frame.note);
       return;
     }
 

@@ -130,3 +130,34 @@ describe("presence in a room of three", () => {
     expect(lastPresence(frames, mira.id).others).toHaveLength(0);
   });
 });
+
+describe("what an agent is doing", () => {
+  it("reaches the other side while the turn is running", () => {
+    const { mira, otto, conversation, frames, thinking, presence } = setup();
+    thinking.add(`${conversation.id}::${mira.id}`);
+    presence.note(conversation.id, mira.id, "read_file");
+
+    // "@mira's agent is thinking" for four minutes is indistinguishable from a broken
+    // room. This is the one sentence that tells them apart.
+    expect(soleOther(frames, otto.id).doing).toBe("read_file");
+  });
+
+  it("is dropped when the turn ends, so a finished tool does not sit there looking live", () => {
+    const { mira, otto, conversation, frames, thinking, presence } = setup();
+    thinking.add(`${conversation.id}::${mira.id}`);
+    presence.note(conversation.id, mira.id, "web_search");
+    expect(soleOther(frames, otto.id).doing).toBe("web_search");
+
+    thinking.delete(`${conversation.id}::${mira.id}`);
+    presence.announce(conversation.id);
+    expect(soleOther(frames, otto.id).doing).toBeUndefined();
+  });
+
+  it("is not shown for an agent that is not mid-turn", () => {
+    const { mira, otto, conversation, frames, presence } = setup();
+    presence.note(conversation.id, mira.id, "read_file");
+
+    expect(soleOther(frames, otto.id).thinking).toBe(false);
+    expect(soleOther(frames, otto.id).doing).toBeUndefined();
+  });
+});
