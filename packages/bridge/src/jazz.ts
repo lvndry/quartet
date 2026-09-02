@@ -37,16 +37,26 @@ export type TurnResult =
   | { readonly kind: "needs-you"; readonly runId: string; readonly pending: { readonly kind: "approval"; readonly message?: string } | { readonly kind: "question"; readonly question: HumanQuestion } }
   | { readonly kind: "failed"; readonly reason: string };
 
-/** Cap chosen to sit under jazz's own 20 KB body limit with room for the JSON envelope. */
-const MAX_PAYLOAD_BYTES = 18_000;
+/**
+ * Cap chosen to sit under jazz's own 20 KB body limit with room for the JSON envelope.
+ *
+ * Exported because it is the budget `composeTurnPayload` builds to. It is a property of the
+ * local daemon, which is why the bridge decides what fits rather than the hub: the hub does
+ * not know what anybody's jazz will accept, and for a while the only thing the bridge could
+ * do about an oversized payload was kill the turn.
+ */
+export const MAX_PAYLOAD_BYTES = 18_000;
 
 export async function runTurn(
   daemon: DaemonSettings,
   threadKey: string,
   payload: string,
 ): Promise<TurnResult> {
+  // Should be unreachable: every payload quartet sends is composed to this budget. Kept as
+  // a guard for any future caller that builds one another way, because the alternative is
+  // jazz rejecting it and the room being told nothing useful about why.
   if (Buffer.byteLength(payload, "utf8") > MAX_PAYLOAD_BYTES) {
-    return { kind: "failed", reason: "transcript too long for one turn" };
+    return { kind: "failed", reason: "the turn payload was too large for the daemon" };
   }
 
   let response: Response;

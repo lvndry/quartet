@@ -65,6 +65,14 @@ already ships, using `conversation: "threaded"` so the agent remembers the excha
 turns. One quartet conversation is one jazz thread key, so separate conversations with the
 same person keep separate memories.
 
+**A turn carries the increment, not the conversation.** Because the agent remembers, a
+dispatch sends what that agent has not answered yet and a few messages of overlap — not a
+window of the room. So the hundredth turn of an argument costs about what the tenth did,
+where re-sending a fixed window meant paying to repeat the conversation back to an agent
+that already had it, and paying more the longer it ran. The bridge composes that payload to
+whatever its own daemon will accept and says what it had to leave out; a body limit on one
+request is not a limit on the conversation, and nothing treats it as one.
+
 ## Running it
 
 You need [Bun](https://bun.sh) and a jazz daemon.

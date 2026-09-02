@@ -3,7 +3,12 @@ import { Database } from "bun:sqlite";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HISTORY_PAGE_SIZE, WELCOME_TRANSCRIPT_WINDOW } from "@quartet/protocol";
+import {
+  HISTORY_PAGE_SIZE,
+  TURN_OVERLAP,
+  TURN_SLICE_MAX,
+  WELCOME_TRANSCRIPT_WINDOW,
+} from "@quartet/protocol";
 import { HubStore } from "./db";
 
 function setup(messageCount: number) {
@@ -362,5 +367,116 @@ describe("who is in a room", () => {
 
     expect(store.conversationParticipantIds(conversation.id)).toEqual([]);
     expect(store.conversationParticipantIds("cnv_nonexistent")).toBeUndefined();
+  });
+});
+
+describe("what one agent is sent for its turn", () => {
+  function room() {
+    const store = new HubStore(":memory:");
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    if (mira === undefined || otto === undefined) throw new Error("agents");
+    const connectionId = store.createConnection(mira.id, otto.id);
+    const conversation = store.createConversation(connectionId, "what is free will", undefined, mira.id);
+    if (conversation === undefined) throw new Error("conversation");
+    const say = (agentId: string, text: string, kind: "agent" | "pass" | "system" = "agent") => {
+      store.appendMessage({ conversationId: conversation.id, authorAgentId: agentId, kind, text });
+    };
+    const slice = (agentId: string) =>
+      store.transcriptFor(conversation.id, agentId, TURN_OVERLAP);
+    return { store, mira, otto, conversation, say, slice };
+  }
+
+  it("sends the whole room to an agent that has never spoken in it", () => {
+    const { mira, otto, say, slice } = room();
+    for (let index = 0; index < 4; index += 1) say(mira.id, `claim ${String(index)}`);
+
+    const sent = slice(otto.id);
+    expect(sent.messages).toHaveLength(4);
+    expect(sent.earlier).toBe(0);
+  });
+
+  it("sends only what is new, once the agent has had its say", () => {
+    const { mira, otto, say, slice } = room();
+    for (let index = 0; index < 30; index += 1) say(mira.id, `claim ${String(index)}`);
+    say(otto.id, "a rebuttal");
+    say(mira.id, "a counter");
+
+    // One unanswered message, plus the overlap. Not thirty-two: the agent is resuming a
+    // thread that already holds them, and paying to repeat that is the whole bug.
+    const sent = slice(otto.id);
+    expect(sent.messages).toHaveLength(1 + TURN_OVERLAP);
+    expect(sent.messages[sent.messages.length - 1]?.text).toBe("a counter");
+    expect(sent.earlier).toBe(32 - (1 + TURN_OVERLAP));
+  });
+
+  it("costs the same on the hundredth turn as on the tenth", () => {
+    const { mira, otto, say, slice } = room();
+    let atTen = 0;
+    for (let round = 0; round < 100; round += 1) {
+      say(mira.id, `claim ${String(round)}`);
+      const sent = slice(otto.id);
+      if (round === 10) atTen = sent.messages.length;
+      say(otto.id, `rebuttal ${String(round)}`);
+      if (round === 99) expect(sent.messages.length).toBe(atTen);
+    }
+    expect(atTen).toBe(1 + TURN_OVERLAP);
+  });
+
+  it("gives an agent back from a long absence the recent argument, not all of it", () => {
+    const { mira, otto, say, slice } = room();
+    for (let index = 0; index < TURN_SLICE_MAX + 50; index += 1) say(mira.id, `claim ${String(index)}`);
+
+    const sent = slice(otto.id);
+    expect(sent.messages).toHaveLength(TURN_SLICE_MAX);
+    expect(sent.earlier).toBe(50);
+    expect(sent.messages[sent.messages.length - 1]?.text).toBe(`claim ${String(TURN_SLICE_MAX + 49)}`);
+  });
+
+  it("counts a pass as having had its say, so silence is not re-asked", () => {
+    const { mira, otto, say, slice } = room();
+    for (let index = 0; index < 10; index += 1) say(mira.id, `claim ${String(index)}`);
+    say(otto.id, "", "pass");
+
+    expect(slice(otto.id).messages).toHaveLength(TURN_OVERLAP);
+  });
+
+  it("is not fooled by a system note written in the agent's own name", () => {
+    // The room attributes its own notes to whoever provoked them, so a failed turn writes a
+    // "trouble" line in the agent's name. Counting that as the agent having spoken meant it
+    // was never sent the message it had failed to answer.
+    const { mira, otto, say, slice } = room();
+    say(mira.id, "a claim");
+    say(otto.id, "jazz daemon is not reachable", "system");
+
+    const sent = slice(otto.id);
+    expect(sent.messages.map((message) => message.text)).toContain("a claim");
+  });
+
+  it("still owes a turn after a failed one, whatever the room wrote in your name", () => {
+    const { store, mira, otto, conversation, say } = room();
+    say(mira.id, "a claim");
+    say(otto.id, "jazz daemon is not reachable", "system");
+
+    // Otto's model ran and failed. Nobody has answered @mira, so somebody still owes her
+    // one — and it was this that stopped a reconnect retrying.
+    expect(store.owesTurn(conversation.id, otto.id)).toBe(true);
+  });
+
+  it("sends nothing but the overlap when there is nothing new", () => {
+    const { mira, otto, say, slice } = room();
+    say(mira.id, "a claim");
+    say(otto.id, "a rebuttal");
+
+    const sent = slice(otto.id);
+    expect(sent.messages.map((message) => message.text)).toEqual(["a claim", "a rebuttal"]);
+  });
+
+  it("gives at least one message even with no overlap allowed", () => {
+    const { store, mira, otto, conversation, say } = room();
+    say(mira.id, "a claim");
+    say(otto.id, "a rebuttal");
+
+    expect(store.transcriptFor(conversation.id, otto.id, 0).messages).toHaveLength(1);
   });
 });

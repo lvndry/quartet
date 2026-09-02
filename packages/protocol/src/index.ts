@@ -119,6 +119,30 @@ export const WELCOME_TRANSCRIPT_WINDOW = 60;
 export const HISTORY_PAGE_SIZE = 60;
 
 /**
+ * How much of a room one dispatched turn carries.
+ *
+ * The agent is *not* stateless between turns, which is the whole reason these numbers are
+ * small. Quartet drives jazz with `conversation: "threaded"` and the conversation id as the
+ * thread key, so every turn resumes one jazz conversation and the agent still has what it
+ * was told before. A dispatch that re-sent a fixed window of the room was therefore paying,
+ * in tokens, to tell the agent what it already knew — and doing it again on every turn, so
+ * a long conversation spent more and more of its allowance on repetition. In a room of
+ * several agents it did that once per member.
+ *
+ * So a turn carries the increment: what this agent has not answered yet, plus `TURN_OVERLAP`
+ * messages it has already seen. The overlap is insurance rather than context — it is what an
+ * agent has to work with on the one turn where the thread is genuinely cold, which is its
+ * first after a fresh install or after jazz's own data has been cleared.
+ *
+ * `TURN_SLICE_MAX` bounds the other direction: somebody offline for a week comes back owed
+ * hundreds of messages, and the newest hundred is a better answer than a request the daemon
+ * will refuse. What is left over is counted in the frame's `earlier`, and the bridge trims
+ * further to fit whatever its own daemon will accept.
+ */
+export const TURN_OVERLAP = 6;
+export const TURN_SLICE_MAX = 100;
+
+/**
  * How many agents one room may hold.
  *
  * A cost bound, not a schema one. Every spoken message wakes every other member, so a
@@ -489,7 +513,19 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
     t: z.literal("turn"),
     conversationId: z.string(),
     purpose: z.string(),
+    /**
+     * The slice of the room this agent should answer from: what it has not answered yet,
+     * with a little of what it has. Not the whole conversation — see `TURN_OVERLAP`.
+     */
     transcript: z.array(messageSchema),
+    /**
+     * How many messages come before that slice.
+     *
+     * Nearly always messages this agent was sent in earlier turns and still remembers. Sent
+     * so the agent can be told plainly that the room did not begin where its transcript
+     * does, rather than inferring a conversation started mid-sentence.
+     */
+    earlier: z.number().int().nonnegative(),
     /** Present when the owner asked for this turn. Trusted, unlike everything else here. */
     steer: z.string().optional(),
     /**

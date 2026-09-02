@@ -30,7 +30,13 @@ import { fingerprint, parseTag } from "@quartet/identity";
 import type { DaemonSettings } from "./config";
 import type { Attestor, Verdict } from "./attest";
 import { KnownKeys, type Conflict } from "./known";
-import { answerParkedRun, runTurn, type HumanQuestion, type TurnResult } from "./jazz";
+import {
+  answerParkedRun,
+  MAX_PAYLOAD_BYTES,
+  runTurn,
+  type HumanQuestion,
+  type TurnResult,
+} from "./jazz";
 import {
   missingOutgoing,
   readAsides,
@@ -40,7 +46,7 @@ import {
   type LedgerEntry,
 } from "./ledger";
 import { logger } from "./log";
-import { buildPayload } from "./prompt";
+import { composeTurnPayload } from "./prompt";
 
 /** What your own agent is doing right now, per conversation. Drives the UI's live states. */
 export type Activity =
@@ -556,12 +562,13 @@ export class Bridge {
 
       case "turn":
         await this.takeTurn(
-      frame.conversationId,
-      frame.purpose,
-      frame.transcript,
-      frame.steer,
-      frame.notice,
-    );
+          frame.conversationId,
+          frame.purpose,
+          frame.transcript,
+          frame.earlier,
+          frame.steer,
+          frame.notice,
+        );
         return;
 
       case "presence":
@@ -656,6 +663,7 @@ export class Bridge {
     conversationId: string,
     purpose: string,
     transcript: readonly Message[],
+    earlier: number,
     steer: string | undefined,
     notice: string | undefined,
   ): Promise<void> {
@@ -664,25 +672,39 @@ export class Bridge {
     if (this.activity.get(conversationId)?.state === "thinking") return;
 
     const conversation = this.conversations.find((candidate) => candidate.id === conversationId);
-    const other = conversation?.participants.find((handle) => handle !== me.handle) ?? "them";
+    const room = conversation?.participants.filter((handle) => handle !== me.handle) ?? [];
 
     const startedAt = Date.now();
-    daemonLog.info(`turn from @${other}`, { conversation: conversationId, steered: steer !== undefined ? "yes" : undefined });
+    daemonLog.info(`turn in a room with ${room.map((handle) => `@${handle}`).join(", ") || "nobody"}`, {
+      conversation: conversationId,
+      steered: steer !== undefined ? "yes" : undefined,
+    });
     this.activity.set(conversationId, { state: "thinking", since: startedAt });
     this.publish();
 
-    const result = await runTurn(
-      this.daemon,
-      conversationId,
-      buildPayload({
+    // Composed to what this machine's daemon will accept. What does not fit is reported
+    // rather than silently lost, and never turned into a failed turn: a size ceiling on one
+    // request is not a ceiling on the conversation.
+    const composed = composeTurnPayload(
+      {
         you: me.handle,
-        speakingWith: other,
+        speakingWith: room,
         purpose,
         transcript,
+        earlier,
         ...(steer !== undefined ? { steer } : {}),
         ...(notice !== undefined ? { notice } : {}),
-      }),
+      },
+      MAX_PAYLOAD_BYTES,
     );
+    if (composed.dropped > 0 || composed.truncated > 0) {
+      daemonLog.warn("trimmed the turn to fit the daemon's body limit", {
+        dropped: composed.dropped > 0 ? composed.dropped : undefined,
+        truncated: composed.truncated > 0 ? composed.truncated : undefined,
+      });
+    }
+
+    const result = await runTurn(this.daemon, conversationId, composed.payload);
 
     this.finishTurn(conversationId, result, startedAt, steer);
   }
