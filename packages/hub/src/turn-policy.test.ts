@@ -13,6 +13,7 @@ function room(overrides: Partial<TurnState> = {}): TurnState {
     spentUSD: 0,
     spendIncomplete: false,
     roomState: "live",
+    unanswered: { [MIRA]: false, [OTTO]: false },
     inFlight: {},
     ...overrides,
   };
@@ -331,6 +332,27 @@ describe("a goodbye, and what it takes to undo one", () => {
     expect(state.roomState).toBe("closed");
   });
 
+  it("lands even when the turn that carried it had been given up on", () => {
+    // A bridge that answers past its deadline still said goodbye, and the room fanned the
+    // message out. Dropping the close left a farewell as the newest unanswered message.
+    const { state } = run(room(), [
+      { kind: "message", author: OTTO },
+      { kind: "deadline", agent: MIRA },
+      { kind: "settled", agent: MIRA, outcome: "closed" },
+    ]);
+
+    expect(state.roomState).toBe("closed");
+  });
+
+  it("stops anyone being asked to reply to it after a reconnect", () => {
+    const { dispatches } = run(
+      room({ unanswered: { [MIRA]: false, [OTTO]: true }, roomState: "closed" }),
+      [{ kind: "arrived", agent: OTTO }],
+    );
+
+    expect(dispatches).toHaveLength(0);
+  });
+
   it("gives way to a deliberate reopen, and then runs again", () => {
     const { state, dispatches } = run(room({ roomState: "closed" }), [
       { kind: "reopen" },
@@ -372,5 +394,63 @@ describe("a goodbye, and what it takes to undo one", () => {
     expect(state.roomState).toBe("live");
     expect(state.turnsLeft).toBe(4);
     expect(dispatches).toHaveLength(0);
+  });
+});
+
+describe("an agent that was away", () => {
+  const owed = (extra: Partial<TurnState> = {}) =>
+    room({ unanswered: { [MIRA]: true, [OTTO]: false }, ...extra });
+
+  it("is asked for the turn it missed when it comes back", () => {
+    const { dispatches } = run(owed(), [{ kind: "arrived", agent: MIRA }]);
+
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0]?.agent).toBe(MIRA);
+  });
+
+  it("is left alone when it has already answered everything", () => {
+    const { dispatches } = run(room(), [{ kind: "arrived", agent: MIRA }]);
+
+    expect(dispatches).toHaveLength(0);
+  });
+
+  it("does not get a second turn on top of one already in flight", () => {
+    // replayTurns re-delivers that one. Poking here would queue a spurious follow-up.
+    const { state, dispatches } = run(owed(), [
+      { kind: "arrived", agent: MIRA },
+      { kind: "arrived", agent: MIRA },
+    ]);
+
+    expect(dispatches).toHaveLength(1);
+    expect(state.inFlight[MIRA]?.pending).toBe(false);
+  });
+
+  it("does not restart a room a person stopped", () => {
+    const { state, dispatches } = run(owed({ roomState: "halted" }), [
+      { kind: "arrived", agent: MIRA },
+    ]);
+
+    expect(dispatches).toHaveLength(0);
+    expect(state.roomState).toBe("halted");
+  });
+
+  it("does not reopen a room an agent closed", () => {
+    const { dispatches } = run(owed({ roomState: "closed" }), [
+      { kind: "arrived", agent: MIRA },
+    ]);
+
+    expect(dispatches).toHaveLength(0);
+  });
+
+  it("does not spend an allowance that is already gone", () => {
+    const { dispatches } = run(owed({ turnsLeft: 0 }), [{ kind: "arrived", agent: MIRA }]);
+
+    expect(dispatches).toHaveLength(0);
+  });
+
+  it("charges the turn once, like any other dispatch", () => {
+    const { state } = run(owed({ turnsLeft: 6 }), [{ kind: "arrived", agent: MIRA }]);
+
+    expect(state.turnsLeft).toBe(5);
   });
 });

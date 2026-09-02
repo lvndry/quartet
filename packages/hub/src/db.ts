@@ -201,6 +201,9 @@ export class HubStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, at);
+      -- Serves owesTurn, which asks who spoke last rather than what was said. Without it
+      -- that answer costs a scan of every message in the room, on every event.
+      CREATE INDEX IF NOT EXISTS idx_messages_author ON messages(conversation_id, author_agent);
       CREATE INDEX IF NOT EXISTS idx_invites_to ON invites(to_agent, status);
     `);
 
@@ -671,6 +674,37 @@ export class HubStore {
       messages: rows.slice(0, limit).reverse().map(HubStore.toMessage),
       reachedStart,
     };
+  }
+
+  /**
+   * Whether this room is holding something this agent has not answered.
+   *
+   * The question a bridge coming back online needs answered: a message that arrived while
+   * it was away never became a turn, because the hub does not dispatch to a socket that is
+   * not there. Nothing later re-asked, so the room simply stayed quiet.
+   *
+   * Two rules are expressed here rather than in the policy, because both are about which
+   * message came last and that is what a database is for:
+   *
+   * - Only another agent's *spoken* message is something to answer. A pass is deliberate
+   *   silence and does not wake anybody, and a system note is the room talking about itself.
+   * - Anything this agent has put in the room counts as its answer, a pass included. That
+   *   is what stops a turn being owed twice for the same message.
+   *
+   * `rowid` rather than `at`, because this is only ever a question of order within one
+   * table and rowid is the one column guaranteed to answer it.
+   */
+  owesTurn(conversationId: string, agentId: string): boolean {
+    const row = this.db
+      .query<{ mine: number | null; theirs: number | null }, [string, string, string, string]>(
+        `SELECT
+           (SELECT MAX(rowid) FROM messages WHERE conversation_id = ? AND author_agent = ?) AS mine,
+           (SELECT MAX(rowid) FROM messages
+            WHERE conversation_id = ? AND author_agent <> ? AND kind = 'agent') AS theirs`,
+      )
+      .get(conversationId, agentId, conversationId, agentId);
+    if (row === null || row === undefined || row.theirs === null) return false;
+    return row.mine === null || row.theirs > row.mine;
   }
 
   /* ---------------- turns the hub is waiting on ---------------- */

@@ -14,6 +14,7 @@
  * 4. A turn is charged once, at dispatch, and only when one is dispatched.
  * 5. One turn in flight per agent.
  * 6. A closed conversation dispatches nothing.
+ * 7. A message that arrived while an agent was away is still answered when it returns.
  */
 
 import { DEFAULT_TURN_BUDGET, type Limit, type RoomState } from "@quartet/protocol";
@@ -42,6 +43,14 @@ export interface TurnState {
   readonly spendIncomplete: boolean;
   /** Running, halted by a person, or closed by an agent. Only `live` may spend. */
   readonly roomState: RoomState;
+  /**
+   * Per agent, whether the room holds something they have not answered.
+   *
+   * Which message came last is a database question, so it is handed in rather than worked
+   * out here — see `HubStore.owesTurn`, which also documents why a pass counts as an answer
+   * and a system note is not something to answer.
+   */
+  readonly unanswered: Readonly<Record<AgentId, boolean>>;
   readonly inFlight: Readonly<Record<AgentId, InFlight>>;
 }
 
@@ -56,6 +65,8 @@ export type TurnEvent =
   | { readonly kind: "reopen" }
   | { readonly kind: "limit"; readonly limit: Limit }
   | { readonly kind: "offline"; readonly agent: AgentId }
+  /** This agent's bridge just connected. */
+  | { readonly kind: "arrived"; readonly agent: AgentId }
   | { readonly kind: "deadline"; readonly agent: AgentId };
 
 export type TurnEffect =
@@ -210,16 +221,22 @@ export function decide(state: TurnState, event: TurnEvent): Decision {
     }
 
     case "settled": {
-      const finished = state.inFlight[event.agent];
-      if (finished === undefined) return { state, effects: [] };
-      const cleared = { ...state, inFlight: without(state.inFlight, event.agent) };
-
+      // A goodbye is a fact about the conversation, not about the turn that carried it, so
+      // it lands even when that turn has already been given up on. A bridge that answers
+      // after its deadline still said goodbye and the message is still delivered; dropping
+      // the close here left the room live with a farewell as its newest message, which is
+      // the one thing nobody should be asked to reply to.
       if (event.outcome === "closed") {
+        const settled = { ...state, inFlight: without(state.inFlight, event.agent) };
         return {
-          state: { ...cleared, roomState: "closed", inFlight: withoutPending(cleared.inFlight) },
+          state: { ...settled, roomState: "closed", inFlight: withoutPending(settled.inFlight) },
           effects: [{ kind: "announce" }],
         };
       }
+
+      const finished = state.inFlight[event.agent];
+      if (finished === undefined) return { state, effects: [] };
+      const cleared = { ...state, inFlight: without(state.inFlight, event.agent) };
 
       // Passing on a turn its owner asked for stays quiet. Falling silent and then speaking
       // anyway is being ignored twice; a newer instruction is the one case worth waking for.
@@ -280,6 +297,16 @@ export function decide(state: TurnState, event: TurnEvent): Decision {
 
     case "offline": {
       return { state: { ...state, inFlight: without(state.inFlight, event.agent) }, effects: [] };
+    }
+
+    case "arrived": {
+      // The hub never dispatches to a socket that is not there, so a message that arrived
+      // while this agent was away never became a turn and nothing later re-asked. Coming
+      // back is when it gets asked. Everything else about spending still applies: a halted
+      // or closed room stays quiet, and an exhausted allowance still waits on a person.
+      if (state.inFlight[event.agent] !== undefined) return { state, effects: [] };
+      if (state.unanswered[event.agent] !== true) return { state, effects: [] };
+      return poke(state, event.agent);
     }
 
     case "deadline": {

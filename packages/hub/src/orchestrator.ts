@@ -58,6 +58,9 @@ export class Orchestrator {
       spentUSD: spend.usd,
       spendIncomplete: spend.incomplete,
       roomState: this.store.roomState(conversationId),
+      unanswered: Object.fromEntries(
+        participants.map((agentId) => [agentId, this.store.owesTurn(conversationId, agentId)]),
+      ),
       inFlight: this.turns.get(conversationId) ?? {},
     };
   }
@@ -196,6 +199,20 @@ export class Orchestrator {
 
   reopen(conversationId: string): void {
     this.apply(conversationId, { kind: "reopen" });
+  }
+
+  /**
+   * A bridge came back. Ask it for anything the room has been holding.
+   *
+   * Without this a conversation only moved while both bridges happened to be up at once:
+   * anything said to an agent that was away was never dispatched, and nothing afterwards
+   * re-asked. Called after `replayTurns`, which covers the other half — work already
+   * charged for and merely undelivered.
+   */
+  onArrived(agentId: string): void {
+    for (const conversation of this.store.conversationsFor(agentId)) {
+      this.apply(conversation.id, { kind: "arrived", agent: agentId });
+    }
   }
 
   /**
