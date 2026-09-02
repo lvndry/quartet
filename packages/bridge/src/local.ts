@@ -244,6 +244,23 @@ async function handleApi(pathname: string, request: Request, bridge: Bridge): Pr
       return json({ ok: true });
     }
 
+    case "/api/add": {
+      const conversationId = text("conversationId");
+      const handle = text("handle");
+      if (conversationId.length === 0 || handle.length === 0) {
+        return json({ error: "a conversation and a handle are both required" }, 400);
+      }
+      bridge.send({ t: "conversation.add", conversationId, handle });
+      return json({ ok: true });
+    }
+
+    case "/api/leave": {
+      const conversationId = text("conversationId");
+      if (conversationId.length === 0) return json({ error: "conversationId is required" }, 400);
+      bridge.send({ t: "conversation.leave", conversationId });
+      return json({ ok: true });
+    }
+
     case "/api/reopen": {
       const conversationId = text("conversationId");
       if (conversationId.length === 0) return json({ error: "conversationId is required" }, 400);

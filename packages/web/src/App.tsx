@@ -1,9 +1,33 @@
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Conversation, Message } from "@quartet/protocol";
-import { DEFAULT_TURN_BUDGET, MAX_SPEND_USD, MAX_TURN_BUDGET } from "@quartet/protocol";
+import {
+  DEFAULT_TURN_BUDGET,
+  MAX_ROOM_MEMBERS,
+  MAX_SPEND_USD,
+  MAX_TURN_BUDGET,
+} from "@quartet/protocol";
 import { MessageBody } from "./Message";
 import { call, useBridge, useSocketLive, type Activity, type Aside, type Limit, type PeerPresence } from "./store";
+
+/**
+ * Everyone in a room but you.
+ *
+ * A list, because a room is no longer two people. Nearly every place that used to reach for
+ * `participants.find(h => h !== me)` wanted this and got away with the singular only while
+ * rooms were pairs.
+ */
+function others(conversation: Conversation, meHandle: string): string[] {
+  return conversation.participants.filter((handle) => handle !== meHandle);
+}
+
+/** "@otto", "@otto and @nia", "@otto, @nia and @ada" — for prose, not for lists. */
+function nameThem(handles: readonly string[]): string {
+  const tagged = handles.map((handle) => `@${handle}`);
+  if (tagged.length === 0) return "nobody";
+  if (tagged.length === 1) return tagged[0] ?? "nobody";
+  return `${tagged.slice(0, -1).join(", ")} and ${String(tagged[tagged.length - 1])}`;
+}
 
 function monogram(handle: string): string {
   return handle.slice(0, 2).toUpperCase();
@@ -230,28 +254,49 @@ function LimitDraft({
   );
 }
 
+/** One line per other member, so a room of four does not hide three of them. */
 function PeerStatus({
-  other,
+  handles,
   presence,
 }: {
-  other: string;
+  handles: readonly string[];
+  presence: readonly PeerPresence[];
+}): React.JSX.Element {
+  return (
+    <span className="peers">
+      {handles.map((handle) => (
+        <OnePeer
+          key={handle}
+          handle={handle}
+          presence={presence.find((entry) => entry.handle === handle)}
+        />
+      ))}
+    </span>
+  );
+}
+
+function OnePeer({
+  handle,
+  presence,
+}: {
+  handle: string;
   presence: PeerPresence | undefined;
 }): React.JSX.Element {
   if (presence === undefined || !presence.online) {
-    return <span className="peer away">@{other} is away</span>;
+    return <span className="peer away">@{handle} is away</span>;
   }
   if (presence.thinking) {
     return (
       <span className="peer live">
-        @{other}’s agent is thinking
+        @{handle}’s agent is thinking
         {presence.since !== undefined && <Elapsed since={presence.since} />}
       </span>
     );
   }
   if (presence.watching) {
-    return <span className="peer live">@{other} is watching</span>;
+    return <span className="peer live">@{handle} is watching</span>;
   }
-  return <span className="peer">@{other} is here</span>;
+  return <span className="peer">@{handle} is here</span>;
 }
 
 function LimitPicker({
@@ -428,14 +473,16 @@ export default function App(): React.JSX.Element {
             atStart={state.atStart[conversation.id] ?? true}
             asides={state.asides[conversation.id] ?? []}
             activity={state.activity[conversation.id]}
-            presence={state.presence[conversation.id]}
+            presence={state.presence[conversation.id] ?? []}
             meHandle={state.me?.handle ?? ""}
             onAct={act}
           />
         )}
         <Ledger
           entries={state.ledger.filter((entry) => entry.conversationId === conversation?.id)}
-          other={conversation?.participants.find((handle) => handle !== state.me?.handle)}
+          others={
+            conversation === undefined ? [] : others(conversation, state.me?.handle ?? "")
+          }
         />
       </div>
 
@@ -505,8 +552,7 @@ function Sidebar({
         <div className="pane-title">Conversations</div>
         {state.conversations.length === 0 && <div className="empty">Nothing yet.</div>}
         {state.conversations.map((conversation) => {
-          const other =
-            conversation.participants.find((handle) => handle !== state.me?.handle) ?? "";
+          const cast = others(conversation, state.me?.handle ?? "");
           return (
             <button
               key={conversation.id}
@@ -514,11 +560,11 @@ function Sidebar({
               className={conversation.id === selectedId ? "row active" : "row"}
               onClick={() => onSelect(conversation.id)}
             >
-              <span className="monogram">{monogram(other)}</span>
+              <span className="monogram">{monogram(cast[0] ?? "")}</span>
               <span className="row-main">
                 <span className="row-title">{conversation.purpose}</span>
                 <span className="row-sub">
-                  @{other} · {describeLimit(conversation.limit)}
+                  {nameThem(cast)} · {describeLimit(conversation.limit)}
                 </span>
               </span>
             </button>
@@ -607,13 +653,19 @@ function Chat({
   atStart: boolean;
   asides: Aside[];
   activity: Activity | undefined;
-  presence: PeerPresence | undefined;
+  /** Everyone in the room but you. */
+  presence: readonly PeerPresence[];
   meHandle: string;
   onAct: (path: string, body: Record<string, unknown>) => Promise<void>;
 }): React.JSX.Element {
   const [draft, setDraft] = useState("");
   const [questionDraft, setQuestionDraft] = useState("");
+  const [adding, setAdding] = useState("");
   const bottom = useRef<HTMLDivElement>(null);
+
+  const cast = others(conversation, meHandle);
+  // Any one of them thinking is reason enough not to declare the room quiet.
+  const someoneThinking = presence.some((entry) => entry.thinking);
 
   // Asides are yours alone, so they are merged in for display only — they were never sent
   // and the other party's copy of this conversation does not contain them.
@@ -685,7 +737,7 @@ function Chat({
 
   useEffect(() => {
     if (pinned.current) bottom.current?.scrollIntoView({ block: "end" });
-  }, [activity?.state, presence?.thinking]);
+  }, [activity?.state, someoneThinking]);
 
   function onScroll(): void {
     const element = scroller.current;
@@ -702,12 +754,49 @@ function Chat({
         <span className="chat-purpose" title={conversation.purpose}>
           {shortPurpose(conversation.purpose)}
         </span>
-        <PeerStatus
-          other={conversation.participants.find((handle) => handle !== meHandle) ?? "them"}
-          presence={presence}
-        />
+        <PeerStatus handles={cast} presence={presence} />
         <Budget conversation={conversation} />
         <LimitPicker conversation={conversation} onAct={onAct} />
+      </div>
+
+      <div className="cast">
+        <input
+          className="field slim"
+          placeholder="bring in a handle you know"
+          value={adding}
+          onChange={(event) => setAdding(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || adding.trim().length === 0) return;
+            void onAct("add", { conversationId: conversation.id, handle: adding.trim() });
+            setAdding("");
+          }}
+        />
+        <button
+          className="btn"
+          type="button"
+          disabled={adding.trim().length === 0 || conversation.participants.length >= MAX_ROOM_MEMBERS}
+          title={
+            conversation.participants.length >= MAX_ROOM_MEMBERS
+              ? `A room holds at most ${String(MAX_ROOM_MEMBERS)} agents`
+              : undefined
+          }
+          onClick={() => {
+            void onAct("add", { conversationId: conversation.id, handle: adding.trim() });
+            setAdding("");
+          }}
+        >
+          Add
+        </button>
+        <span className="cast-count">
+          {conversation.participants.length} of {MAX_ROOM_MEMBERS}
+        </span>
+        <button
+          className="btn stop"
+          type="button"
+          onClick={() => void onAct("leave", { conversationId: conversation.id })}
+        >
+          Leave
+        </button>
       </div>
 
       <div className="pane-scroll" ref={scroller} onScroll={onScroll}>
@@ -774,18 +863,20 @@ function Chat({
             </div>
           )}
 
-          {presence?.thinking && (
-            <div className="activity theirs">
-              <span className="bars" aria-hidden="true">
-                <i />
-                <i />
-                <i />
-                <i />
-              </span>
-              <span className="activity-who">@{presence.handle}’s agent</span>
-              {presence.since !== undefined && <Elapsed since={presence.since} />}
-            </div>
-          )}
+          {presence
+            .filter((entry) => entry.thinking)
+            .map((entry) => (
+              <div className="activity theirs" key={entry.handle}>
+                <span className="bars" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <span className="activity-who">@{entry.handle}’s agent</span>
+                {entry.since !== undefined && <Elapsed since={entry.since} />}
+              </div>
+            ))}
 
           {activity?.state === "needs-you" && (
             <div className="needs-you">
@@ -868,13 +959,13 @@ function Chat({
 
           {conversation.state === "halted" &&
             activity?.state !== "thinking" &&
-            !presence?.thinking && (
+            !someoneThinking && (
               <span className="line">Stopped. Change the limit or say something to continue.</span>
             )}
 
           {conversation.state === "closed" &&
             activity?.state !== "thinking" &&
-            !presence?.thinking && (
+            !someoneThinking && (
               <span className="line">Closed — an agent said goodbye.</span>
             )}
 
@@ -882,7 +973,7 @@ function Chat({
             roomIsQuiet(conversation) &&
             activity?.state !== "thinking" &&
             activity?.state !== "needs-you" &&
-            !presence?.thinking && (
+            !someoneThinking && (
               <span className="line">
                 {conversation.limit.kind === "cost"
                   ? "Room quiet — spend limit reached. Raise it or say something to continue."
@@ -913,9 +1004,8 @@ function Chat({
           </div>
           <span className="composer-note">
             An agent ended this one. Reopening is its own decision — raising the allowance
-            will not restart it. Opening a fresh room with @
-            {conversation.participants.find((handle) => handle !== meHandle) ?? "them"} keeps
-            this record where it ended.
+            will not restart it. Opening a fresh room with {nameThem(cast)} keeps this record
+            where it ended.
           </span>
         </div>
       ) : (
@@ -948,9 +1038,8 @@ function Chat({
             </button>
           </div>
           <span className="composer-note">
-            Goes to your agent, not to @
-            {conversation.participants.find((handle) => handle !== meHandle) ?? "them"} — your
-            agent decides what to say. To end the conversation, use Stop.
+            Goes to your agent, not to {nameThem(cast)} — your agent decides what to say. To
+            end the conversation, use Stop.
           </span>
         </div>
       )}
@@ -960,15 +1049,17 @@ function Chat({
 
 function Ledger({
   entries,
-  other,
+  others,
 }: {
   entries: { id: string; at: string; text: string; steer?: string }[];
-  other: string | undefined;
+  others: readonly string[];
 }): React.JSX.Element {
   return (
     <aside className="pane ledger">
       <div className="pane-title">
-        {other === undefined ? "What your agent has said" : `What your agent said to @${other}`}
+        {others.length === 0
+          ? "What your agent has said"
+          : `What your agent said to ${nameThem(others)}`}
       </div>
       <div className="pane-scroll">
         {entries.length === 0 && <div className="empty">Nothing has crossed yet.</div>}

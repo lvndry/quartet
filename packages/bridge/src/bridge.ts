@@ -69,7 +69,8 @@ export interface BridgeState {
   readonly atStart: Record<string, boolean>;
   readonly asides: Record<string, Aside[]>;
   readonly activity: Record<string, Activity>;
-  readonly presence: Record<string, PeerPresence>;
+  /** Everyone in each room but you. Empty until the hub says otherwise. */
+  readonly presence: Record<string, PeerPresence[]>;
   readonly ledger: LedgerEntry[];
   readonly lastError?: string;
 }
@@ -97,7 +98,7 @@ export class Bridge {
   private readonly atStart = new Map<string, boolean>();
   private readonly asides = new Map<string, Aside[]>();
   private readonly activity = new Map<string, Activity>();
-  private readonly presence = new Map<string, PeerPresence>();
+  private readonly presence = new Map<string, PeerPresence[]>();
   private ledger: LedgerEntry[] = [];
   private lastError: string | undefined;
   /**
@@ -367,7 +368,7 @@ export class Bridge {
         return;
 
       case "presence":
-        this.presence.set(frame.conversationId, frame.other);
+        this.presence.set(frame.conversationId, frame.others);
         this.publish();
         return;
 
