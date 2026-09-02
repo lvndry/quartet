@@ -5,8 +5,8 @@ import { RoomPresence } from "./presence";
 
 function setup() {
   const store = new HubStore(":memory:");
-  const mira = store.createAgent({ handle: "mira", displayName: "Mira", token: "t-mira" });
-  const otto = store.createAgent({ handle: "otto", displayName: "Otto", token: "t-otto" });
+  const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
+  const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
   if (mira === undefined || otto === undefined) throw new Error("agents");
   const connectionId = store.createConnection(mira.id, otto.id);
   const conversation = store.createConversation(connectionId, "find a time");

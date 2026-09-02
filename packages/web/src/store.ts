@@ -23,6 +23,19 @@ export interface Aside {
   text: string;
 }
 
+/** What this machine concluded about one message's signature. Mirrors the bridge's verdict. */
+export type Verdict =
+  | { state: "signed" }
+  | { state: "unsigned" }
+  | { state: "broken"; why: string };
+
+/** A handle whose key changed since this machine first saw it. */
+export interface KeyConflict {
+  handle: string;
+  pinned: string;
+  offered: string;
+}
+
 export interface LedgerEntry {
   id: string;
   at: string;
@@ -44,6 +57,11 @@ export interface BridgeState {
   activity: Record<string, Activity>;
   presence: Record<string, PeerPresence>;
   ledger: LedgerEntry[];
+  verdicts: Record<string, Verdict>;
+  keyConflicts: KeyConflict[];
+  /** Readable short form of each key, by did. Derived by the bridge, never by the page. */
+  fingerprints: Record<string, string>;
+  keyStoreProblem?: string;
   lastError?: string;
 }
 
@@ -58,6 +76,9 @@ const EMPTY: BridgeState = {
   activity: {},
   presence: {},
   ledger: [],
+  verdicts: {},
+  keyConflicts: [],
+  fingerprints: {},
 };
 
 const TOKEN_KEY = "quartet.token";

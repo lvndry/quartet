@@ -12,8 +12,11 @@
  */
 
 import { dirname, join } from "node:path";
+import { signClaim, tag, type Keypair } from "@quartet/identity";
+import { Attestor } from "./attest";
 import { Bridge } from "./bridge";
 import { loadConfig, saveConfig, type QuartetConfig } from "./config";
+import { loadIdentity } from "./identity";
 import { getDataDirectory, setDataDirectory } from "./paths";
 import {
   daemonReachable,
@@ -54,7 +57,10 @@ async function prompt(question: string): Promise<string> {
   return next.done === true ? "" : next.value.trim();
 }
 
-async function claimHandle(hubUrl: string): Promise<{ token: string; handle: string } | undefined> {
+async function claimHandle(
+  hubUrl: string,
+  keypair: Keypair,
+): Promise<{ handle: string } | undefined> {
   const fromFlag = argValue("handle");
   if (fromFlag === undefined) {
     console.log("\nYou do not have a quartet identity on this hub yet.\n");
@@ -67,24 +73,29 @@ async function claimHandle(hubUrl: string): Promise<{ token: string; handle: str
   const nameAnswer = argValue("name") ?? (await prompt("Display name: "));
   const displayName = nameAnswer.trim().length > 0 ? nameAnswer.trim() : handle.trim();
 
+  // The claim is signed here rather than by the hub, which is the whole point: the hub is
+  // being shown a key it cannot mint, so the name it hands back is bound to this machine.
+  const claim = { did: keypair.did, handle: handle.trim(), at: new Date().toISOString() };
   const response = await fetch(new URL("/agents", hubUrl), {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ handle: handle.trim(), displayName: displayName.trim() }),
+    body: JSON.stringify({
+      ...claim,
+      displayName: displayName.trim(),
+      signature: signClaim(claim, keypair.privateKey),
+    }),
   }).catch(() => undefined);
 
   if (response === undefined) {
     console.error(`\nCould not reach the hub at ${hubUrl}. Is it running?`);
     return undefined;
   }
-  const body = (await response.json().catch(() => null)) as
-    | { token?: string; error?: string }
-    | null;
-  if (!response.ok || body?.token === undefined) {
+  const body = (await response.json().catch(() => null)) as { error?: string } | null;
+  if (!response.ok) {
     console.error(`\n${body?.error ?? "the hub refused that handle"}`);
     return undefined;
   }
-  return { token: body.token, handle: handle.trim() };
+  return { handle: handle.trim() };
 }
 
 /**
@@ -203,12 +214,20 @@ async function connect(): Promise<void> {
   const requestedPort = argValue("port");
   const hubUrl = argValue("hub") ?? config.hubUrl;
 
-  if (config.agentToken === undefined) {
-    const claimed = await claimHandle(hubUrl);
+  const keypair = await loadIdentity();
+  if ("error" in keypair) {
+    console.error(`\n${keypair.error}`);
+    process.exit(1);
+  }
+
+  if (config.handle === undefined) {
+    const claimed = await claimHandle(hubUrl, keypair);
     if (claimed === undefined) process.exit(1);
-    config = { ...config, hubUrl, agentToken: claimed.token, handle: claimed.handle };
+    config = { ...config, hubUrl, handle: claimed.handle };
     await saveConfig(config);
-    console.log(`\n  ✓ claimed @${claimed.handle}`);
+    console.log(`\n  ✓ claimed ${tag(claimed.handle, keypair.did) ?? `@${claimed.handle}`}`);
+    console.log("    Give that whole line to anyone inviting you — the part after # is what");
+    console.log("    proves the handle is yours and not somebody wearing your name.");
   }
 
   const withDaemon = await ensureDaemon({ ...config, hubUrl });
@@ -217,8 +236,7 @@ async function connect(): Promise<void> {
   await saveConfig(config);
 
   const daemon = config.daemon;
-  const agentToken = config.agentToken;
-  if (daemon === undefined || agentToken === undefined) process.exit(1);
+  if (daemon === undefined) process.exit(1);
 
   if (!(await webhookConfigured(daemon.webhook))) {
     console.warn(
@@ -234,7 +252,7 @@ async function connect(): Promise<void> {
     );
   }
 
-  const bridge = new Bridge(hubUrl, agentToken, daemon);
+  const bridge = new Bridge(hubUrl, daemon, new Attestor(keypair));
   await bridge.start();
 
   const localToken = config.localToken ?? crypto.randomUUID().replaceAll("-", "");

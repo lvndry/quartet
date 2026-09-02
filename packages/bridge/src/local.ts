@@ -177,12 +177,17 @@ async function handleApi(pathname: string, request: Request, bridge: Bridge): Pr
       if (parsedInviteLimit !== undefined && !parsedInviteLimit.success) {
         return json({ error: parsedInviteLimit.error.issues[0]?.message ?? "invalid limit" }, 400);
       }
-      bridge.send({
-        t: "invite.send",
-        toHandle,
-        purpose,
-        ...(parsedInviteLimit?.data !== undefined ? { limit: parsedInviteLimit.data } : {}),
-      });
+      // A refused invite is a 400 with the reason, not a silent no-op: the reason is the
+      // whole value of checking a fingerprint, and it is addressed to a person.
+      const refused = bridge.invite(toHandle, purpose, parsedInviteLimit?.data);
+      if (refused !== undefined) return json(refused, 400);
+      return json({ ok: true });
+    }
+
+    case "/api/trust-key": {
+      const handle = text("handle");
+      if (handle.length === 0) return json({ error: "handle is required" }, 400);
+      await bridge.trustNewKey(handle);
       return json({ ok: true });
     }
 

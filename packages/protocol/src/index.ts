@@ -85,6 +85,25 @@ export const CLOSE_SENTINEL = "<end>";
 export const MAX_MESSAGE_LENGTH = 4000;
 export const MAX_PURPOSE_LENGTH = MAX_MESSAGE_LENGTH;
 
+/**
+ * Text that survives being turned into bytes and back.
+ *
+ * A signature covers UTF-8 bytes, and an unpaired surrogate — which `JSON.parse` will happily
+ * produce from a `\uD800` escape — encodes to the replacement character. Two different
+ * strings would then sign identically, which is exactly the property signing is supposed to
+ * rule out. Rejecting them at the door keeps "the signed bytes determine the message" true
+ * rather than nearly true.
+ */
+function signable(max: number) {
+  return z
+    .string()
+    .min(1)
+    .max(max)
+    .refine((value) => value.isWellFormed(), {
+      message: "contains unpaired surrogates, which cannot be signed unambiguously",
+    });
+}
+
 export const handleSchema = z
   .string()
   .min(2)
@@ -102,6 +121,38 @@ export const handleSchema = z
 export const messageKindSchema = z.enum(["agent", "pass", "system"]);
 export type MessageKind = z.infer<typeof messageKindSchema>;
 
+/**
+ * What an author signed, travelling with what they said.
+ *
+ * The hub stores this and repeats it; it cannot produce one. That is the whole of why a
+ * conversation's integrity stops depending on whose hub it is.
+ */
+export const signatureSchema = z.object({
+  did: z.string(),
+  /** The author's clock. The message's own `at` is the hub's receipt, which is a different claim. */
+  authoredAt: z.string(),
+  nonce: z.string(),
+  /** Digest of this author's previous signature in this conversation; empty on their first. */
+  prev: z.string(),
+  value: z.string(),
+});
+export type Signature = z.infer<typeof signatureSchema>;
+
+/**
+ * What a bridge attaches when it speaks. The hub fills in the rest of the signature.
+ *
+ * Required, not optional. Opening a socket already means proving a key, so there is no such
+ * thing as a connected bridge that cannot sign — and leaving room for an unsigned line would
+ * only leave a way to talk somebody's transcript down to unverifiable on purpose.
+ */
+export const authorshipSchema = z.object({
+  authoredAt: z.string(),
+  nonce: z.string(),
+  prev: z.string(),
+  signature: z.string(),
+});
+export type Authorship = z.infer<typeof authorshipSchema>;
+
 export const messageSchema = z.object({
   id: z.string(),
   conversationId: z.string(),
@@ -110,6 +161,12 @@ export const messageSchema = z.object({
   kind: messageKindSchema,
   text: z.string(),
   at: z.string(),
+  /**
+   * Absent on anything the hub said in its own voice — a stop, a failed turn — and on agents
+   * that predate signing. Absent is not the same as invalid, and the app distinguishes them:
+   * one is the hub speaking, the other is a claim that failed to check out.
+   */
+  signature: signatureSchema.optional(),
 });
 export type Message = z.infer<typeof messageSchema>;
 
@@ -118,6 +175,14 @@ export const agentSchema = z.object({
   handle: z.string(),
   displayName: z.string(),
   bio: z.string().optional(),
+  /**
+   * The key this agent signs with, as a `did:key`.
+   *
+   * Optional only for as long as hubs exist that predate signing. An agent without one can
+   * still be talked to, but nothing it says can be checked, and the app says so rather than
+   * letting an unsigned line pass for a signed one.
+   */
+  did: z.string().optional(),
   /** The person this agent acts for. Modelled from the start so several agents can share one. */
   ownerId: z.string(),
   online: z.boolean(),
@@ -195,9 +260,19 @@ export type DirectoryEntry = z.infer<typeof directoryEntrySchema>;
 /* ------------------------------------------------------------------ */
 
 export const clientFrameSchema = z.discriminatedUnion("t", [
+  /**
+   * Prove the key, rather than present a secret.
+   *
+   * Answers the `challenge` the hub sends when the socket opens. A bearer token would be a
+   * second thing that *is* the identity — copyable, replayable, and sitting in a file on
+   * disk — while the key is already the thing every message is signed with. One credential,
+   * one place it lives, and nothing on the wire that is worth stealing.
+   */
   z.object({
     t: z.literal("hello"),
-    agentToken: z.string().min(1),
+    did: z.string(),
+    challenge: z.string(),
+    signature: z.string(),
   }),
   z.object({
     t: z.literal("profile.set"),
@@ -209,7 +284,7 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   z.object({
     t: z.literal("invite.send"),
     toHandle: handleSchema,
-    purpose: z.string().min(1).max(MAX_PURPOSE_LENGTH),
+    purpose: signable(MAX_PURPOSE_LENGTH),
     limit: limitSchema.optional(),
   }),
   z.object({
@@ -220,7 +295,7 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   z.object({
     t: z.literal("conversation.open"),
     connectionId: z.string(),
-    purpose: z.string().min(1).max(MAX_PURPOSE_LENGTH),
+    purpose: signable(MAX_PURPOSE_LENGTH),
     limit: limitSchema.optional(),
   }),
   /**
@@ -240,12 +315,13 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   z.object({
     t: z.literal("say"),
     conversationId: z.string(),
-    text: z.string().min(1).max(MAX_MESSAGE_LENGTH),
+    text: signable(MAX_MESSAGE_LENGTH),
     /** The agent's last word. Delivered, then the conversation closes without a reply. */
     closing: z.boolean().optional(),
     /** What this turn cost, when the daemon could tell. Fed into the conversation's spend. */
     costUSD: z.number().nonnegative().optional(),
     costIncomplete: z.boolean().optional(),
+    authorship: authorshipSchema,
   }),
   /**
    * The owner said something to their own agent.
@@ -264,6 +340,8 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     conversationId: z.string(),
     costUSD: z.number().nonnegative().optional(),
     costIncomplete: z.boolean().optional(),
+    /** A pass is silence, but it is *this agent's* silence, so it is signed like speech. */
+    authorship: authorshipSchema,
   }),
   /** The run failed. Recorded so the room shows why it went quiet rather than just stopping. */
   z.object({
@@ -308,6 +386,8 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
     /** Shared transcript for every room this agent is in. Hydrates the chat, not the ledger. */
     messages: z.array(messageSchema),
   }),
+  /** Sent the moment a socket opens: sign this to say who you are. */
+  z.object({ t: z.literal("challenge"), nonce: z.string() }),
   z.object({ t: z.literal("directory"), people: z.array(directoryEntrySchema) }),
   z.object({ t: z.literal("invite"), invite: inviteSchema }),
   z.object({

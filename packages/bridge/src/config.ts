@@ -1,10 +1,10 @@
 /**
  * @fileoverview What this machine remembers between runs.
  *
- * Two secrets live here and neither should ever be confused with the other: the **agent
- * token** proves to the hub that this socket is your agent, and the **daemon token** wakes
- * your local jazz agent. The first crosses the network; the second must never leave
- * loopback. Keeping them in one file is fine — keeping them in one field would not be.
+ * No agent credential lives here any more. The socket is opened by signing a challenge with
+ * the key in `identity.json`, so the only secret in this file is the **daemon token**, which
+ * wakes your local jazz agent and must never leave loopback. The identity is deliberately
+ * kept in its own file: this one is rewritten whenever a port or a hub URL changes.
  */
 
 import { dirname } from "node:path";
@@ -22,7 +22,6 @@ export interface DaemonSettings {
 
 export interface QuartetConfig {
   readonly hubUrl: string;
-  readonly agentToken?: string;
   readonly handle?: string;
   readonly daemon?: DaemonSettings;
   /** Which port the app is served on. Remembered so a second agent keeps its own. */

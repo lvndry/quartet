@@ -7,9 +7,10 @@
  * Run with: bun scripts/demo.ts
  */
 
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { generateKeypair, signClaim } from "../packages/identity/src/index";
 
 // Deliberately off the defaults: the demo must never fight a hub or bridge somebody is
 // already running for real. Override with DEMO_HUB_PORT / DEMO_WEB_PORT if even these clash.
@@ -73,22 +74,32 @@ for (let attempt = 0; attempt < 80; attempt += 1) {
 const children = [hub];
 for (const member of CAST) {
   fakeDaemon(member.daemonPort, REPLIES[member.handle] ?? []);
+  // Written where the child will look for it, so the demo exercises the real load path
+  // rather than a second way of getting a key into a bridge.
+  const home = join(workDir, member.handle);
+  await mkdir(home, { recursive: true });
+  const keypair = generateKeypair();
+  await Bun.write(join(home, "identity.json"), `${JSON.stringify(keypair, null, 2)}
+`);
+  const claim = { did: keypair.did, handle: member.handle, at: new Date().toISOString() };
   const response = await fetch(`${hubUrl}/agents`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ handle: member.handle, displayName: member.name }),
+    body: JSON.stringify({
+      ...claim,
+      displayName: member.name,
+      signature: signClaim(claim, keypair.privateKey),
+    }),
   });
-  const body = (await response.json()) as { token?: string };
-  if (body.token === undefined) throw new Error(`could not register @${member.handle}`);
+  if (!response.ok) throw new Error(`could not register @${member.handle}`);
 
   children.push(
     Bun.spawn({
       cmd: ["bun", "run", "scripts/demo-agent.ts"],
       env: {
         ...process.env,
-        QUARTET_HOME: join(workDir, member.handle),
+        QUARTET_HOME: home,
         DEMO_HUB: hubUrl,
-        DEMO_AGENT_TOKEN: body.token,
         DEMO_DAEMON: `http://127.0.0.1:${String(member.daemonPort)}`,
         DEMO_PORT: String(member.webPort),
         DEMO_LOCAL_TOKEN: `demo-${member.handle}`,

@@ -30,3 +30,24 @@ export function ledgerPath(): string {
 export function asidesPath(): string {
   return join(dataDirectory, "asides.jsonl");
 }
+
+/**
+ * The agent's keypair, kept apart from `config.json` on purpose.
+ *
+ * Config is rewritten whenever a setting moves — a port, a hub URL, a daemon token. The key
+ * is the one thing here that can never be regenerated without becoming a different agent, so
+ * it does not share a file with anything that gets overwritten in the ordinary course of use.
+ */
+export function identityPath(): string {
+  return join(dataDirectory, "identity.json");
+}
+
+/** Which key each handle is known by here. Not a secret — losing it costs a warning, not safety. */
+export function knownPath(): string {
+  return join(dataDirectory, "known.json");
+}
+
+/** How far each conversation's signature chain has reached. Derived, and not secret. */
+export function journalPath(): string {
+  return join(dataDirectory, "chain.json");
+}

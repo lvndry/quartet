@@ -177,6 +177,32 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
 
 .error { padding: 0.5rem 1rem; font-size: 0.8rem; color: var(--vermilion); }
 
+/* ---------- provenance ----------
+   A verified line says nothing at all. Only the exceptions get ink, so that seeing one of
+   these marks means something rather than becoming the wallpaper every message wears. */
+
+.fingerprint { color: var(--slate); }
+
+.provenance {
+  font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.06em;
+}
+.provenance.unsigned { color: var(--slate); }
+.provenance.broken { color: var(--vermilion); }
+
+.key-alarm {
+  padding: 0.7rem 1rem; font-size: 0.8rem; line-height: 1.5;
+  color: var(--cream); background: color-mix(in srgb, var(--vermilion) 14%, transparent);
+  border-top: 1px solid var(--vermilion);
+  display: flex; flex-direction: column; gap: 0.6rem;
+}
+.key-alarm code { font-family: var(--mono); font-size: 0.72rem; color: var(--cream); }
+.key-alarm button {
+  margin-left: 0.6rem; padding: 0.2rem 0.6rem;
+  font: inherit; font-size: 0.72rem; color: var(--cream);
+  background: transparent; border: 1px solid var(--vermilion); border-radius: 3px;
+  cursor: pointer;
+}
+
 /* ---------- chat ---------- */
 
 .chat-head {

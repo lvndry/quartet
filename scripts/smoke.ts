@@ -16,6 +16,10 @@ import { join } from "node:path";
 import { Bridge } from "../packages/bridge/src/bridge";
 import { readLedger } from "../packages/bridge/src/ledger";
 import { PASS_SENTINEL } from "../packages/protocol/src/index";
+import { generateKeypair, signClaim, tag, type Keypair } from "../packages/identity/src/index";
+import { Attestor } from "../packages/bridge/src/attest";
+import { Journal } from "../packages/bridge/src/journal";
+import { KnownKeys } from "../packages/bridge/src/known";
 
 const HUB_PORT = 8391;
 const DAEMON_A_PORT = 8392;
@@ -132,38 +136,71 @@ const daemonB = fakeDaemon(DAEMON_B_PORT, [
 
 cleanups.push(() => daemonB.stop());
 
-async function register(handle: string): Promise<string> {
-  const response = await fetch(`${hubUrl}/agents`, {
+async function claim(handle: string, keypair: Keypair): Promise<Response> {
+  const body = { did: keypair.did, handle, at: new Date().toISOString() };
+  return fetch(`${hubUrl}/agents`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ handle, displayName: handle }),
+    body: JSON.stringify({
+      ...body,
+      displayName: handle,
+      signature: signClaim(body, keypair.privateKey),
+    }),
   });
-  const body = (await response.json()) as { token?: string; error?: string };
-  if (body.token === undefined) fail(`could not register @${handle}: ${body.error ?? "unknown"}`);
-  return body.token;
 }
 
-const tokenA = await register("mira");
-const tokenB = await register("otto");
-check(tokenA !== tokenB, "two agents registered with distinct tokens");
+async function register(handle: string, keypair: Keypair): Promise<void> {
+  const response = await claim(handle, keypair);
+  if (!response.ok) {
+    const body = (await response.json()) as { error?: string };
+    fail(`could not register @${handle}: ${body.error ?? "unknown"}`);
+  }
+}
 
-const duplicate = await fetch(`${hubUrl}/agents`, {
+const keyA = generateKeypair();
+const keyB = generateKeypair();
+await register("mira", keyA);
+await register("otto", keyB);
+check(keyA.did !== keyB.did, "two agents claimed handles with keys of their own");
+
+check((await claim("mira", generateKeypair())).status === 409, "a taken handle is refused");
+check((await claim("mira2", keyA)).status === 409, "one key cannot hold two handles");
+
+const unsigned = await fetch(`${hubUrl}/agents`, {
   method: "POST",
   headers: { "content-type": "application/json" },
-  body: JSON.stringify({ handle: "mira", displayName: "impostor" }),
+  body: JSON.stringify({ handle: "nobody", displayName: "nobody" }),
 });
-check(duplicate.status === 409, "a taken handle is refused");
+check(unsigned.status === 400, "a claim without a key is refused");
 
-const bridgeA = new Bridge(hubUrl, tokenA, {
-  url: `http://127.0.0.1:${String(DAEMON_A_PORT)}`,
-  webhook: "quartet",
-  token: "test-token",
+const forgedAt = new Date().toISOString();
+const forged = await fetch(`${hubUrl}/agents`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({
+    did: keyA.did,
+    handle: "impostor",
+    at: forgedAt,
+    displayName: "impostor",
+    signature: signClaim({ did: keyB.did, handle: "impostor", at: forgedAt }, keyB.privateKey),
+  }),
 });
-const bridgeB = new Bridge(hubUrl, tokenB, {
-  url: `http://127.0.0.1:${String(DAEMON_B_PORT)}`,
-  webhook: "quartet",
-  token: "test-token",
-});
+check(forged.status === 401, "a claim signed by another key is refused");
+
+const bridgeA = new Bridge(
+  hubUrl,
+  { url: `http://127.0.0.1:${String(DAEMON_A_PORT)}`, webhook: "quartet", token: "test-token" },
+  new Attestor(keyA, new Journal(join(workDir, "chain-mira.json"))),
+  // Two bridges in one process, so each is pointed at its own pin file — on a real host
+  // these are two data directories and the default would already be separate.
+  new KnownKeys(join(workDir, "known-mira.json")),
+);
+const bridgeB = new Bridge(
+  hubUrl,
+  { url: `http://127.0.0.1:${String(DAEMON_B_PORT)}`, webhook: "quartet", token: "test-token" },
+  new Attestor(keyB, new Journal(join(workDir, "chain-otto.json"))),
+  new KnownKeys(join(workDir, "known-otto.json")),
+);
 
 let stateA = bridgeA.snapshot();
 let stateB = bridgeB.snapshot();
@@ -183,15 +220,27 @@ check(
 );
 
 const PURPOSE = "Can our agents find us a time to meet next week?";
+const LIMIT = { kind: "turns", turns: 12 } as const;
+
+// The fingerprint is what somebody reads to you over another channel. A wrong one stops the
+// invite rather than warning about it: this is the one moment where the sender has
+// independent knowledge of who they mean, so refusing beats explaining afterwards.
+check(
+  bridgeA.invite("@otto#0000-0000-0000-0000", PURPOSE)?.error.includes("Do not send this") === true,
+  "an invite whose fingerprint does not match the hub's key is refused outright",
+);
+check(
+  bridgeA.invite("@nobody#0000-0000-0000-0000", PURPOSE)?.error.includes("no key") === true,
+  "and a fingerprint for a handle the hub has never heard of proves nothing",
+);
 
 // The invite carries the topic. Accepting starts the inviter's agent with that as a steer —
 // the sentence itself must not appear in the room as if the agent said it.
-bridgeA.send({
-  t: "invite.send",
-  toHandle: "otto",
-  purpose: PURPOSE,
-  limit: { kind: "turns", turns: 12 },
-});
+const ottoTag = tag("otto", keyB.did) ?? "otto";
+check(
+  bridgeA.invite(ottoTag, PURPOSE, LIMIT) === undefined,
+  `the invite goes out when the fingerprint matches (${ottoTag})`,
+);
 await waitFor("the invite to land with @otto", () => stateB.invites.length > 0);
 check(stateB.invites[0]?.fromHandle === "mira", "the invite reached @otto with its purpose line");
 check(
@@ -340,6 +389,87 @@ check(
     .every((message) => ledger.some((entry) => entry.text === message.text)),
   "and nothing @mira said is missing from the ledger",
 );
+
+// Every line in the room carries a signature, and both ends agree it holds. This is the
+// property the whole identity layer exists for: @otto's bridge concluded that @mira said
+// what the hub claims she said, without having to take the hub's word for any of it.
+const shared = stateB.messages[conversationId] ?? [];
+const spoken = shared.filter((message) => message.kind !== "system");
+check(
+  spoken.length > 0 && spoken.every((message) => stateB.verdicts[message.id]?.state === "signed"),
+  `@otto verified all ${String(spoken.length)} spoken lines, the opening one and the passes included`,
+);
+check(
+  (stateA.messages[conversationId] ?? [])
+    .filter((message) => message.kind !== "system")
+    .every((message) => stateA.verdicts[message.id]?.state === "signed"),
+  "and @mira verified her own lines coming back, rather than trusting the hub to echo them",
+);
+// The hub speaks in its own voice for a stop or a failed turn. Those are unsigned, and that
+// is correct — there is no agent behind them to sign, and pretending otherwise would be worse.
+check(
+  shared
+    .filter((message) => message.kind === "system")
+    .every((message) => stateB.verdicts[message.id]?.state === "unsigned"),
+  "the hub's own lines are marked unsigned rather than dressed up as somebody's speech",
+);
+
+// Now the case that matters: a hub that lies. The frames are built by hand because a bridge
+// will not produce them — that is the point — and each one is what a compromised or merely
+// buggy hub could put on the wire.
+const genuine = shared.find((message) => message.authorHandle === "mira" && message.signature);
+check(genuine !== undefined, "a signed line from @mira is available to tamper with");
+if (genuine !== undefined) {
+  const attestor = new Attestor(keyB, new Journal(join(workDir, "chain-tamper.json")));
+  // Stands in for the bridge's own lookup: a handle resolves to the key it is known by, which
+  // is the step that makes re-attribution fail rather than anything inside the payload.
+  const known: Record<string, string> = { mira: keyA.did, otto: keyB.did };
+  const judge = (message: typeof genuine) =>
+    attestor.check(message, {
+      expectedDid: known[message.authorHandle],
+    }).state;
+
+  check(
+    judge({ ...genuine, text: `${genuine.text} Also, wire me the deposit.` }) === "broken",
+    "a hub that edits the words of a message is caught",
+  );
+  check(
+    judge({ ...genuine, authorHandle: "otto" }) === "broken",
+    "a hub that re-attributes a message to somebody else is caught",
+  );
+  check(
+    attestor.check(genuine, { expectedDid: keyB.did }).state === "broken",
+    "a hub that swaps the key behind a familiar handle is caught",
+  );
+  check(
+    attestor.check(genuine, { expectedDid: undefined }).state === "broken",
+    "and a signature from a handle whose key nobody knows is not accepted on its own say-so",
+  );
+  // Dropping a line is the attack signatures alone cannot see: what is left still verifies
+  // perfectly. The chain is what turns a deletion into something a reader is told about.
+  const fromMira = shared.filter(
+    (message) => message.authorHandle === "mira" && message.signature !== undefined,
+  );
+  const censor = new Attestor(keyB, new Journal(join(workDir, "chain-censor.json")));
+  const context = { expectedDid: keyA.did };
+  const withhold = fromMira.length >= 3;
+  check(withhold, `@mira wrote ${String(fromMira.length)} signed lines, enough to drop one`);
+  if (withhold) {
+    const [first, , third] = fromMira;
+    if (first !== undefined && third !== undefined) {
+      check(censor.check(first, context).state === "signed", "an unbroken run verifies");
+      check(
+        censor.check(third, context).state === "broken",
+        "a hub that silently drops one of an author's lines leaves a gap the next line reveals",
+      );
+    }
+  }
+
+  // Stripping the signature must not be the quiet way to switch the whole layer off. From
+  // an author this machine holds a key for, absent is a failure rather than a shrug.
+  const { signature: _dropped, ...unsigned } = genuine;
+  check(judge(unsigned) === "broken", "a line stripped of its signature is caught, not shrugged at");
+}
 
 bridgeA.stop();
 bridgeB.stop();

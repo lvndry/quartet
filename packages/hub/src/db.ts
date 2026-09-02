@@ -29,6 +29,7 @@ import {
   type Invite,
   type Message,
   type MessageKind,
+  type Signature,
 } from "@quartet/protocol";
 
 export interface AgentRow {
@@ -38,6 +39,8 @@ export interface AgentRow {
   display_name: string;
   bio: string | null;
   token: string;
+  /** Null on agents claimed before keys existed. They still work; they just prove nothing. */
+  did: string | null;
   created_at: string;
 }
 
@@ -49,6 +52,40 @@ interface InviteRow {
   status: string;
   created_at: string;
   limit_json: string | null;
+}
+
+interface MessageRow {
+  id: string;
+  author_agent: string;
+  kind: string;
+  text: string;
+  at: string;
+  sig_did: string | null;
+  sig_at: string | null;
+  sig_nonce: string | null;
+  sig_prev: string | null;
+  sig_value: string | null;
+}
+
+/**
+ * Reassemble a stored signature, or nothing at all.
+ *
+ * All-or-nothing on purpose. A row with some of the columns filled is a hub that has been
+ * edited underneath itself, and handing back a half-built signature would turn that into a
+ * verification failure on somebody's screen — which reads as "your correspondent is lying"
+ * rather than "this hub's database is damaged".
+ */
+function signatureOf(row: MessageRow): Signature | undefined {
+  const { sig_did, sig_at, sig_nonce, sig_prev, sig_value } = row;
+  if (sig_did === null || sig_at === null || sig_nonce === null) return undefined;
+  if (sig_prev === null || sig_value === null) return undefined;
+  return {
+    did: sig_did,
+    authoredAt: sig_at,
+    nonce: sig_nonce,
+    prev: sig_prev,
+    value: sig_value,
+  };
 }
 
 function nowIso(): string {
@@ -133,20 +170,42 @@ export class HubStore {
 
     // `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, so a database created
     // before the ceiling was configurable needs the column added explicitly.
-    const columns = this.db
-      .query<{ name: string }, []>("PRAGMA table_info(conversations)")
-      .all()
-      .map((column) => column.name);
-    const added: Record<string, string> = {
+    this.addMissingColumns("conversations", {
       budget_max: `INTEGER NOT NULL DEFAULT ${String(DEFAULT_TURN_BUDGET)}`,
       limit_json: `TEXT NOT NULL DEFAULT '{"kind":"turns","turns":${String(DEFAULT_TURN_BUDGET)}}'`,
       spent_usd: "REAL NOT NULL DEFAULT 0",
       spend_incomplete: "INTEGER NOT NULL DEFAULT 0",
       stopped: "INTEGER NOT NULL DEFAULT 0",
-    };
-    for (const [column, definition] of Object.entries(added)) {
-      if (!columns.includes(column)) {
-        this.db.exec(`ALTER TABLE conversations ADD COLUMN ${column} ${definition}`);
+    });
+
+    // Nullable, because a hub that predates signing still has agents that never presented a
+    // key, and they keep working. Unique through a partial index rather than a column
+    // constraint: SQLite cannot add UNIQUE in an ALTER, and NULLs must stay free to collide.
+    this.addMissingColumns("agents", { did: "TEXT" });
+
+    // The signature is stored in pieces rather than as a JSON blob so that a hub cannot be
+    // the thing that reshapes it. It goes out exactly as it came in.
+    this.addMissingColumns("messages", {
+      sig_did: "TEXT",
+      sig_at: "TEXT",
+      sig_nonce: "TEXT",
+      sig_prev: "TEXT",
+      sig_value: "TEXT",
+    });
+
+    this.db.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_did ON agents(did) WHERE did IS NOT NULL",
+    );
+  }
+
+  private addMissingColumns(table: string, definitions: Record<string, string>): void {
+    const present = this.db
+      .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((column) => column.name);
+    for (const [column, definition] of Object.entries(definitions)) {
+      if (!present.includes(column)) {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
       }
     }
 
@@ -173,23 +232,37 @@ export class HubStore {
     handle: string;
     displayName: string;
     bio?: string;
-    token: string;
+    did?: string;
   }): AgentRow | undefined {
     if (this.agentByHandle(input.handle) !== undefined) return undefined;
+    if (input.did !== undefined && this.agentByDid(input.did) !== undefined) return undefined;
     const ownerId = newId("own");
     const agentId = newId("agt");
     const at = nowIso();
     this.db.run("INSERT INTO owners (id, created_at) VALUES (?, ?)", [ownerId, at]);
     this.db.run(
-      `INSERT INTO agents (id, owner_id, handle, display_name, bio, token, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [agentId, ownerId, input.handle, input.displayName, input.bio ?? null, input.token, at],
+      `INSERT INTO agents (id, owner_id, handle, display_name, bio, token, did, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        agentId,
+        ownerId,
+        input.handle,
+        input.displayName,
+        input.bio ?? null,
+        // Vestigial. Nothing authenticates with this any more — a socket answers a signed
+        // challenge instead — but the column is NOT NULL UNIQUE from the first schema, and
+        // SQLite cannot drop an indexed column without rebuilding the table. Filled with
+        // something unique and never read again; the rebuild can wait for a reason of its own.
+        crypto.randomUUID().replaceAll("-", ""),
+        input.did ?? null,
+        at,
+      ],
     );
     return this.agentById(agentId);
   }
 
-  agentByToken(token: string): AgentRow | undefined {
-    return this.db.query<AgentRow, [string]>("SELECT * FROM agents WHERE token = ?").get(token) ?? undefined;
+  agentByDid(did: string): AgentRow | undefined {
+    return this.db.query<AgentRow, [string]>("SELECT * FROM agents WHERE did = ?").get(did) ?? undefined;
   }
 
   agentByHandle(handle: string): AgentRow | undefined {
@@ -429,14 +502,31 @@ export class HubStore {
     authorAgentId: string;
     kind: MessageKind;
     text: string;
+    signature?: Signature;
   }): Message | undefined {
     const author = this.agentById(input.authorAgentId);
     if (author === undefined) return undefined;
     const id = newId("msg");
     const at = nowIso();
+    const signature = input.signature;
     this.db.run(
-      "INSERT INTO messages (id, conversation_id, author_agent, kind, text, at) VALUES (?, ?, ?, ?, ?, ?)",
-      [id, input.conversationId, input.authorAgentId, input.kind, input.text, at],
+      `INSERT INTO messages
+         (id, conversation_id, author_agent, kind, text, at,
+          sig_did, sig_at, sig_nonce, sig_prev, sig_value)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.conversationId,
+        input.authorAgentId,
+        input.kind,
+        input.text,
+        at,
+        signature?.did ?? null,
+        signature?.authoredAt ?? null,
+        signature?.nonce ?? null,
+        signature?.prev ?? null,
+        signature?.value ?? null,
+      ],
     );
     this.db.run("UPDATE conversations SET last_at = ? WHERE id = ?", [at, input.conversationId]);
     return {
@@ -446,6 +536,7 @@ export class HubStore {
       kind: input.kind,
       text: input.text,
       at,
+      ...(signature !== undefined ? { signature } : {}),
     };
   }
 
@@ -459,8 +550,10 @@ export class HubStore {
   /** The most recent `limit` messages, oldest first — the window an agent answers from. */
   transcript(conversationId: string, limit: number): Message[] {
     const rows = this.db
-      .query<{ id: string; author_agent: string; kind: string; text: string; at: string }, [string, number]>(
-        "SELECT id, author_agent, kind, text, at FROM messages WHERE conversation_id = ? ORDER BY at DESC, rowid DESC LIMIT ?",
+      .query<MessageRow, [string, number]>(
+        `SELECT id, author_agent, kind, text, at,
+                sig_did, sig_at, sig_nonce, sig_prev, sig_value
+         FROM messages WHERE conversation_id = ? ORDER BY at DESC, rowid DESC LIMIT ?`,
       )
       .all(conversationId, limit);
     return rows
@@ -468,6 +561,7 @@ export class HubStore {
       .flatMap((row) => {
         const author = this.agentById(row.author_agent);
         if (author === undefined) return [];
+        const signature = signatureOf(row);
         return [
           {
             id: row.id,
@@ -476,6 +570,7 @@ export class HubStore {
             kind: row.kind as MessageKind,
             text: row.text,
             at: row.at,
+            ...(signature !== undefined ? { signature } : {}),
           },
         ];
       });
@@ -580,6 +675,7 @@ export class HubStore {
       handle: row.handle,
       displayName: row.display_name,
       ...(row.bio !== null ? { bio: row.bio } : {}),
+      ...(row.did !== null ? { did: row.did } : {}),
       ownerId: row.owner_id,
       online,
     };
