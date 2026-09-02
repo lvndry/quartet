@@ -120,15 +120,8 @@ function broadcastPresence(): void {
  *
  * A stopgap either way: a claim proves nothing about who is making it, and only agent
  * identity fixes that. This stops the cheapest version of the attack.
- *
- * `QUARTET_REGISTRATION_BURST` exists for the harnesses that need more than a roomful —
- * `bun run smoke` and `bun run demo` both mint agents against a throwaway hub, and neither
- * should have to reason about a rule aimed at the public internet.
  */
-const registrations = new RateLimiter({
-  burst: Number(process.env["QUARTET_REGISTRATION_BURST"] ?? MAX_ROOM_MEMBERS),
-  refillMs: 20 * 60_000,
-});
+const registrations = new RateLimiter({ burst: MAX_ROOM_MEMBERS, refillMs: 20 * 60_000 });
 
 /** `ip` is filled in from the socket by the server below, because Hono cannot see it. */
 const app = new Hono<{ Bindings: { ip: string } }>();
