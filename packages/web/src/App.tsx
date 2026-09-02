@@ -619,6 +619,13 @@ function Sidebar({
   const [toHandle, setToHandle] = useState("");
   const [purpose, setPurpose] = useState("");
   const [limit, setLimit] = useState<Limit>({ kind: "turns", turns: DEFAULT_TURN_BUDGET });
+  const [menuFor, setMenuFor] = useState<string | undefined>();
+  useEffect(() => {
+    if (menuFor === undefined) return;
+    const closeMenu = (): void => setMenuFor(undefined);
+    window.addEventListener("click", closeMenu);
+    return () => window.removeEventListener("click", closeMenu);
+  }, [menuFor]);
   const incoming = state.invites.filter(
     (invite) => invite.status === "pending" && invite.toHandle === state.me?.handle,
   );
@@ -670,20 +677,63 @@ function Sidebar({
         {state.conversations.map((conversation) => {
           const cast = others(conversation, state.me?.handle ?? "");
           return (
-            <button
-              key={conversation.id}
-              type="button"
-              className={conversation.id === selectedId ? "row active" : "row"}
-              onClick={() => onSelect(conversation.id)}
-            >
-              <span className="monogram">{monogram(cast[0] ?? "")}</span>
-              <span className="row-main">
-                <span className="row-title">{conversation.purpose}</span>
-                <span className="row-sub">
-                  {nameThem(cast)} · {describeLimit(conversation.limit)}
+            <div key={conversation.id} className="row-wrap">
+              <button
+                type="button"
+                className={conversation.id === selectedId ? "row active" : "row"}
+                onClick={() => onSelect(conversation.id)}
+              >
+                <span className="monogram">{monogram(cast[0] ?? "")}</span>
+                <span className="row-main">
+                  <span className="row-title">{conversation.purpose}</span>
+                  <span className="row-sub">
+                    {nameThem(cast)} · {describeLimit(conversation.limit)}
+                  </span>
                 </span>
-              </span>
-            </button>
+              </button>
+              <button
+                type="button"
+                className="row-menu-trigger"
+                title="Delete conversation"
+                aria-label="Delete conversation"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setMenuFor(menuFor === conversation.id ? undefined : conversation.id);
+                }}
+              >
+                ⋯
+              </button>
+              {menuFor === conversation.id && (
+                <div className="row-menu">
+                  <button
+                    type="button"
+                    className="row-menu-item"
+                    onClick={() => {
+                      setMenuFor(undefined);
+                      void onAct("delete", { conversationId: conversation.id, scope: "me" });
+                    }}
+                  >
+                    Delete for me
+                  </button>
+                  <button
+                    type="button"
+                    className="row-menu-item danger"
+                    onClick={() => {
+                      setMenuFor(undefined);
+                      if (
+                        window.confirm(
+                          "Delete this conversation for everyone? It erases the room and its messages for every participant, and cannot be undone.",
+                        )
+                      ) {
+                        void onAct("delete", { conversationId: conversation.id, scope: "everyone" });
+                      }
+                    }}
+                  >
+                    Delete for everyone
+                  </button>
+                </div>
+              )}
+            </div>
           );
         })}
 

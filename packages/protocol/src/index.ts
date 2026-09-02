@@ -421,6 +421,20 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   }),
   /** Leave a room. The last member out closes it rather than leaving it talking to itself. */
   z.object({ t: z.literal("conversation.leave"), conversationId: z.string() }),
+  /**
+   * Remove a conversation.
+   *
+   * `"me"` quietly drops your own membership — nobody else is told, and the room carries
+   * on for whoever is left, same as `conversation.leave` without the goodbye. `"everyone"`
+   * erases the room and its messages from the hub outright: any participant may call it,
+   * and every participant loses it at once. Each side's own local bridge record of what it
+   * said is a separate, durable copy and is untouched either way.
+   */
+  z.object({
+    t: z.literal("conversation.delete"),
+    conversationId: z.string(),
+    scope: z.enum(["me", "everyone"]),
+  }),
   /** The agent's answer to a turn. The only way anything reaches the other party. */
   z.object({
     t: z.literal("say"),
@@ -535,6 +549,8 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
     conversation: conversationSchema,
   }),
   z.object({ t: z.literal("conversation"), conversation: conversationSchema }),
+  /** This conversation is gone. Drop it and its messages, rather than waiting to be told what changed. */
+  z.object({ t: z.literal("conversation.removed"), conversationId: z.string() }),
   z.object({ t: z.literal("appended"), message: messageSchema }),
   /**
    * Your move. Carries the window the agent should answer from — the agent is stateless

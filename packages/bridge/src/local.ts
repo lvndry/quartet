@@ -282,6 +282,16 @@ async function handleApi(pathname: string, request: Request, bridge: Bridge): Pr
       return json({ ok: true });
     }
 
+    case "/api/delete": {
+      const conversationId = text("conversationId");
+      const scope = text("scope");
+      if (conversationId.length === 0 || (scope !== "me" && scope !== "everyone")) {
+        return json({ error: 'a conversation and a scope ("me" or "everyone") are both required' }, 400);
+      }
+      bridge.send({ t: "conversation.delete", conversationId, scope });
+      return json({ ok: true });
+    }
+
     case "/api/reopen": {
       const conversationId = text("conversationId");
       if (conversationId.length === 0) return json({ error: "conversationId is required" }, 400);

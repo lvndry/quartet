@@ -319,6 +319,20 @@ describe("a room somebody was brought into", () => {
   });
 });
 
+describe("a room erased outright", () => {
+  it("forgets a turn it was waiting on, without touching the store", () => {
+    const { store, mira, otto, conversation, orchestrator } = setup();
+    orchestrator.onNudge(conversation.id, mira.id, "go");
+    expect(orchestrator.hasTurn(conversation.id, mira.id)).toBe(true);
+
+    orchestrator.discard(conversation.id, [mira.id, otto.id]);
+
+    expect(orchestrator.hasTurn(conversation.id, mira.id)).toBe(false);
+    // Discarding is in-memory bookkeeping only — the caller deletes the room's own rows.
+    expect(store.conversation(conversation.id)).toBeDefined();
+  });
+});
+
 describe("a turn that takes minutes", () => {
   it("gets its deadline back each time the bridge says it is still working", async () => {
     // The deadline is for noticing a bridge that has gone away, not for capping how long an
