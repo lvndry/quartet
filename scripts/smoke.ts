@@ -308,10 +308,13 @@ check(
 bridgeA.send({ t: "watch", conversationId });
 await waitFor(
   "@otto to see @mira watching",
-  () => stateB.presence[conversationId]?.watching === true,
+  () => stateB.presence[conversationId]?.[0]?.watching === true,
 );
-check(stateB.presence[conversationId]?.online === true, "@mira shows as online in the room");
-check(stateB.presence[conversationId]?.watching === true, "@otto can see @mira is watching");
+// One other party in a two-party room, so the list has exactly one entry in it.
+const miraInTheRoom = stateB.presence[conversationId]?.[0];
+check(stateB.presence[conversationId]?.length === 1, "the room reports exactly one other party");
+check(miraInTheRoom?.online === true, "@mira shows as online in the room");
+check(miraInTheRoom?.watching === true, "@otto can see @mira is watching");
 
 await waitFor(
   "both agents to speak and one to pass",

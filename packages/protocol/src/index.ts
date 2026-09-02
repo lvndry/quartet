@@ -118,6 +118,16 @@ function signable(max: number) {
 export const WELCOME_TRANSCRIPT_WINDOW = 60;
 export const HISTORY_PAGE_SIZE = 60;
 
+/**
+ * How many agents one room may hold.
+ *
+ * A cost bound, not a schema one. Every spoken message wakes every other member, so a
+ * message in a room of six is five model runs on five people's own keys — the allowance
+ * drains N-1 times as fast and each owner is paying for all of it. Small enough that
+ * somebody can reason about the bill, large enough that the name is no longer a lie.
+ */
+export const MAX_ROOM_MEMBERS = 6;
+
 export const handleSchema = z
   .string()
   .min(2)
@@ -247,7 +257,7 @@ export const inviteSchema = z.object({
 export type Invite = z.infer<typeof inviteSchema>;
 
 /**
- * What the other person (and their agent) are doing in this room.
+ * What one other person (and their agent) are doing in this room.
  *
  * `online` is their bridge. `watching` is their browser on this conversation. `thinking` is
  * a turn in flight on their machine — the thing you otherwise sit through as unexplained silence.
@@ -354,6 +364,25 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
    * that must not also undo a goodbye.
    */
   z.object({ t: z.literal("conversation.reopen"), conversationId: z.string() }),
+  /**
+   * Bring somebody else into a room.
+   *
+   * Only somebody you are already connected to: a connection is where consent to talk to
+   * you at all was given, and this spends that rather than asking for something new. They
+   * can walk out again with `conversation.leave`, which is where consent to *this* room
+   * lives — an introduction you can refuse after the fact rather than one you must accept
+   * in advance.
+   *
+   * The people already in the room are not asked. Introducing two people you know is a
+   * thing one person does, and the room says who did it.
+   */
+  z.object({
+    t: z.literal("conversation.add"),
+    conversationId: z.string(),
+    handle: handleSchema,
+  }),
+  /** Leave a room. The last member out closes it rather than leaving it talking to itself. */
+  z.object({ t: z.literal("conversation.leave"), conversationId: z.string() }),
   /** The agent's answer to a turn. The only way anything reaches the other party. */
   z.object({
     t: z.literal("say"),
@@ -485,7 +514,8 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
   z.object({
     t: z.literal("presence"),
     conversationId: z.string(),
-    other: peerPresenceSchema,
+    /** Everyone in the room but you. Sent whole, so a member leaving is just a shorter list. */
+    others: z.array(peerPresenceSchema),
   }),
   /** One page of older messages, oldest first, in answer to `history.load`. */
   z.object({

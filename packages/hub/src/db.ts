@@ -183,6 +183,21 @@ export class HubStore {
         at               TEXT NOT NULL
       );
 
+      -- Who is in a room.
+      --
+      -- Membership used to be read off the room's connection, which is a pair by
+      -- definition, so every room was two people whatever anyone wanted. A connection is
+      -- still a pair — it is a relationship between two people and that is the right
+      -- model — but it is now only where a room started, not who is in it.
+      CREATE TABLE IF NOT EXISTS conversation_members (
+        conversation_id TEXT NOT NULL REFERENCES conversations(id),
+        agent_id        TEXT NOT NULL REFERENCES agents(id),
+        joined_at       TEXT NOT NULL,
+        PRIMARY KEY (conversation_id, agent_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_members_agent ON conversation_members(agent_id);
+
       -- Turns the hub has charged for and is waiting on.
       --
       -- Durable because the charge is: the budget is written to disk at dispatch, so a hub
@@ -227,6 +242,18 @@ export class HubStore {
     if (!conversationColumns.includes("state") && conversationColumns.includes("stopped")) {
       this.db.exec("UPDATE conversations SET state = 'halted' WHERE stopped = 1");
     }
+
+    // Rooms written before membership was its own table have theirs implied by their
+    // connection. Seeding from that is exact rather than a guess: a two-party room's members
+    // were precisely the two ends of the pair it came from.
+    this.db.exec(`
+      INSERT OR IGNORE INTO conversation_members (conversation_id, agent_id, joined_at)
+      SELECT c.id, n.a_agent, c.created_at FROM conversations c
+        JOIN connections n ON n.id = c.connection_id;
+      INSERT OR IGNORE INTO conversation_members (conversation_id, agent_id, joined_at)
+      SELECT c.id, n.b_agent, c.created_at FROM conversations c
+        JOIN connections n ON n.id = c.connection_id;
+    `);
 
     this.addMissingColumns("invites", {
       limit_json: `TEXT NOT NULL DEFAULT '{"kind":"turns","turns":${String(DEFAULT_TURN_BUDGET)}}'`,
@@ -451,13 +478,26 @@ export class HubStore {
 
   /* ---------------- conversations and messages ---------------- */
 
+  /**
+   * Open a room on a connection, with both ends of it as the founding members.
+   *
+   * `openedBy` goes in first. Membership order decides who is offered a turn when several
+   * people are owed one and the allowance will not stretch to all of them, so it has to
+   * mean something — and a connection stores its pair sorted by id, which would have made
+   * that "whoever's id sorts lower". Whose room it is, is the honest answer.
+   */
   createConversation(
     connectionId: string,
     purpose: string,
     limit: Limit = DEFAULT_LIMIT,
+    openedBy?: string,
   ): Conversation | undefined {
-    const participants = this.connectionParticipants(connectionId);
-    if (participants === undefined) return undefined;
+    const pair = this.connectionParticipants(connectionId);
+    if (pair === undefined) return undefined;
+    const participants =
+      openedBy !== undefined && pair.includes(openedBy)
+        ? [openedBy, ...pair.filter((agentId) => agentId !== openedBy)]
+        : pair;
     const id = newId("cnv");
     const at = nowIso();
     const turns = limit.kind === "turns" ? limit.turns : DEFAULT_TURN_BUDGET;
@@ -465,6 +505,7 @@ export class HubStore {
       "INSERT INTO conversations (id, connection_id, purpose, budget, budget_max, limit_json, created_at, last_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       [id, connectionId, purpose, turns, turns, JSON.stringify(limit), at, at],
     );
+    for (const agentId of participants) this.addMember(id, agentId);
     return this.conversation(id);
   }
 
@@ -519,12 +560,15 @@ export class HubStore {
       )
       .get(id);
     if (row === null || row === undefined) return undefined;
-    const participants = this.connectionParticipants(row.connection_id);
-    if (participants === undefined) return undefined;
-    const handles = participants.flatMap((agentId) => {
-      const agent = this.agentById(agentId);
-      return agent ? [agent.handle] : [];
-    });
+    const handles = this.db
+      .query<{ handle: string }, [string]>(
+        `SELECT a.handle FROM conversation_members m
+         JOIN agents a ON a.id = m.agent_id
+         WHERE m.conversation_id = ?
+         ORDER BY m.joined_at, m.rowid`,
+      )
+      .all(id)
+      .map((member) => member.handle);
     return {
       id: row.id,
       connectionId: row.connection_id,
@@ -541,27 +585,69 @@ export class HubStore {
 
   conversationsFor(agentId: string): Conversation[] {
     const rows = this.db
-      .query<{ id: string }, [string, string]>(
+      .query<{ id: string }, [string]>(
         `SELECT c.id FROM conversations c
-         JOIN connections n ON n.id = c.connection_id
-         WHERE n.a_agent = ? OR n.b_agent = ?
+         JOIN conversation_members m ON m.conversation_id = c.id
+         WHERE m.agent_id = ?
          ORDER BY c.last_at DESC`,
       )
-      .all(agentId, agentId);
+      .all(agentId);
     return rows.flatMap((row) => {
       const conversation = this.conversation(row.id);
       return conversation ? [conversation] : [];
     });
   }
 
-  /** Both agent ids in a conversation, so the hub knows who to wake and who to skip. */
-  conversationParticipantIds(conversationId: string): [string, string] | undefined {
-    const row = this.db
-      .query<{ connection_id: string }, [string]>(
-        "SELECT connection_id FROM conversations WHERE id = ?",
-      )
+  /**
+   * Everyone in a conversation, so the hub knows who to wake and who to skip.
+   *
+   * Ordered by when they joined, which is the order turns are offered in when several
+   * people are owed one at once — the room's own history rather than whatever the database
+   * felt like returning.
+   *
+   * Undefined means no such room. A room with no members left is closed and returns an
+   * empty list, which is different and reads differently at every call site.
+   */
+  conversationParticipantIds(conversationId: string): string[] | undefined {
+    const exists = this.db
+      .query<{ id: string }, [string]>("SELECT id FROM conversations WHERE id = ?")
       .get(conversationId);
-    return row ? this.connectionParticipants(row.connection_id) : undefined;
+    if (exists === null || exists === undefined) return undefined;
+    return this.db
+      .query<{ agent_id: string }, [string]>(
+        `SELECT agent_id FROM conversation_members
+         WHERE conversation_id = ? ORDER BY joined_at, rowid`,
+      )
+      .all(conversationId)
+      .map((member) => member.agent_id);
+  }
+
+  /* ---------------- who is in a room ---------------- */
+
+  addMember(conversationId: string, agentId: string): void {
+    this.db.run(
+      `INSERT OR IGNORE INTO conversation_members (conversation_id, agent_id, joined_at)
+       VALUES (?, ?, ?)`,
+      [conversationId, agentId, nowIso()],
+    );
+  }
+
+  removeMember(conversationId: string, agentId: string): void {
+    this.db.run("DELETE FROM conversation_members WHERE conversation_id = ? AND agent_id = ?", [
+      conversationId,
+      agentId,
+    ]);
+    // A turn owed to somebody who has left is not owed to anybody.
+    this.clearInFlight(conversationId, agentId);
+  }
+
+  isMember(conversationId: string, agentId: string): boolean {
+    const row = this.db
+      .query<{ agent_id: string }, [string, string]>(
+        "SELECT agent_id FROM conversation_members WHERE conversation_id = ? AND agent_id = ?",
+      )
+      .get(conversationId, agentId);
+    return row !== null && row !== undefined;
   }
 
   appendMessage(input: {

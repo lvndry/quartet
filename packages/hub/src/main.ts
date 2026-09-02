@@ -15,6 +15,7 @@ import {
   describeFrameRejection,
   handleSchema,
   HISTORY_PAGE_SIZE,
+  MAX_ROOM_MEMBERS,
   parseClientFrame,
   type Agent,
   type Authorship,
@@ -115,25 +116,25 @@ function broadcastPresence(): void {
 }
 
 /**
- * How many identities one address may claim: three at once, then one every twenty minutes.
+ * How many identities one address may claim: a roomful at once, then one every twenty minutes.
  *
- * Generous for the case it has to serve — a person setting themselves up, getting the
- * handle wrong, and trying again — and useless for taking a namespace. It is a stopgap
- * either way: a claim proves nothing about who is making it, and only agent identity fixes
- * that. This just stops the cheapest version of the attack.
- */
-/**
- * How many handles one caller may claim before waiting.
+ * The burst is `MAX_ROOM_MEMBERS` because that is the largest number of agents somebody has
+ * a legitimate reason to stand up in one go — a full room on one machine, for a demo or a
+ * test. It was three, which is a number with nothing behind it, and it turned out to block
+ * exactly that case. What actually stops a namespace being taken is the refill rate, not
+ * the burst.
  *
- * Three per twenty minutes is aimed at a person setting up their agents, not at a script
- * taking every readable handle on a hub. The burst is an environment variable because it is
- * a policy an operator may reasonably disagree with — a private hub handing out handles to a
- * team wants a larger one — and because a test that drove the real limit would otherwise
- * have to sit out the window.
+ * A stopgap either way: a claim proves nothing about who is making it, and only agent
+ * identity fixes that. This stops the cheapest version of the attack.
+ *
+ * `QUARTET_REGISTRATION_BURST` exists for the harnesses that need more than a roomful —
+ * `bun run smoke` and `bun run demo` both mint agents against a throwaway hub, and neither
+ * should have to reason about a rule aimed at the public internet.
  */
-const REGISTRATION_BURST = Number(process.env["QUARTET_REGISTRATION_BURST"] ?? 3);
-
-const registrations = new RateLimiter({ burst: REGISTRATION_BURST, refillMs: 20 * 60_000 });
+const registrations = new RateLimiter({
+  burst: Number(process.env["QUARTET_REGISTRATION_BURST"] ?? MAX_ROOM_MEMBERS),
+  refillMs: 20 * 60_000,
+});
 
 /** `ip` is filled in from the socket by the server below, because Hono cannot see it. */
 const app = new Hono<{ Bindings: { ip: string } }>();
@@ -394,7 +395,13 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       // Accepting establishes the relationship *and* opens the first conversation, because
       // the invite's purpose line is already the first thing somebody wanted to talk about.
       const connectionId = store.createConnection(invite.from_agent, invite.to_agent);
-      const conversation = store.createConversation(connectionId, invite.purpose, settled.limit);
+      // The inviter opened it: it was their purpose line and theirs is the first turn.
+      const conversation = store.createConversation(
+        connectionId,
+        invite.purpose,
+        settled.limit,
+        invite.from_agent,
+      );
       if (conversation === undefined) return;
 
       for (const participant of [from.id, to.id]) {
@@ -418,7 +425,12 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         send(agentId, { t: "error", detail: "you are not part of that connection" });
         return;
       }
-      const conversation = store.createConversation(frame.connectionId, frame.purpose, frame.limit);
+      const conversation = store.createConversation(
+        frame.connectionId,
+        frame.purpose,
+        frame.limit,
+        agentId,
+      );
       if (conversation === undefined) return;
       for (const participant of participants) {
         send(participant, { t: "conversation", conversation });
@@ -490,6 +502,88 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       if (stopped !== undefined) {
         for (const participant of participants) send(participant, { t: "appended", message: stopped });
       }
+      return;
+    }
+
+    case "conversation.add": {
+      const participants = store.conversationParticipantIds(frame.conversationId);
+      if (participants === undefined || !participants.includes(agentId)) {
+        send(agentId, { t: "error", detail: "you are not in that conversation" });
+        return;
+      }
+      if (participants.length >= MAX_ROOM_MEMBERS) {
+        send(agentId, {
+          t: "error",
+          detail: `a room holds at most ${String(MAX_ROOM_MEMBERS)} agents — every message wakes all of them`,
+        });
+        return;
+      }
+      const joining = store.agentByHandle(frame.handle);
+      if (joining === undefined) {
+        send(agentId, { t: "error", detail: "no agent with that handle" });
+        return;
+      }
+      if (participants.includes(joining.id)) {
+        send(agentId, { t: "error", detail: `@${frame.handle} is already here` });
+        return;
+      }
+      // A connection is where somebody agreed to talk to you at all, and this spends that
+      // rather than asking for something new. Without the check, knowing a handle would be
+      // enough to pull a stranger into a room.
+      if (store.connectionBetween(agentId, joining.id) === undefined) {
+        send(agentId, {
+          t: "error",
+          detail: `you are not connected to @${frame.handle} — invite them first`,
+        });
+        return;
+      }
+
+      store.addMember(frame.conversationId, joining.id);
+      const inviter = store.agentById(agentId);
+      const note = store.appendMessage({
+        conversationId: frame.conversationId,
+        authorAgentId: agentId,
+        kind: "system",
+        text: `@${joining.handle} was brought in by @${inviter?.handle ?? "someone"}`,
+      });
+      // Everyone gets the new membership, and the newcomer gets the room and its history
+      // the same way they would after a reconnect.
+      const grown = store.conversation(frame.conversationId);
+      for (const participant of store.conversationParticipantIds(frame.conversationId) ?? []) {
+        if (grown !== undefined) send(participant, { t: "conversation", conversation: grown });
+        if (note !== undefined) send(participant, { t: "appended", message: note });
+      }
+      sendWelcome(joining.id);
+      presence.announce(frame.conversationId);
+      // They have heard nothing yet, so the room owes them a turn if anything has been said.
+      orchestrator.onJoined(frame.conversationId, joining.id);
+      return;
+    }
+
+    case "conversation.leave": {
+      const participants = store.conversationParticipantIds(frame.conversationId);
+      if (participants === undefined || !participants.includes(agentId)) {
+        send(agentId, { t: "error", detail: "you are not in that conversation" });
+        return;
+      }
+      const leaving = store.agentById(agentId);
+      store.removeMember(frame.conversationId, agentId);
+      const note = store.appendMessage({
+        conversationId: frame.conversationId,
+        authorAgentId: agentId,
+        kind: "system",
+        text: `@${leaving?.handle ?? "someone"} left`,
+      });
+      orchestrator.onLeft(frame.conversationId, agentId);
+
+      const shrunk = store.conversation(frame.conversationId);
+      // The leaver is told too: their app has to stop showing a room they are not in, and
+      // this is the last frame about it they will get.
+      for (const participant of [...(store.conversationParticipantIds(frame.conversationId) ?? []), agentId]) {
+        if (shrunk !== undefined) send(participant, { t: "conversation", conversation: shrunk });
+        if (note !== undefined) send(participant, { t: "appended", message: note });
+      }
+      presence.announce(frame.conversationId);
       return;
     }
 

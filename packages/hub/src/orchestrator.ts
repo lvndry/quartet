@@ -201,6 +201,16 @@ export class Orchestrator {
     this.apply(conversationId, { kind: "reopen" });
   }
 
+  /** Somebody joined one room. Ask their agent for whatever the room has been holding. */
+  onJoined(conversationId: string, agentId: string): void {
+    this.apply(conversationId, { kind: "arrived", agent: agentId });
+  }
+
+  /** Somebody left one room. Call after the store no longer counts them a member. */
+  onLeft(conversationId: string, agentId: string): void {
+    this.apply(conversationId, { kind: "left", agent: agentId });
+  }
+
   /**
    * A bridge came back. Ask it for anything the room has been holding.
    *
