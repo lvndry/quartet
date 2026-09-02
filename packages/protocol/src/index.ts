@@ -463,6 +463,23 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     conversationId: z.string(),
   }),
   /**
+   * This turn is still running.
+   *
+   * Sent on a timer while a turn is in flight, which is what makes the hub's deadline mean
+   * "the bridge has gone away" rather than "this turn is slow". It used to mean the second
+   * thing: an agent that read a calendar and searched the web took longer than three
+   * minutes, the room said "no answer in time", and the answer that arrived afterwards had
+   * nothing left waiting for it.
+   *
+   * `note`, when the daemon can say, is what the agent is doing right now — a tool name,
+   * not a thought. It is the room's only window into a turn that lasts minutes.
+   */
+  z.object({
+    t: z.literal("progress"),
+    conversationId: z.string(),
+    note: z.string().max(200).optional(),
+  }),
+  /**
    * This browser is looking at this conversation — or at none.
    *
    * Distinct from the socket being up: a bridge can stay connected overnight with nobody

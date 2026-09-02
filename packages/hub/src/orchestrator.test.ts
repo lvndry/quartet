@@ -318,3 +318,64 @@ describe("a room somebody was brought into", () => {
     expect(dispatchedTo(frames)).toBe(1);
   });
 });
+
+describe("a turn that takes minutes", () => {
+  it("gets its deadline back each time the bridge says it is still working", async () => {
+    // The deadline is for noticing a bridge that has gone away, not for capping how long an
+    // agent may think. Without this, a turn that read a calendar and searched the web tripped
+    // it every time and the room announced "no answer in time" over a live run.
+    const { store, mira, conversation, orchestrator } = setup();
+    orchestrator.onNudge(conversation.id, mira.id, "take your time");
+    expect(orchestrator.hasTurn(conversation.id, mira.id)).toBe(true);
+
+    // Recovered with a dispatch time long past its deadline, then heartbeaten: the turn
+    // survives, where without the heartbeat it would be given up on immediately.
+    const revived = restart(store);
+    revived.orchestrator.recover(Date.now() + 60 * 60_000);
+    revived.orchestrator.onProgress(conversation.id, mira.id);
+    await Bun.sleep(5);
+
+    expect(revived.orchestrator.hasTurn(conversation.id, mira.id)).toBe(true);
+    const said = store.transcript(conversation.id, 20);
+    expect(said.some((message) => message.text === "no answer in time")).toBe(false);
+  });
+
+  it("ignores a heartbeat for a turn nobody is waiting on", () => {
+    const { conversation, mira, orchestrator } = setup();
+    // No dispatch, so nothing to keep alive. This must not invent a deadline.
+    expect(() => orchestrator.onProgress(conversation.id, mira.id)).not.toThrow();
+    expect(orchestrator.hasTurn(conversation.id, mira.id)).toBe(false);
+  });
+
+  it("still delivers an answer that arrives after the room gave up", async () => {
+    const { store, mira, otto, conversation, orchestrator } = setup();
+    orchestrator.onNudge(conversation.id, mira.id, "go");
+
+    // Let the deadline actually fire, the way it does when a bridge goes quiet.
+    const revived = restart(store);
+    revived.orchestrator.recover(Date.now() + 60 * 60_000);
+    await Bun.sleep(5);
+    expect(revived.orchestrator.hasTurn(conversation.id, mira.id)).toBe(false);
+
+    // Then the daemon finishes anyway. The words crossed, so they belong in the room, and
+    // @otto is still owed a reply to them.
+    const late = store.appendMessage({
+      conversationId: conversation.id,
+      authorAgentId: mira.id,
+      kind: "agent",
+      text: "sorry, that took a while",
+    });
+    if (late === undefined) throw new Error("message");
+    revived.orchestrator.onTurnSettled(conversation.id, mira.id, "spoke");
+    revived.orchestrator.onMessage(conversation.id, mira.id, late);
+
+    const delivered = revived.frames.some(
+      (frame) => frame.t === "appended" && frame.message.text === "sorry, that took a while",
+    );
+    expect(delivered).toBe(true);
+    // And it wakes @otto, because a late answer is still an answer he has not heard.
+    const woken = revived.frames.some((frame) => frame.t === "turn");
+    expect(woken).toBe(true);
+    void otto;
+  });
+});

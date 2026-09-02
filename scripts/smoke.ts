@@ -782,6 +782,23 @@ check(
   "a message in a room of three wakes both of the others",
 );
 
+// A heartbeat for a room you are in is accepted, and for one you are not is refused. This
+// is the frame that stops the hub reading a slow turn as a dead bridge, so the wire path
+// for it matters as much as the timer that drives it.
+const errorsBefore = nia.count("error");
+nia.send({ t: "progress", conversationId });
+await Bun.sleep(600);
+check(
+  nia.count("error") === errorsBefore,
+  "a member's heartbeat for its own room is accepted",
+);
+ada.send({ t: "progress", conversationId });
+await waitFor("the outsider's heartbeat to be refused", () => ada.count("error") > errorsBefore);
+check(
+  String(ada.last<{ detail: string }>("error")?.detail ?? "").includes("not in that conversation"),
+  "and a heartbeat from outside the room is not",
+);
+
 nia.send({ t: "conversation.leave", conversationId });
 await waitFor(
   "the room to shrink",

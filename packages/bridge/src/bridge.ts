@@ -115,6 +115,14 @@ const log = logger("bridge");
 const hubLog = logger("hub");
 const daemonLog = logger("daemon");
 
+/**
+ * How often to tell the hub a turn is still running.
+ *
+ * Comfortably inside the hub's own deadline, so one dropped beat is survivable and only a
+ * bridge that has genuinely stopped answering trips it.
+ */
+const PROGRESS_EVERY_MS = 45_000;
+
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 
@@ -146,6 +154,8 @@ export class Bridge {
   private readonly pendingSteer = new Map<string, string>();
   /** Frames that arrived while the socket was down. Flushed after welcome, after hello. */
   private readonly outbound: ClientFrame[] = [];
+  /** Heartbeat timers for turns currently running, one per conversation. */
+  private readonly beating = new Map<string, ReturnType<typeof setInterval>>();
 
   private readonly verdicts = new Map<string, Verdict>();
 
@@ -172,6 +182,7 @@ export class Bridge {
 
   stop(): void {
     this.closing = true;
+    for (const conversationId of [...this.beating.keys()]) this.stopBeating(conversationId);
     this.socket?.close();
   }
 
@@ -682,6 +693,7 @@ export class Bridge {
     });
     this.activity.set(conversationId, { state: "thinking", since: startedAt });
     this.publish();
+    this.startBeating(conversationId);
 
     // Composed to what this machine's daemon will accept. What does not fit is reported
     // rather than silently lost, and never turned into a failed turn: a size ceiling on one
@@ -727,6 +739,35 @@ export class Bridge {
     this.finishTurn(conversationId, result, startedAt, this.pendingSteer.get(conversationId));
   }
 
+  /**
+   * Tell the hub, on a timer, that this turn is still running.
+   *
+   * The hub cannot see a model thinking; all it has is silence, and it used to read three
+   * minutes of silence as a bridge that had died. A turn that reads a calendar and searches
+   * the web exceeds that easily, so the room announced "no answer in time" while the run was
+   * alive and the answer, when it came, had nothing waiting for it.
+   */
+  private startBeating(conversationId: string): void {
+    this.stopBeating(conversationId);
+    this.beating.set(
+      conversationId,
+      setInterval(() => {
+        if (this.activity.get(conversationId)?.state === "idle") {
+          this.stopBeating(conversationId);
+          return;
+        }
+        this.send({ t: "progress", conversationId });
+      }, PROGRESS_EVERY_MS),
+    );
+  }
+
+  private stopBeating(conversationId: string): void {
+    const timer = this.beating.get(conversationId);
+    if (timer === undefined) return;
+    clearInterval(timer);
+    this.beating.delete(conversationId);
+  }
+
   private finishTurn(
     conversationId: string,
     result: TurnResult,
@@ -734,6 +775,9 @@ export class Bridge {
     steer: string | undefined,
   ): void {
     const took = `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+    // A parked run is the only outcome that is still going, and it has the hub's longer
+    // approval deadline rather than this heartbeat.
+    this.stopBeating(conversationId);
 
     switch (result.kind) {
       case "said": {
