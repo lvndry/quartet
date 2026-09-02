@@ -284,6 +284,20 @@ export class Orchestrator {
   }
 
   /** The owner is deciding something; keep the turn, give them time. */
+  /**
+   * The bridge says this turn is still running, so give it the deadline back.
+   *
+   * The deadline exists to notice a bridge that has gone away, not to cap how long an agent
+   * may think. Without a heartbeat the two were the same number, and a turn that used tools
+   * tripped it every time — the room announced "no answer in time" while the run was very
+   * much alive, and whatever it eventually said arrived to an empty room.
+   */
+  onProgress(conversationId: string, agentId: string): void {
+    const inFlight = this.turns.get(conversationId);
+    if (inFlight?.[agentId] === undefined) return;
+    this.armDeadline(conversationId, agentId);
+  }
+
   onWaiting(conversationId: string, agentId: string): void {
     const inFlight = this.turns.get(conversationId);
     if (inFlight?.[agentId] === undefined) return;

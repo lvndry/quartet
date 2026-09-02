@@ -680,6 +680,16 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       return;
     }
 
+    case "progress": {
+      const participants = store.conversationParticipantIds(frame.conversationId);
+      if (participants === undefined || !participants.includes(agentId)) {
+        send(agentId, { t: "error", detail: "you are not in that conversation" });
+        return;
+      }
+      orchestrator.onProgress(frame.conversationId, agentId);
+      return;
+    }
+
     case "waiting": {
       const participants = store.conversationParticipantIds(frame.conversationId);
       if (participants === undefined || !participants.includes(agentId)) {

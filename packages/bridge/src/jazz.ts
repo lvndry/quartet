@@ -47,6 +47,32 @@ export type TurnResult =
  */
 export const MAX_PAYLOAD_BYTES = 18_000;
 
+/**
+ * How long to hold the webhook request open for one turn.
+ *
+ * Bun's `fetch` gives up at five minutes by default, and nothing here used to override it —
+ * so an agent that read a calendar, searched the web and wrote a file had its request torn
+ * out from under it while the daemon carried on and finished the run. The answer went
+ * nowhere and the room was told the daemon was not reachable, which was false: it was
+ * reachable throughout, the request simply did not outlive its own timeout.
+ *
+ * Half an hour, because a turn that uses tools takes minutes and there is no reason to
+ * guess at a tighter bound. Still bounded, so a wedged daemon does not hold a turn forever.
+ */
+export const TURN_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * Whether this is the request giving up rather than the daemon being absent.
+ *
+ * Worth separating because they need opposite things said. "Not reachable" sends somebody
+ * to check whether jazz is running; a timeout means it is running and probably still
+ * working, and the useful next step is `jazz runs`.
+ */
+function isTimeout(error: unknown): boolean {
+  const name = error instanceof Error ? error.name : "";
+  return name === "TimeoutError" || name === "AbortError";
+}
+
 export async function runTurn(
   daemon: DaemonSettings,
   threadKey: string,
@@ -69,8 +95,17 @@ export async function runTurn(
         "x-jazz-thread": threadKey,
       },
       body: payload,
+      signal: AbortSignal.timeout(TURN_TIMEOUT_MS),
     });
-  } catch {
+  } catch (error) {
+    if (isTimeout(error)) {
+      return {
+        kind: "failed",
+        reason:
+          `the daemon did not answer within ${String(Math.round(TURN_TIMEOUT_MS / 60_000))}m — ` +
+          "the run may still be going; check `jazz runs`",
+      };
+    }
     return { kind: "failed", reason: "jazz daemon is not reachable — is `jazz daemon` running?" };
   }
 
