@@ -48,18 +48,43 @@ export type TurnResult =
 export const MAX_PAYLOAD_BYTES = 18_000;
 
 /**
- * How long to hold the webhook request open for one turn.
+ * How long the daemon can go without reporting progress before a turn gives up on it.
  *
- * Bun's `fetch` gives up at five minutes by default, and nothing here used to override it —
- * so an agent that read a calendar, searched the web and wrote a file had its request torn
- * out from under it while the daemon carried on and finished the run. The answer went
- * nowhere and the room was told the daemon was not reachable, which was false: it was
- * reachable throughout, the request simply did not outlive its own timeout.
+ * Bun's `fetch` gives up at five minutes by default, and a fixed deadline on top of that has
+ * the same problem one level up: a turn that reads a calendar, searches the web and writes a
+ * file can legitimately run long, and a wall-clock cap either has to be too short for that or
+ * too long to catch a daemon that is actually wedged. Neither number is right, because the
+ * question a fixed deadline can't answer is "is it still working?".
  *
- * Half an hour, because a turn that uses tools takes minutes and there is no reason to
- * guess at a tighter bound. Still bounded, so a wedged daemon does not hold a turn forever.
+ * The progress heartbeat already answers that: `createIdleWatchdog` below re-arms this
+ * deadline on every progress event, so a turn that keeps reporting tool use never trips it,
+ * no matter how long it runs. Only real silence — no progress at all for this long — ends the
+ * turn. Half an hour, because that is a long time for the daemon to go quiet while genuinely
+ * healthy.
  */
 export const TURN_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * An abort signal that fires after `idleMs` of silence, not before — `poke()` pushes the
+ * deadline out again each time it is called, so a caller that keeps hearing from the daemon
+ * can keep a turn alive indefinitely while one that goes quiet still gets bounded.
+ */
+export function createIdleWatchdog(idleMs: number): {
+  readonly signal: AbortSignal;
+  readonly poke: () => void;
+  readonly dispose: () => void;
+} {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout>;
+  const arm = (): void => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      controller.abort(new DOMException("The operation timed out.", "TimeoutError"));
+    }, idleMs);
+  };
+  arm();
+  return { signal: controller.signal, poke: arm, dispose: () => clearTimeout(timer) };
+}
 
 /**
  * Whether this is the request giving up rather than the daemon being absent.
@@ -89,6 +114,11 @@ export async function runTurn(
   threadKey: string,
   payload: string,
   /**
+   * From `createIdleWatchdog` — the caller owns arming it, poking it on progress, and
+   * disposing it, since only the caller sees the progress events that should keep it alive.
+   */
+  signal: AbortSignal,
+  /**
    * Where this machine's daemon should report what the run is doing.
    *
    * Optional because a jazz without the route ignores it, and because a turn is perfectly
@@ -114,15 +144,15 @@ export async function runTurn(
         ...(progressUrl !== undefined ? { [PROGRESS_HEADER]: progressUrl } : {}),
       },
       body: payload,
-      signal: AbortSignal.timeout(TURN_TIMEOUT_MS),
+      signal,
     });
   } catch (error) {
     if (isTimeout(error)) {
       return {
         kind: "failed",
         reason:
-          `the daemon did not answer within ${String(Math.round(TURN_TIMEOUT_MS / 60_000))}m — ` +
-          "the run may still be going; check `jazz runs`",
+          `the daemon has gone quiet for ${String(Math.round(TURN_TIMEOUT_MS / 60_000))}m with no ` +
+          "progress — the run may still be going; check `jazz runs`",
       };
     }
     return { kind: "failed", reason: "jazz daemon is not reachable — is `jazz daemon` running?" };
@@ -315,7 +345,7 @@ export async function ensureJazzWebhook(input: {
     name: input.webhookName,
     agentId: input.agentId,
     conversation: "threaded",
-    promptTemplate: webhookPromptTemplate(),
+    promptTemplate: await webhookPromptTemplate(),
     description: "quartet — one turn in a conversation with another person's agent",
   };
 

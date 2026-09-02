@@ -32,8 +32,10 @@ import type { Attestor, Verdict } from "./attest";
 import { KnownKeys, type Conflict } from "./known";
 import {
   answerParkedRun,
+  createIdleWatchdog,
   MAX_PAYLOAD_BYTES,
   runTurn,
+  TURN_TIMEOUT_MS,
   type HumanQuestion,
   type TurnResult,
 } from "./jazz";
@@ -172,6 +174,13 @@ export class Bridge {
    * calendar" is not a sentence somebody else should be able to put in the room.
    */
   private readonly progressKeys = new Map<string, string>();
+  /**
+   * The idle watchdog's `poke`, per conversation with a turn in flight.
+   *
+   * `onDaemonProgress` and `takeTurn` share a conversation id but not a call stack — this is
+   * how a progress event reaches the watchdog guarding the fetch that is still awaiting it.
+   */
+  private readonly watchdogPokes = new Map<string, () => void>();
 
   private readonly verdicts = new Map<string, Verdict>();
 
@@ -742,8 +751,19 @@ export class Bridge {
         ? undefined
         : `${this.localOrigin}/progress/${progressKey}`;
 
-    const result = await runTurn(this.daemon, conversationId, composed.payload, progressUrl);
+    const watchdog = createIdleWatchdog(TURN_TIMEOUT_MS);
+    this.watchdogPokes.set(conversationId, watchdog.poke);
+
+    const result = await runTurn(
+      this.daemon,
+      conversationId,
+      composed.payload,
+      watchdog.signal,
+      progressUrl,
+    );
     this.progressKeys.delete(progressKey);
+    this.watchdogPokes.delete(conversationId);
+    watchdog.dispose();
 
     this.finishTurn(conversationId, result, startedAt, steer);
   }
@@ -811,6 +831,9 @@ export class Bridge {
 
     const running = this.activity.get(conversationId);
     if (running?.state !== "thinking") return true;
+
+    // The daemon just proved it is still alive — push the idle deadline back out.
+    this.watchdogPokes.get(conversationId)?.();
 
     const tool = typeof event.toolName === "string" ? event.toolName : undefined;
     const doing =
