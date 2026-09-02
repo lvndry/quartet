@@ -12,6 +12,15 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  generateKeypair,
+  linkAfter,
+  newNonce,
+  signChallenge,
+  signClaim,
+  signMessage,
+  type Keypair,
+} from "../packages/identity/src/index";
 import { MAX_ROOM_MEMBERS } from "../packages/protocol/src/index";
 
 const HUB_PORT = 8394;
@@ -44,24 +53,60 @@ interface Frame {
 class Party {
   readonly frames: Frame[] = [];
   private socket!: WebSocket;
+  private keypair!: Keypair;
+  /** This party's own signing chain, one link per room. */
+  private readonly chain = new Map<string, string>();
 
   constructor(readonly handle: string) {}
 
-  async open(hubUrl: string, token: string): Promise<void> {
+  async open(hubUrl: string, keypair: Keypair): Promise<void> {
+    this.keypair = keypair;
     this.socket = new WebSocket(`${hubUrl.replace("http", "ws")}/socket`);
+    // Listening before the open await, because the hub challenges the moment the socket is
+    // up and a listener attached afterwards can miss it.
+    const answered = new Promise<void>((resolve) => {
+      this.socket.addEventListener("message", (event) => {
+        const frame = JSON.parse(String(event.data)) as Frame;
+        this.frames.push(frame);
+        if (frame.t !== "challenge") return;
+        const nonce = String(frame["nonce"]);
+        this.send({
+          t: "hello",
+          did: keypair.did,
+          challenge: nonce,
+          signature: signChallenge(keypair.did, nonce, keypair.privateKey),
+        });
+        resolve();
+      });
+    });
     await new Promise<void>((resolve, reject) => {
       this.socket.addEventListener("open", () => resolve());
       this.socket.addEventListener("error", () => reject(new Error(`${this.handle} could not connect`)));
     });
-    this.socket.addEventListener("message", (event) => {
-      this.frames.push(JSON.parse(String(event.data)) as Frame);
-    });
-    this.send({ t: "hello", agentToken: token });
+    await answered;
     cleanups.push(() => this.socket.close());
   }
 
   send(frame: Record<string, unknown>): void {
     this.socket.send(JSON.stringify(frame));
+  }
+
+  /** Speak in a room, signed the way a bridge signs, because the hub refuses unsigned lines. */
+  say(conversationId: string, text: string): void {
+    const authoredAt = new Date().toISOString();
+    const nonce = newNonce();
+    const prev = this.chain.get(conversationId) ?? "";
+    const signature = signMessage(
+      { did: this.keypair.did, conversationId, kind: "agent", authoredAt, nonce, prev, text },
+      this.keypair.privateKey,
+    );
+    this.chain.set(conversationId, linkAfter(signature));
+    this.send({
+      t: "say",
+      conversationId,
+      text,
+      authorship: { authoredAt, nonce, prev, signature },
+    });
   }
 
   last<T = Frame>(kind: string): T | undefined {
@@ -110,15 +155,23 @@ for (let attempt = 0; attempt < 60; attempt += 1) {
 }
 console.log("\nhub up\n");
 
-async function claim(handle: string): Promise<string> {
+async function claim(handle: string): Promise<Keypair> {
+  const keypair = generateKeypair();
+  const claimed = { did: keypair.did, handle, at: new Date().toISOString() };
   const response = await fetch(`${hubUrl}/agents`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ handle, displayName: handle }),
+    body: JSON.stringify({
+      ...claimed,
+      displayName: handle,
+      signature: signClaim(claimed, keypair.privateKey),
+    }),
   });
-  const body = (await response.json().catch(() => null)) as { token?: string; error?: string } | null;
-  if (body?.token === undefined) fail(`could not claim @${handle}: ${body?.error ?? "no token"}`);
-  return body.token;
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { error?: string } | null;
+    fail(`could not claim @${handle}: ${body?.error ?? "unknown"}`);
+  }
+  return keypair;
 }
 
 const mira = new Party("mira");
@@ -167,7 +220,7 @@ check(
 
 console.log("\none message, and who it wakes\n");
 const before = { mira: mira.count("turn"), otto: otto.count("turn"), nia: nia.count("turn") };
-mira.send({ t: "say", conversationId: room.id, text: "free will is compatible with determinism" });
+mira.say(room.id, "free will is compatible with determinism");
 await settle(500);
 check(otto.count("turn") === before.otto + 1, "@otto's agent was asked for a turn");
 check(nia.count("turn") === before.nia + 1, "@nia's agent was asked for a turn too");

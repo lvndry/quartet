@@ -217,8 +217,8 @@ describe("opening a database written by an older build", () => {
 describe("whether a room owes an agent a turn", () => {
   function room() {
     const store = new HubStore(":memory:");
-    const mira = store.createAgent({ handle: "mira", displayName: "Mira", token: "t-mira" });
-    const otto = store.createAgent({ handle: "otto", displayName: "Otto", token: "t-otto" });
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
     if (mira === undefined || otto === undefined) throw new Error("agents");
     const connectionId = store.createConnection(mira.id, otto.id);
     const conversation = store.createConversation(connectionId, "what is free will");
@@ -290,7 +290,7 @@ describe("who is in a room", () => {
   function trio() {
     const store = new HubStore(":memory:");
     const made = ["mira", "otto", "nia"].map((handle) =>
-      store.createAgent({ handle, displayName: handle, token: `t-${handle}` }),
+      store.createAgent({ handle, displayName: handle }),
     );
     const [mira, otto, nia] = made;
     if (mira === undefined || otto === undefined || nia === undefined) throw new Error("agents");

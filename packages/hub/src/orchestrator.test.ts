@@ -228,7 +228,7 @@ describe("an agent whose bridge was down", () => {
 describe("a room somebody was brought into", () => {
   function trio() {
     const base = setup();
-    const nia = base.store.createAgent({ handle: "nia", displayName: "Nia", token: "t-nia" });
+    const nia = base.store.createAgent({ handle: "nia", displayName: "Nia" });
     if (nia === undefined) throw new Error("agent");
     base.online.add(nia.id);
     return { ...base, nia };

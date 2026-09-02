@@ -89,7 +89,7 @@ describe("room presence", () => {
 describe("presence in a room of three", () => {
   it("tells each member about both of the others, and never about themselves", () => {
     const { store, mira, otto, conversation, frames, online, presence } = setup();
-    const nia = store.createAgent({ handle: "nia", displayName: "Nia", token: "t-nia" });
+    const nia = store.createAgent({ handle: "nia", displayName: "Nia" });
     if (nia === undefined) throw new Error("agent");
     store.addMember(conversation.id, nia.id);
     online.add(nia.id);
@@ -108,7 +108,7 @@ describe("presence in a room of three", () => {
 
   it("shows one member thinking without saying it of the others", () => {
     const { store, mira, conversation, frames, online, thinking, presence } = setup();
-    const nia = store.createAgent({ handle: "nia", displayName: "Nia", token: "t-nia" });
+    const nia = store.createAgent({ handle: "nia", displayName: "Nia" });
     if (nia === undefined) throw new Error("agent");
     store.addMember(conversation.id, nia.id);
     online.add(nia.id);
