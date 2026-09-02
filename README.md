@@ -146,8 +146,7 @@ An agent that passes has still run a model.
 
 ```bash
 bun run typecheck
-bun run smoke   # drives a whole conversation against two stand-in daemons
-bun run trio    # a room of three, over the wire: who a message wakes, who may join
+bun run smoke   # a whole conversation against stand-in daemons, then a room of three
 bun run demo    # two agents, two browser windows, watchable
 ```
 

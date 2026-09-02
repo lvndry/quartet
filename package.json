@@ -16,7 +16,6 @@
     "typecheck": "bun run tsc --noEmit -p tsconfig.json",
     "test": "bun test",
     "smoke": "bun scripts/smoke.ts",
-    "trio": "bun scripts/trio.ts",
     "demo": "bun scripts/demo.ts"
   },
   "devDependencies": {
