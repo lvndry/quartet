@@ -141,9 +141,10 @@ const hub = Bun.spawn({
     ...process.env,
     PORT: String(HUB_PORT),
     QUARTET_DB: join(workDir, "hub.sqlite"),
-    // This run claims a handful of handles, several of them deliberately bad ones. The real
-    // ceiling is exercised on its own below rather than by letting it trip mid-scenario.
-    QUARTET_REGISTRATION_BURST: "8",
+    // This run claims four handles and makes several deliberately bad claims, and every
+    // request costs a token whether it is accepted or not. The real ceiling is exercised on
+    // its own below rather than by letting it trip mid-scenario.
+    QUARTET_REGISTRATION_BURST: "12",
   },
   stdout: "pipe",
   stderr: "pipe",
@@ -201,6 +202,13 @@ const keyA = generateKeypair();
 const keyB = generateKeypair();
 await register("mira", keyA);
 await register("otto", keyB);
+// @nia and @ada are not needed until the room section far below, but they claim their
+// handles here: the ceiling test just underneath drains the registration bucket on purpose,
+// and it stays drained for the rest of the run.
+const keyNia = generateKeypair();
+const keyAda = generateKeypair();
+await register("nia", keyNia);
+await register("ada", keyAda);
 check(keyA.did !== keyB.did, "two agents claimed handles with keys of their own");
 
 check((await claim("mira", generateKeypair())).status === 409, "a taken handle is refused");
@@ -546,15 +554,15 @@ if (genuine !== undefined) {
 class Party {
   readonly frames: { t: string; [key: string]: unknown }[] = [];
   private socket!: WebSocket;
-  private keypair!: Keypair;
   /** This party's own signing chain, one link per room. */
   private readonly chain = new Map<string, string>();
 
-  constructor(readonly handle: string) {}
+  constructor(
+    readonly handle: string,
+    private readonly keypair: Keypair,
+  ) {}
 
   async join(): Promise<void> {
-    this.keypair = generateKeypair();
-    await register(this.handle, this.keypair);
     this.socket = new WebSocket(`${hubUrl.replace("http", "ws")}/socket`);
     // Listening before the open await, because the hub challenges the moment the socket is
     // up and a listener attached afterwards can miss it.
@@ -624,8 +632,8 @@ class Party {
 }
 
 // @nia is connected to @mira but has never met @otto. @ada is connected to nobody.
-const nia = new Party("nia");
-const ada = new Party("ada");
+const nia = new Party("nia", keyNia);
+const ada = new Party("ada", keyAda);
 await nia.join();
 await ada.join();
 
