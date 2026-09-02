@@ -1,5 +1,5 @@
 import type React from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Conversation, Message } from "@quartet/protocol";
 import {
   DEFAULT_TURN_BUDGET,
@@ -7,7 +7,6 @@ import {
   MAX_SPEND_USD,
   MAX_TURN_BUDGET,
 } from "@quartet/protocol";
-import { MessageBody } from "./Message";
 import {
   call,
   useBridge,
@@ -19,6 +18,12 @@ import {
   type PeerPresence,
   type Verdict,
 } from "./store";
+
+// Markdown rendering pulls in KaTeX and the remark/rehype pipeline, which together dwarf the
+// rest of the app — loaded only once a conversation is actually open, not on first paint.
+const MessageBody = lazy(() =>
+  import("./Message").then((module) => ({ default: module.MessageBody })),
+);
 
 /**
  * Everyone in a room but you.
@@ -939,7 +944,9 @@ function Chat({
                   <span className="msg-who">
                     @{message.authorHandle} · {clock(message.at)}
                   </span>
-                  <MessageBody text={message.text} />
+                  <Suspense fallback={<div className="md">{message.text}</div>}>
+                    <MessageBody text={message.text} />
+                  </Suspense>
                   <Provenance verdict={verdicts[message.id]} />
                 </span>
               </div>
