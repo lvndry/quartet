@@ -454,3 +454,123 @@ describe("an agent that was away", () => {
     expect(state.turnsLeft).toBe(5);
   });
 });
+
+const NIA = "agt_nia";
+const ADA = "agt_ada";
+
+/** A room of four, everybody present, nobody owed anything yet. */
+function quartet(overrides: Partial<TurnState> = {}): TurnState {
+  const members = [MIRA, OTTO, NIA, ADA];
+  return room({
+    participants: members,
+    online: Object.fromEntries(members.map((agent) => [agent, true])),
+    unanswered: Object.fromEntries(members.map((agent) => [agent, false])),
+    ...overrides,
+  });
+}
+
+describe("a room with more than two people in it", () => {
+  it("wakes everyone but the speaker", () => {
+    const { dispatches } = run(quartet(), [{ kind: "message", author: MIRA }]);
+
+    expect(dispatches.map((dispatch) => dispatch.agent).sort()).toEqual([ADA, NIA, OTTO].sort());
+  });
+
+  it("never asks the speaker to answer themselves", () => {
+    const { dispatches } = run(quartet(), [{ kind: "message", author: NIA }]);
+
+    expect(dispatches.map((dispatch) => dispatch.agent)).not.toContain(NIA);
+  });
+
+  it("charges one turn per agent woken, because that is one model run each", () => {
+    const { state } = run(quartet({ turnsLeft: 10 }), [{ kind: "message", author: MIRA }]);
+
+    expect(state.turnsLeft).toBe(7);
+  });
+
+  it("says once that the budget moved, not once per dispatch", () => {
+    const { effects } = run(quartet(), [{ kind: "message", author: MIRA }]);
+
+    expect(effects.filter((effect) => effect.kind === "announce")).toHaveLength(1);
+  });
+
+  it("stops at the allowance rather than overdrawing it", () => {
+    const { state, dispatches } = run(quartet({ turnsLeft: 2 }), [
+      { kind: "message", author: MIRA },
+    ]);
+
+    expect(dispatches).toHaveLength(2);
+    expect(state.turnsLeft).toBe(0);
+  });
+
+  it("gives the last turn to whoever joined earliest, deterministically", () => {
+    const { dispatches } = run(quartet({ turnsLeft: 1 }), [{ kind: "message", author: MIRA }]);
+
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0]?.agent).toBe(OTTO);
+  });
+
+  it("skips whoever is offline and wakes the rest", () => {
+    const { dispatches } = run(
+      quartet({ online: { [MIRA]: true, [OTTO]: false, [NIA]: true, [ADA]: false } }),
+      [{ kind: "message", author: MIRA }],
+    );
+
+    expect(dispatches.map((dispatch) => dispatch.agent)).toEqual([NIA]);
+  });
+
+  it("lets a pass end it, because a pass wakes nobody", () => {
+    const { dispatches } = run(quartet(), [
+      { kind: "message", author: MIRA },
+      { kind: "settled", agent: OTTO, outcome: "passed" },
+      { kind: "settled", agent: NIA, outcome: "passed" },
+      { kind: "settled", agent: ADA, outcome: "passed" },
+    ]);
+
+    // Three woken by the one message, and nothing after: silence is not answered.
+    expect(dispatches).toHaveLength(3);
+  });
+
+  it("closes for everybody when one agent signs off", () => {
+    const { state } = run(quartet(), [
+      { kind: "message", author: MIRA },
+      { kind: "settled", agent: OTTO, outcome: "closed" },
+    ]);
+
+    expect(state.roomState).toBe("closed");
+  });
+
+  it("steers only your own agent, never the whole room", () => {
+    const { dispatches } = run(quartet(), [{ kind: "steer", agent: ADA, text: "push back" }]);
+
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0]).toMatchObject({ agent: ADA, steer: "push back" });
+  });
+});
+
+describe("somebody leaving a room", () => {
+  it("gives up any turn that was owed to them", () => {
+    const { state } = run(quartet(), [
+      { kind: "message", author: MIRA },
+      { kind: "left", agent: OTTO },
+    ]);
+
+    expect(state.inFlight[OTTO]).toBeUndefined();
+    expect(state.inFlight[NIA]).toBeDefined();
+  });
+
+  it("leaves the room running while two people are still in it", () => {
+    // `participants` has already lost them by the time this is applied.
+    const { state } = run(quartet({ participants: [MIRA, NIA, ADA] }), [
+      { kind: "left", agent: OTTO },
+    ]);
+
+    expect(state.roomState).toBe("live");
+  });
+
+  it("closes the room when it would leave one agent talking to itself", () => {
+    const { state } = run(quartet({ participants: [MIRA] }), [{ kind: "left", agent: OTTO }]);
+
+    expect(state.roomState).toBe("closed");
+  });
+});

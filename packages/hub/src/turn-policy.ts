@@ -15,6 +15,7 @@
  * 5. One turn in flight per agent.
  * 6. A closed conversation dispatches nothing.
  * 7. A message that arrived while an agent was away is still answered when it returns.
+ * 8. A spoken message reaches every other member, and no member hears their own.
  */
 
 import { DEFAULT_TURN_BUDGET, type Limit, type RoomState } from "@quartet/protocol";
@@ -67,6 +68,8 @@ export type TurnEvent =
   | { readonly kind: "offline"; readonly agent: AgentId }
   /** This agent's bridge just connected. */
   | { readonly kind: "arrived"; readonly agent: AgentId }
+  /** This agent has left the room. Applied after they are gone from `participants`. */
+  | { readonly kind: "left"; readonly agent: AgentId }
   | { readonly kind: "deadline"; readonly agent: AgentId };
 
 export type TurnEffect =
@@ -191,16 +194,44 @@ function noticeFor(state: TurnState): string | undefined {
   }
 }
 
-function otherThan(state: TurnState, agent: AgentId): AgentId | undefined {
-  return state.participants.find((candidate) => candidate !== agent);
+function othersThan(state: TurnState, agent: AgentId): AgentId[] {
+  return state.participants.filter((candidate) => candidate !== agent);
+}
+
+/**
+ * Offer a turn to several agents, in room order.
+ *
+ * Sequential rather than parallel because each dispatch spends from one shared allowance,
+ * and `canSpend` has to see what the previous one took. That has a consequence worth being
+ * deliberate about: a room with one turn left and three other members wakes exactly one of
+ * them, and it is the one who joined earliest. Arbitrary, but deterministic and cheap to
+ * reason about — the alternative is a fairness rule, and the honest place to earn one is
+ * after watching real rooms run out of allowance.
+ *
+ * The announce is collapsed to one. Every dispatch changes the same budget, and telling
+ * the room five times that it did is noise.
+ */
+function pokeAll(state: TurnState, agents: readonly AgentId[], steer?: string): Decision {
+  let current = state;
+  const dispatches: TurnEffect[] = [];
+  for (const agent of agents) {
+    const decision = poke(current, agent, steer);
+    current = decision.state;
+    dispatches.push(...decision.effects.filter((effect) => effect.kind !== "announce"));
+  }
+  const announced = current.turnsLeft !== state.turnsLeft || dispatches.length > 0;
+  return { state: current, effects: announced ? [...dispatches, { kind: "announce" }] : [] };
 }
 
 /** Apply one event, returning the next state and whatever must happen outside. */
 export function decide(state: TurnState, event: TurnEvent): Decision {
   switch (event.kind) {
     case "message": {
-      const other = otherThan(state, event.author);
-      return other === undefined ? { state, effects: [] } : poke(state, other);
+      // Everyone but the speaker. Each of them either answers or passes, and a pass wakes
+      // nobody — so a room of six does not spiral, it converges on whoever has something
+      // to say. Expensive by construction: one message is N-1 model runs, on N-1 people's
+      // own keys, which is what the allowance is for.
+      return pokeAll(state, othersThan(state, event.author));
     }
 
     case "steer": {
@@ -297,6 +328,15 @@ export function decide(state: TurnState, event: TurnEvent): Decision {
 
     case "offline": {
       return { state: { ...state, inFlight: without(state.inFlight, event.agent) }, effects: [] };
+    }
+
+    case "left": {
+      // A room needs two people to be a conversation. The last one out closes it rather
+      // than leaving somebody's agent talking into an empty room on their own money.
+      const cleared = { ...state, inFlight: without(state.inFlight, event.agent) };
+      const roomState: RoomState =
+        cleared.participants.length < 2 ? "closed" : cleared.roomState;
+      return { state: { ...cleared, roomState }, effects: [{ kind: "announce" }] };
     }
 
     case "arrived": {

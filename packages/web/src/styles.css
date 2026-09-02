@@ -235,6 +235,20 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
 
 .thread { padding: 1.1rem 1.2rem; display: flex; flex-direction: column; justify-content: flex-end; gap: 0.9rem; min-height: 100%; }
 
+/* Who is in the room, and the two controls that change that. */
+.cast {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.5rem 1.2rem; border-bottom: 1px solid var(--rule-soft);
+}
+.cast .field.slim { flex: 1; min-width: 0; padding: 0.3rem 0.5rem; font-size: 0.76rem; }
+.cast-count {
+  font-family: var(--mono); font-size: 0.64rem; letter-spacing: 0.07em; color: var(--slate);
+  white-space: nowrap;
+}
+
+/* One status per other member, so a room of four does not hide three of them. */
+.peers { display: flex; flex-wrap: wrap; gap: 0.1rem 0.7rem; min-width: 0; }
+
 /* Sits above the oldest message held, and disappears once the room's start is reached. */
 .earlier {
   align-self: center; font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.07em;
