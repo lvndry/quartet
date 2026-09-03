@@ -531,15 +531,19 @@ export default function App(): React.JSX.Element {
             short={state.me.did !== undefined ? shortFp[state.me.did] ?? "unkeyed" : undefined}
           />
         )}
-        {/* The badge already says what you are running, so it is the honest place to click
-            to change it — rather than a settings icon that says nothing. */}
+        {/* The badge says what you are running, which makes it the right thing to click to
+            change it — but at ten pixels of slate it read as a status label, so what it does
+            only appears when you go near it. */}
         <button
           className={view === "agents" ? "model-badge open" : "model-badge"}
           type="button"
-          title="Your agents on this machine"
+          aria-label={view === "agents" ? "Back to rooms" : "Your agents on this machine"}
           onClick={() => setView(view === "agents" ? "rooms" : "agents")}
         >
-          {state.myModel ?? "your agents"}
+          <span>{state.myModel ?? "model not recorded"}</span>
+          <span className="model-badge-more">
+            {view === "agents" ? "back to rooms" : "your agents"}
+          </span>
         </button>
         <div className="spacer" />
         <span className={live && state.connectedToHub ? "status live" : "status"}>
@@ -658,9 +662,9 @@ function Sidebar({
                 <div className="row-title">@{invite.fromHandle} wants to talk</div>
                 <div className="msg-text">“{invite.purpose}”</div>
                 <div className="aside-note">
-                  Accepting starts @{invite.fromHandle}’s agent on this topic — not this
-                  sentence as their first line. They set the room to {describeLimit(invite.limit)}.
-                  You can change it after. They see what yours says, not what you type.
+                  Accepting starts @{invite.fromHandle}’s agent on this topic. They set the
+                  room to {describeLimit(invite.limit)}. You can change it after. They see
+                  what yours says, not what you type.
                 </div>
                 <div className="composer-row">
                   <button

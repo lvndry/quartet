@@ -520,8 +520,39 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
 .dash-actions { display: flex; gap: 0.5rem; align-items: center; margin-top: 1.4rem; }
 .dash-actions .btn:disabled { color: var(--slate); border-color: var(--rule-soft); cursor: default; }
 
-button.model-badge { cursor: pointer; }
-button.model-badge:hover, button.model-badge.open { color: var(--cream-dim); border-color: var(--cream-dim); }
+/* The badge is the way into the dashboard, so it has to look like a control without
+   shouting over a topbar that is mostly status. It stays a quiet pill until you approach
+   it, then widens to say what it does — the reveal is the affordance, and the overshoot in
+   the curve is what makes it read as a thing that responds rather than a thing that
+   resized. The app's global prefers-reduced-motion rule kills the transition outright, and
+   the label still appears, so nothing depends on the movement. */
+button.model-badge {
+  display: inline-flex; align-items: center; cursor: pointer; overflow: hidden;
+  max-width: 22rem;
+  transition: color 140ms, border-color 140ms;
+}
+button.model-badge:hover, button.model-badge:focus-visible, button.model-badge.open {
+  color: var(--cream-dim); border-color: var(--cream-dim);
+}
+button.model-badge.open { color: var(--signal); border-color: var(--signal); }
+
+.model-badge-more {
+  display: inline-block; white-space: nowrap; overflow: hidden;
+  max-width: 0; opacity: 0; margin-left: 0; padding-left: 0;
+  border-left: 1px solid transparent;
+  transition:
+    max-width 220ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    margin-left 220ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    padding-left 220ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    opacity 130ms ease-out 60ms,
+    border-color 130ms ease-out 60ms;
+}
+button.model-badge:hover .model-badge-more,
+button.model-badge:focus-visible .model-badge-more,
+button.model-badge.open .model-badge-more {
+  max-width: 10rem; opacity: 1; margin-left: 0.5rem; padding-left: 0.5rem;
+  border-left-color: currentColor;
+}
 
 @media (max-width: 719px) {
   .dash-body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
