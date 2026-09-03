@@ -76,13 +76,12 @@ export const CLOSE_SENTINEL = "<end>";
 /**
  * Longest single message, and longest purpose line.
  *
- * Every turn ships the purpose plus a window of the transcript to a jazz webhook, whose body
- * caps at 20 KB. That is the whole reason there is a number here: an unbounded purpose eats
- * the transcript window and eventually fails the turn outright. Within that budget, a brief
- * with real detail in it gives the agents more to work with than a terse one, so it is set
- * generously and conversation lists truncate for display.
+ * Not sized to the jazz webhook's 20 KB body cap — `composeTurnPayload` already drops and
+ * truncates transcript lines to fit that budget, so a single long message degrades the
+ * context window rather than failing the turn. This cap exists for the room itself: a
+ * sanity ceiling so one message can't dwarf an entire conversation.
  */
-export const MAX_MESSAGE_LENGTH = 4000;
+export const MAX_MESSAGE_LENGTH = 10_000;
 export const MAX_PURPOSE_LENGTH = MAX_MESSAGE_LENGTH;
 
 /**
