@@ -33,6 +33,12 @@ import { startTunnel } from "./tunnel";
 
 const PORT = Number(process.env["PORT"] ?? 8080);
 const DB_PATH = process.env["QUARTET_DB"] ?? "quartet.sqlite";
+/** A label for `/join`, so an invite link says what somebody is joining rather than just a URL. */
+const HUB_NAME = (() => {
+  const index = process.argv.indexOf("--name");
+  const value = index === -1 ? undefined : process.argv[index + 1];
+  return value !== undefined && !value.startsWith("--") ? value : "a quartet hub";
+})();
 
 const store = new HubStore(DB_PATH);
 
@@ -66,6 +72,17 @@ function agentView(agentId: string): Agent | undefined {
   return row ? store.toAgent(row, isOnline(agentId)) : undefined;
 }
 
+/**
+ * Who shows up in this agent's directory: everyone currently online on this hub, plus every
+ * contact of theirs whether online or not.
+ *
+ * Used to list every agent ever registered here, online or not — fine for a handful of
+ * friends, unusable once a hub has any real history, since it never shrinks. Scoping to
+ * "online right now" keeps this bounded by who is actually around instead of by how long the
+ * hub has existed, while still answering "who's here to talk to" the way an empty room with
+ * nobody in it never can. A connection stays visible regardless, so stepping offline does not
+ * make you disappear from somebody who already knows you.
+ */
 function directoryFor(agentId: string): DirectoryEntry[] {
   const connected = new Set(store.connectionsFor(agentId).map((connection) => connection.other));
   const pending = new Set(
@@ -76,6 +93,7 @@ function directoryFor(agentId: string): DirectoryEntry[] {
   return store
     .allAgents()
     .filter((row) => row.id !== agentId)
+    .filter((row) => isOnline(row.id) || connected.has(row.id) || pending.has(row.handle))
     .map((row) => ({
       agent: store.toAgent(row, isOnline(row.id)),
       connected: connected.has(row.id),
@@ -142,6 +160,40 @@ const registrations = new RateLimiter({
 const app = new Hono<{ Bindings: { ip: string } }>();
 
 app.get("/health", (context) => context.json({ ok: true }));
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (char) =>
+    char === "&" ? "&amp;" : char === "<" ? "&lt;" : char === ">" ? "&gt;" : char === '"' ? "&quot;" : "&#39;",
+  );
+}
+
+/**
+ * A page for a link, not a URL for a CLI flag.
+ *
+ * The tunnel URL itself is unmemorable and means nothing pasted bare — this gives whoever
+ * clicks it the one command to run, with this hub's own origin already filled in, so sharing
+ * an invite is a link rather than a sentence explaining what to do with one. No resolver, no
+ * shortening: the origin is read off the request that arrived, so this works identically
+ * whether it is reached through a tunnel URL or on localhost.
+ */
+app.get("/join", (context) => {
+  const origin = new URL(context.req.url).origin;
+  const command = `bun run bridge connect --hub ${origin}`;
+  const name = escapeHtml(HUB_NAME);
+  return context.html(
+    `<!doctype html><html><head><meta charset="utf-8">` +
+      `<title>Join ${name}</title>` +
+      `<style>body{font-family:system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1.5rem;line-height:1.5}` +
+      `code{background:#eee;padding:0.6rem 0.8rem;border-radius:6px;display:block;overflow-x:auto}` +
+      `button{margin-top:0.6rem;padding:0.4rem 0.9rem;cursor:pointer}</style></head><body>` +
+      `<h1>${name}</h1>` +
+      `<p>Somebody is inviting you to a <a href="https://github.com/lvndry/quartet">quartet</a> hub. ` +
+      `Run this to join:</p>` +
+      `<code id="cmd">${escapeHtml(command)}</code>` +
+      `<button onclick="navigator.clipboard.writeText(document.getElementById('cmd').textContent)">Copy</button>` +
+      `</body></html>`,
+  );
+});
 
 /**
  * How far out of step with the hub a claiming machine's clock may be.
@@ -834,8 +886,8 @@ if (process.argv.includes("--tunnel")) {
   switch (tunnel.kind) {
     case "ok": {
       console.log(`\n  ✓ reachable at ${tunnel.url}`);
-      console.log("    give that URL to whoever you're inviting — they run");
-      console.log(`    \`bun run bridge connect --hub ${tunnel.url}\` to reach this hub.\n`);
+      console.log(`    give this to whoever you're inviting: ${tunnel.url}/join`);
+      console.log("    it's a page with the one command to run, not a bare URL.\n");
       const stopTunnel = (): void => {
         tunnel.stop();
         process.exit(0);

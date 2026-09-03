@@ -17,7 +17,7 @@ import { Attestor } from "./attest";
 import { Bridge } from "./bridge";
 import { loadConfig, saveConfig, type QuartetConfig } from "./config";
 import { loadIdentity } from "./identity";
-import { getDataDirectory, setDataDirectory } from "./paths";
+import { getDataDirectory, identityPath, setDataDirectory } from "./paths";
 import {
   daemonReachable,
   ensureJazzWebhook,
@@ -486,7 +486,8 @@ function usage(): void {
       "    --hub <url>              which hub to join",
       "    --port <n>               local port for the app (default 7777, next free one if taken)",
       "    --data-dir <path>        this agent's config and record (overrides $QUARTET_HOME)",
-      "    --agent <id>             which jazz agent represents you",
+      "    --agent <id>             which jazz agent represents you — also picks",
+      "                             ~/.quartet/<id> as the data dir when --data-dir is not given",
       "    --webhook <name>         webhook name (use a distinct one per agent)",
       "    --daemon <url>           where jazz is listening (default :4747)",
       "    --handle <name>          claim this handle without being asked",
@@ -495,26 +496,93 @@ function usage(): void {
       "    --jazz <command>         how to invoke jazz (default: jazz)",
       `    --log-level <level>      ${LOG_LEVELS.join(" | ")} (default: info, or $QUARTET_LOG)`,
       "",
-      "  quartet where              print the config and ledger paths",
+      "  quartet info                what this identity actually is, right now",
+      "    --agent <id>               check a specific jazz agent instead of the one on file",
+      "    --daemon <url>             where jazz is listening (default :4747, or the file's own)",
     ].join("\n"),
   );
 }
 
+/**
+ * What `--data-dir`/`--agent` resolved to, what identity lives there, and what it would
+ * currently answer as — the question `where` used to answer with three paths and nothing
+ * else, which told you nothing about whether this identity actually works.
+ */
+async function info(): Promise<void> {
+  const config = await loadConfig();
+
+  console.log(`data dir   ${getDataDirectory()}`);
+
+  // `loadIdentity` generates a keypair when none exists — right for `connect`, wrong for a
+  // command that only looks. Checking first means asking about a directory nothing has
+  // touched yet leaves it exactly as untouched as it was.
+  if (!(await Bun.file(identityPath()).exists())) {
+    console.log(`identity   none yet — generated on first connect`);
+  } else {
+    const identity = await loadIdentity();
+    if ("error" in identity) {
+      console.log(`identity   ${identity.error}`);
+    } else if (config.handle === undefined) {
+      console.log(`identity   keypair exists, no handle claimed yet — claimed on first connect`);
+    } else {
+      const full = tag(config.handle, identity.did);
+      console.log(`identity   ${full ?? `@${config.handle}`}`);
+    }
+  }
+
+  const hubUrl = argValue("hub") ?? config.hubUrl;
+  const reachable = await hubReachable(hubUrl);
+  console.log(`hub        ${hubUrl} — ${reachable ? "reachable" : "not answering"}`);
+
+  const daemonUrl = argValue("daemon") ?? config.daemon?.url ?? DEFAULT_DAEMON_URL;
+  const agentFlag = argValue("agent") ?? (config.daemon !== undefined ? await agentIdFor(config.daemon.webhook) : undefined);
+
+  if (agentFlag === undefined) {
+    console.log(`jazz agent none on file — pass --agent, or run connect once to set one`);
+  } else {
+    const listing = await fetchJazzAgents(daemonUrl);
+    if (listing.kind !== "ok") {
+      console.log(`jazz agent "${agentFlag}" — could not ask ${daemonUrl} (${listing.kind})`);
+    } else {
+      const picked = resolveAgentChoice(listing.agents, agentFlag);
+      console.log(
+        picked === undefined
+          ? `jazz agent "${agentFlag}" — not found on ${daemonUrl}`
+          : `jazz agent ${picked.name} — ${describeModel(picked)}, persona: ${picked.persona ?? "none"}, ${String(picked.tools.length)} tools`,
+      );
+    }
+  }
+
+  if (config.daemon !== undefined) {
+    console.log(`webhook    ${config.daemon.webhook}`);
+  }
+}
+
 // Before anything reads a path. Mirrors `jazz --data-dir`, so running a second agent on one
 // host is a flag rather than an exported variable.
+//
+// `--data-dir` always wins when given. Otherwise, `--agent` picks the directory for you:
+// `~/.quartet/<agent>` — so starting a second persona is `--agent otto`, not `--agent otto
+// --data-dir ~/.quartet-otto` said twice for the same fact. No `--agent` at all keeps the
+// single flat `~/.quartet` this always defaulted to, so a one-persona setup is unaffected.
 const dataDir = argValue("data-dir");
-if (dataDir !== undefined) setDataDirectory(dataDir);
+if (dataDir !== undefined) {
+  setDataDirectory(dataDir);
+} else {
+  const agentFlag = argValue("agent");
+  // Only a bare name — anything that could climb out of `~/.quartet` is not a directory this
+  // picks for you, it is a mistake to report the ordinary way, later, when `--agent` is read
+  // again to resolve the agent itself.
+  if (agentFlag !== undefined && /^[\w.-]+$/.test(agentFlag)) {
+    setDataDirectory(`~/.quartet/${agentFlag}`);
+  }
+}
 
 const command = process.argv[2] ?? "connect";
 if (hasFlag("help") || command === "help") {
   usage();
-} else if (command === "where") {
-  const { configPath } = await import("./config");
-  const { ledgerPath } = await import("./ledger");
-  const { asidesPath } = await import("./paths");
-  console.log(`config  ${configPath()}`);
-  console.log(`ledger  ${ledgerPath()}`);
-  console.log(`asides  ${asidesPath()}`);
+} else if (command === "info") {
+  await info();
 } else if (command === "connect") {
   await connect();
 } else {
