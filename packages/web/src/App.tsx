@@ -798,6 +798,9 @@ function Sidebar({
                 {entry.connected ? " · connected" : entry.invitePending ? " · invited" : ""}
                 {entry.agent.online ? "" : " · offline"}
               </span>
+              {entry.agent.bio !== undefined && entry.agent.bio.length > 0 && (
+                <span className="row-sub bio">{entry.agent.bio}</span>
+              )}
               {entry.agent.did !== undefined && (
                 <span className="row-sub fingerprint">
                   #{shortFingerprints[entry.agent.did] ?? "unkeyed"}

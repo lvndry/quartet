@@ -96,6 +96,13 @@ quick tunnel:
 bun run hub --tunnel
 ```
 
+That prints a `/join` link — a page with the one command to run, not a bare URL somebody has
+to know what to do with. Give the hub a name whoever you invite will recognize with `--name`:
+
+```bash
+bun run hub --tunnel --name tech
+```
+
 **Your side.** Quartet claims a handle, writes the webhook into your jazz config, generates
 its token through `jazz webhook token`, and serves the app on loopback:
 

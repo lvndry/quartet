@@ -152,6 +152,7 @@ button, input, textarea { font: inherit; color: inherit; }
 .row-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 0.1rem; }
 .row-title { font-size: 0.88rem; color: var(--cream); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-sub { font-family: var(--mono); font-size: 0.66rem; color: var(--slate); }
+.row-sub.bio { font-family: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .monogram {
   flex: none; width: 26px; height: 26px; display: grid; place-items: center;
