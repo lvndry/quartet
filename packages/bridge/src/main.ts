@@ -13,15 +13,16 @@
 
 import { dirname, join } from "node:path";
 import { signClaim, tag, type Keypair } from "@quartet/identity";
+import { AgentAdmin } from "./agent-admin";
 import { Attestor } from "./attest";
 import { Bridge } from "./bridge";
 import { loadConfig, saveConfig, type QuartetConfig } from "./config";
 import { loadIdentity } from "./identity";
 import { getDataDirectory, identityPath, setDataDirectory } from "./paths";
 import {
+  agentIdFor,
   daemonReachable,
   ensureJazzWebhook,
-  jazzConfigPath,
   webhookConfigured,
   webhookTokenEnvVar,
 } from "./jazz";
@@ -318,43 +319,6 @@ async function resolveOrMintToken(webhookName: string): Promise<string | undefin
   return token;
 }
 
-/**
- * The agent a webhook already points at, so refreshing its prompt leaves that alone.
- *
- * `undefined` when there is nothing recorded, which the caller turns into a question. It
- * used to answer "default" — a persona name that matches no agent — so a webhook missing
- * its agent was quietly rewritten to point at one that does not exist.
- */
-async function agentIdFor(webhookName: string): Promise<string | undefined> {
-  const file = Bun.file(jazzConfigPath());
-  if (!(await file.exists())) return undefined;
-  const config = (await file.json().catch(() => ({}))) as {
-    webhooks?: { name?: string; agentId?: string }[];
-  };
-  const entry = config.webhooks?.find((webhook) => webhook.name === webhookName);
-  const agentId = entry?.agentId;
-  return typeof agentId === "string" && agentId.length > 0 ? agentId : undefined;
-}
-
-/**
- * What jazz says this webhook's agent is running, for the app header.
- *
- * Best-effort: an older jazz without `GET /agents`, a daemon that is not up yet, or a
- * webhook with no agent recorded on file all just mean the header omits the line rather
- * than the app failing to start over it.
- */
-async function currentModel(daemon: QuartetConfig["daemon"]): Promise<string | undefined> {
-  if (daemon === undefined) return undefined;
-  const agentId = await agentIdFor(daemon.webhook);
-  if (agentId === undefined) return undefined;
-  const listing = await fetchJazzAgents(daemon.url);
-  if (listing.kind !== "ok") return undefined;
-  const agent = listing.agents.find((candidate) => candidate.id === agentId);
-  if (agent === undefined || (agent.provider === undefined && agent.model === undefined)) {
-    return undefined;
-  }
-  return describeModel(agent);
-}
 
 /**
  * Whether the hub is answering right now.
@@ -434,9 +398,12 @@ async function connect(): Promise<void> {
     );
   }
 
-  const myModel = await currentModel(daemon);
-  const bridge = new Bridge(hubUrl, daemon, new Attestor(keypair), undefined, myModel);
+  const bridge = new Bridge(hubUrl, daemon, new Attestor(keypair));
+  const agents = new AgentAdmin(daemon, (roster) => bridge.setJazzRoster(roster));
   await bridge.start();
+  // Not awaited: the roster is for the dashboard, and a daemon that is slow to answer should
+  // delay the agent list rather than the hub connection.
+  void agents.refresh();
 
   const localToken = config.localToken ?? crypto.randomUUID().replaceAll("-", "");
   if (config.localToken !== localToken) config = { ...config, localToken };
@@ -448,6 +415,7 @@ async function connect(): Promise<void> {
     port: preferredPort,
     token: localToken,
     bridge,
+    agents,
     ...(built ? { webRoot } : {}),
   });
 

@@ -8,7 +8,9 @@
  */
 
 import { limitSchema } from "@quartet/protocol";
+import type { AgentAdmin } from "./agent-admin";
 import type { Bridge, BridgeState } from "./bridge";
+import type { JazzResult } from "./jazz-admin";
 import type { ServerWebSocket } from "bun";
 
 /** How many ports above the preferred one to try before giving up. */
@@ -19,6 +21,8 @@ export interface LocalServerOptions {
   readonly port: number;
   readonly token: string;
   readonly bridge: Bridge;
+  /** This machine's jazz agents, for the dashboard. */
+  readonly agents: AgentAdmin;
   /** Directory holding the built web app. Absent in development, where Vite serves it. */
   readonly webRoot?: string;
 }
@@ -114,7 +118,7 @@ export function startLocalServer(options: LocalServerOptions): { port: number; s
 
       if (url.pathname.startsWith("/api/")) {
         if (presentedToken(request) !== options.token) return json({ error: "unauthorized" }, 401);
-        return handleApi(url.pathname, request, options.bridge);
+        return handleApi(url.pathname, request, options.bridge, options.agents);
       }
 
       // Everything else is the app itself. In development there is no build to serve, so the
@@ -172,7 +176,47 @@ export function startLocalServer(options: LocalServerOptions): { port: number; s
   };
 }
 
-async function handleApi(pathname: string, request: Request, bridge: Bridge): Promise<Response> {
+/**
+ * Turn jazz's answer into the app's.
+ *
+ * Every failure kind gets its own sentence, because a UI that collapses them says "something
+ * went wrong" to somebody whose daemon simply is not running. A `rejected` carries jazz's own
+ * `field` and `suggestion` straight through, so the form can mark the input that was wrong
+ * rather than showing a banner — those are the reason jazz reports them at all.
+ *
+ * The status is 502 for everything that is jazz's state rather than the caller's mistake:
+ * the request was fine, the thing behind it was not.
+ */
+function fromJazz<T>(result: JazzResult<T>): Response {
+  switch (result.kind) {
+    case "ok":
+      return json({ ok: true, value: result.value });
+    case "unreachable":
+      return json({ error: "jazz is not answering. Start it with `jazz daemon`." }, 502);
+    case "unauthorized":
+      return json({ error: "jazz refused quartet's token. Re-run `quartet connect`." }, 502);
+    case "unsupported":
+      return json({ error: "this jazz is too old to manage agents from here. Update it." }, 502);
+    case "rejected":
+      return json(
+        {
+          error: result.error,
+          ...(result.field !== undefined ? { field: result.field } : {}),
+          ...(result.suggestion !== undefined ? { suggestion: result.suggestion } : {}),
+        },
+        400,
+      );
+    case "failed":
+      return json({ error: result.detail }, 502);
+  }
+}
+
+async function handleApi(
+  pathname: string,
+  request: Request,
+  bridge: Bridge,
+  agents: AgentAdmin,
+): Promise<Response> {
   if (request.method !== "POST") return json({ error: "not found" }, 404);
   const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
   if (body === null) return json({ error: "expected a JSON body" }, 400);
@@ -338,6 +382,82 @@ async function handleApi(pathname: string, request: Request, bridge: Bridge): Pr
       });
       return json({ ok: true });
     }
+
+    // Managing this machine's jazz agents.
+    //
+    // The browser never holds the daemon's address or token: it posts here, this process
+    // asks jazz, and the roster arrives in the next state snapshot. That token wakes an
+    // agent with filesystem access, and the page reading this is one bookmark away from
+    // being open on a machine somebody else is sitting at.
+
+    case "/api/agents/refresh": {
+      await agents.refresh();
+      return json({ ok: true });
+    }
+
+    case "/api/agents/select": {
+      const agentId = text("agentId");
+      if (agentId.length === 0) return json({ error: "agentId is required" }, 400);
+      return fromJazz(await agents.select(agentId));
+    }
+
+    case "/api/agents/create": {
+      const name = text("name");
+      if (name.length === 0) return json({ error: "a name is required", field: "name" }, 400);
+      const description = text("description");
+      // jazz owns what a valid config is, so the config goes over untouched rather than
+      // being screened here — a second copy of those rules would only drift from the first.
+      return fromJazz(
+        await agents.create({
+          name,
+          ...(description.length > 0 ? { description } : {}),
+          config: (body["config"] ?? {}) as Record<string, unknown>,
+        }),
+      );
+    }
+
+    case "/api/agents/update": {
+      const id = text("id");
+      if (id.length === 0) return json({ error: "id is required" }, 400);
+      const name = text("name");
+      const description = text("description");
+      const config = body["config"];
+      return fromJazz(
+        await agents.update(id, {
+          ...(name.length > 0 ? { name } : {}),
+          // Sent even when blank: clearing a description is a thing somebody may want, and
+          // jazz decides whether an empty one is allowed.
+          ...(typeof body["description"] === "string" ? { description } : {}),
+          ...(config !== undefined ? { config: config as Record<string, unknown> } : {}),
+        }),
+      );
+    }
+
+    case "/api/agents/delete": {
+      const id = text("id");
+      if (id.length === 0) return json({ error: "id is required" }, 400);
+      return fromJazz(await agents.remove(id));
+    }
+
+    case "/api/agents/detail": {
+      const id = text("id");
+      if (id.length === 0) return json({ error: "id is required" }, 400);
+      return fromJazz(await agents.detail(id));
+    }
+
+    case "/api/agents/models": {
+      const provider = text("provider");
+      if (provider.length === 0) {
+        return json({ error: "provider is required", field: "provider" }, 400);
+      }
+      return fromJazz(await agents.models(provider));
+    }
+
+    case "/api/agents/personas":
+      return fromJazz(await agents.personas());
+
+    case "/api/agents/tools":
+      return fromJazz(await agents.tools());
 
     default:
       return json({ error: "not found" }, 404);

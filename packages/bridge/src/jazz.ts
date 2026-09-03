@@ -326,6 +326,24 @@ export function jazzConfigPath(): string {
 }
 
 /**
+ * Which jazz agent a webhook wakes, according to jazz's own config.
+ *
+ * The answer to "which agent represents me" lives here rather than in quartet's config,
+ * because the webhook entry is the thing that actually decides it. Two copies would be one
+ * copy and a lie.
+ */
+export async function agentIdFor(webhookName: string): Promise<string | undefined> {
+  const file = Bun.file(jazzConfigPath());
+  if (!(await file.exists())) return undefined;
+  const config = (await file.json().catch(() => ({}))) as {
+    webhooks?: { name?: string; agentId?: string }[];
+  };
+  const entry = config.webhooks?.find((webhook) => webhook.name === webhookName);
+  const agentId = entry?.agentId;
+  return typeof agentId === "string" && agentId.length > 0 ? agentId : undefined;
+}
+
+/**
  * Add quartet's webhook to the operator's jazz config, leaving everything else alone.
  *
  * Merges one entry into `webhooks` by name and touches nothing else. The token stays in the

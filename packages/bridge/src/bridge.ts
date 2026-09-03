@@ -29,6 +29,9 @@ import {
 import { fingerprint, parseTag } from "@quartet/identity";
 import type { DaemonSettings } from "./config";
 import type { Attestor, Verdict } from "./attest";
+import type { JazzProblem, JazzRoster } from "./agent-admin";
+import { describeModel, type JazzAgent } from "./jazz-agents";
+import type { JazzCatalog } from "./jazz-admin";
 import { KnownKeys, type Conflict } from "./known";
 import {
   answerParkedRun,
@@ -77,8 +80,21 @@ export interface Aside {
 export interface BridgeState {
   readonly connectedToHub: boolean;
   readonly me?: Agent;
-  /** `provider/model` for the jazz agent answering on this machine, when jazz will say. */
+  /**
+   * `provider/model` for the jazz agent answering on this machine, when jazz will say.
+   *
+   * Derived from the roster rather than stored, so switching agent or editing its model is
+   * reflected here immediately. It used to be a constructor argument read once at startup,
+   * which meant the header went on claiming the old model for the life of the process.
+   */
   readonly myModel?: string;
+  /** This machine's jazz agents, for the dashboard. Not hub agents — those are `directory`. */
+  readonly jazzAgents: readonly JazzAgent[];
+  /** Which of them speaks for you here. */
+  readonly myAgentId?: string;
+  readonly jazzProblem?: JazzProblem;
+  /** The menus an agent editor is built from. Absent when this jazz is too old to serve them. */
+  readonly jazzCatalog?: JazzCatalog;
   readonly connections: Connection[];
   readonly conversations: Conversation[];
   readonly invites: Invite[];
@@ -190,8 +206,25 @@ export class Bridge {
     private readonly daemon: DaemonSettings,
     private readonly attestor: Attestor,
     private readonly known: KnownKeys = new KnownKeys(),
-    private readonly myModel?: string,
   ) {}
+
+  /**
+   * The jazz roster changed — adopt it and tell the app.
+   *
+   * `AgentAdmin` owns the roster and this holds the copy the snapshot is built from, rather
+   * than the bridge asking jazz anything itself: the bridge's job is the hub conversation.
+   */
+  setJazzRoster(roster: JazzRoster): void {
+    this.jazzRoster = roster;
+    this.publish();
+  }
+
+  private jazzRoster: JazzRoster = { agents: [] };
+
+  private currentModel(): string | undefined {
+    const mine = this.jazzRoster.agents.find((agent) => agent.id === this.jazzRoster.myAgentId);
+    return mine === undefined ? undefined : describeModel(mine);
+  }
 
   async start(): Promise<void> {
     await this.attestor.ready();
@@ -220,10 +253,17 @@ export class Bridge {
 
   snapshot(): BridgeState {
     const keyStoreProblem = this.known.problem();
+    const myModel = this.currentModel();
     return {
       connectedToHub: this.connectedToHub,
       ...(this.me !== undefined ? { me: this.me } : {}),
-      ...(this.myModel !== undefined ? { myModel: this.myModel } : {}),
+      ...(myModel !== undefined ? { myModel } : {}),
+      jazzAgents: this.jazzRoster.agents,
+      ...(this.jazzRoster.myAgentId !== undefined
+        ? { myAgentId: this.jazzRoster.myAgentId }
+        : {}),
+      ...(this.jazzRoster.problem !== undefined ? { jazzProblem: this.jazzRoster.problem } : {}),
+      ...(this.jazzRoster.catalog !== undefined ? { jazzCatalog: this.jazzRoster.catalog } : {}),
       connections: this.connections,
       conversations: this.conversations,
       invites: this.invites,
