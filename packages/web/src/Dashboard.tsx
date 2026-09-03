@@ -118,42 +118,72 @@ function commaList(value: string): string[] {
 }
 
 /**
- * A number as jazz should store it, or null to stop storing one.
+ * The config patch for a draft, against what is stored for that agent.
  *
- * `null` rather than dropping the key, because a shallow merge cannot unset a field — an
- * omitted key keeps whatever is on disk. jazz's validation skips null and its runtime only
- * reads these when they are numbers, so null is how "no longer set" survives a PATCH.
+ * Empty means two different things depending on what was there before, and conflating them
+ * is why a freshly created agent's file used to carry fourteen keys where `jazz agent create`
+ * writes three:
+ *
+ * - a field that was never set is **left out**, so the file stays as small as the CLI's
+ * - a field that *was* set and has been cleared is sent **empty** — `null` for a scalar,
+ *   `[]`/`{}` for a list — because a shallow merge cannot remove a key. jazz's validation
+ *   skips null and its runtime only reads these when they are the right type, so null is how
+ *   "no longer set" survives a PATCH.
  */
-function numberOrNull(value: string): number | null {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return null;
-  const parsed = Number(trimmed);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function stringOrNull(value: string): string | null {
-  const trimmed = value.trim();
-  return trimmed.length === 0 ? null : trimmed;
-}
-
-/** The config patch for a draft. Keys this editor does not manage stay absent, so they survive. */
-function configFrom(draft: Draft): Record<string, unknown> {
-  return {
+function configFrom(draft: Draft, stored: Record<string, unknown> = {}): Record<string, unknown> {
+  const config: Record<string, unknown> = {
     persona: draft.persona,
     llmProvider: draft.llmProvider,
     llmModel: draft.llmModel.trim(),
-    summarizerModel: stringOrNull(draft.summarizerModel),
-    reasoningEffort: stringOrNull(draft.reasoningEffort),
-    temperature: numberOrNull(draft.temperature),
-    maxContextTokens: numberOrNull(draft.maxContextTokens),
-    numCtx: numberOrNull(draft.numCtx),
-    webSearchProvider: stringOrNull(draft.webSearchProvider),
-    memoryScopes: commaList(draft.memoryScopes),
-    envAllowlist: commaList(draft.envAllowlist),
-    tools: draft.tools,
-    deniedTools: draft.deniedTools,
-    companions: draft.companions,
   };
+
+  /** Whether the stored config carried a value worth clearing. */
+  const wasSet = (key: string): boolean => {
+    const value = stored[key];
+    if (value === undefined || value === null) return false;
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === "object") return Object.keys(value).length > 0;
+    return true;
+  };
+
+  const text = (key: string, raw: string): void => {
+    const trimmed = raw.trim();
+    if (trimmed.length > 0) config[key] = trimmed;
+    else if (wasSet(key)) config[key] = null;
+  };
+
+  const number = (key: string, raw: string): void => {
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) {
+      if (wasSet(key)) config[key] = null;
+      return;
+    }
+    const parsed = Number(trimmed);
+    // A value that is not a number goes over as typed so jazz refuses it and names the
+    // field, rather than being silently dropped or turned into null here.
+    config[key] = Number.isFinite(parsed) ? parsed : trimmed;
+  };
+
+  const list = (key: string, values: readonly string[]): void => {
+    if (values.length > 0) config[key] = values;
+    else if (wasSet(key)) config[key] = [];
+  };
+
+  text("summarizerModel", draft.summarizerModel);
+  text("reasoningEffort", draft.reasoningEffort);
+  text("webSearchProvider", draft.webSearchProvider);
+  number("temperature", draft.temperature);
+  number("maxContextTokens", draft.maxContextTokens);
+  number("numCtx", draft.numCtx);
+  list("memoryScopes", commaList(draft.memoryScopes));
+  list("envAllowlist", commaList(draft.envAllowlist));
+  list("tools", draft.tools);
+  list("deniedTools", draft.deniedTools);
+
+  if (Object.keys(draft.companions).length > 0) config["companions"] = draft.companions;
+  else if (wasSet("companions")) config["companions"] = {};
+
+  return config;
 }
 
 /**
@@ -309,7 +339,7 @@ export function Dashboard({
   async function save(): Promise<void> {
     setBusy(true);
     setRefusal(undefined);
-    const config = configFrom(draft);
+    const config = configFrom(draft, detail?.config);
     const result = creating
       ? await read<JazzAgentDetail>("agents/create", {
           name: draft.name.trim(),
