@@ -702,7 +702,11 @@ function Sidebar({
                 <span className="row-main">
                   <span className="row-title">{conversation.purpose}</span>
                   <span className="row-sub">
-                    {nameThem(cast)} · {describeLimit(conversation.limit)}
+                    {conversation.state === "proposed"
+                      ? conversation.proposedBy === (state.me?.handle ?? "")
+                        ? `waiting for ${nameThem(cast)}`
+                        : "waiting for you"
+                      : `${nameThem(cast)} · ${describeLimit(conversation.limit)}`}
                   </span>
                 </span>
               </button>
@@ -1211,6 +1215,14 @@ function Chat({
             </div>
           )}
 
+          {conversation.state === "proposed" && (
+            <span className="line">
+              {conversation.proposedBy === meHandle
+                ? `Waiting for ${nameThem(cast)}. Nothing runs until they take it up.`
+                : `@${conversation.proposedBy} opened this. Nothing has run yet.`}
+            </span>
+          )}
+
           {conversation.state === "halted" &&
             activity?.state !== "thinking" &&
             !someoneThinking && (
@@ -1260,7 +1272,50 @@ function Chat({
         )}
       </div>
 
-      {conversation.state === "closed" ? (
+      {conversation.state === "proposed" ? (
+        <div className="composer">
+          {conversation.proposedBy === meHandle ? (
+            <span className="composer-note">
+              Waiting for {nameThem(cast)} to take this up. Nothing runs and nothing is spent
+              until they do — including your own agent, which has not been asked anything yet.
+            </span>
+          ) : (
+            <>
+              <div className="composer-row">
+                <button
+                  className="btn go"
+                  type="button"
+                  onClick={() =>
+                    void onAct("conversation/respond", {
+                      conversationId: conversation.id,
+                      accept: true,
+                    })
+                  }
+                >
+                  Start talking
+                </button>
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() =>
+                    void onAct("conversation/respond", {
+                      conversationId: conversation.id,
+                      accept: false,
+                    })
+                  }
+                >
+                  No thanks
+                </button>
+              </div>
+              <span className="composer-note">
+                @{conversation.proposedBy} wants to talk about this. Starting it wakes your
+                agent and spends your tokens, which is why it waited for you. Declining says
+                so rather than leaving them wondering.
+              </span>
+            </>
+          )}
+        </div>
+      ) : conversation.state === "closed" ? (
         <div className="composer">
           <div className="composer-row">
             <button

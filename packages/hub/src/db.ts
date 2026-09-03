@@ -247,6 +247,7 @@ export class HubStore {
       spent_usd: "REAL NOT NULL DEFAULT 0",
       spend_incomplete: "INTEGER NOT NULL DEFAULT 0",
       state: "TEXT NOT NULL DEFAULT 'live'",
+      proposed_by: "TEXT",
     });
 
     // A database written before rooms had three states carries one `stopped` flag, which
@@ -503,6 +504,13 @@ export class HubStore {
    * mean something — and a connection stores its pair sorted by id, which would have made
    * that "whoever's id sorts lower". Whose room it is, is the honest answer.
    */
+  /**
+   * Open a room, proposed rather than running.
+   *
+   * Nothing dispatches until the other side takes it up — an agent's turn spends its
+   * owner's money and speaks in their name, so being willing to talk to somebody is not
+   * standing consent to every conversation they open afterwards.
+   */
   createConversation(
     connectionId: string,
     purpose: string,
@@ -519,8 +527,8 @@ export class HubStore {
     const at = nowIso();
     const turns = limit.kind === "turns" ? limit.turns : DEFAULT_TURN_BUDGET;
     this.db.run(
-      "INSERT INTO conversations (id, connection_id, purpose, budget, budget_max, limit_json, created_at, last_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      [id, connectionId, purpose, turns, turns, JSON.stringify(limit), at, at],
+      "INSERT INTO conversations (id, connection_id, purpose, budget, budget_max, limit_json, created_at, last_at, state, proposed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?)",
+      [id, connectionId, purpose, turns, turns, JSON.stringify(limit), at, at, openedBy ?? null],
     );
     for (const agentId of participants) this.addMember(id, agentId);
     return this.conversation(id);
@@ -556,6 +564,39 @@ export class HubStore {
     return DEFAULT_LIMIT;
   }
 
+  /** A handle for an agent id, when there is one. */
+  private handleOf(agentId: string | null): string | undefined {
+    if (agentId === null) return undefined;
+    return this.db
+      .query<{ handle: string }, [string]>("SELECT handle FROM agents WHERE id = ?")
+      .get(agentId)?.handle;
+  }
+
+  /**
+   * Take up a proposed room, or turn it down, as the side that did not open it.
+   *
+   * Returns the room when the answer took effect. The proposer cannot answer their own
+   * proposal — that would make the approval decorative — and a room past `proposed` is
+   * already answered, so a repeated tap changes nothing.
+   */
+  respondToConversation(
+    conversationId: string,
+    agentId: string,
+    accept: boolean,
+  ): Conversation | undefined {
+    const conversation = this.conversation(conversationId);
+    if (conversation === undefined || conversation.state !== "proposed") return undefined;
+
+    const responder = this.agentById(agentId);
+    if (responder === undefined || responder.handle === conversation.proposedBy) return undefined;
+    if (!conversation.participants.includes(responder.handle)) return undefined;
+
+    // Declined rooms close rather than vanish: the proposer is owed the answer, and a room
+    // that disappeared would read as a bug on their side.
+    this.setState(conversationId, accept ? "live" : "closed");
+    return this.conversation(conversationId);
+  }
+
   conversation(id: string): Conversation | undefined {
     const row = this.db
       .query<
@@ -569,11 +610,12 @@ export class HubStore {
           spent_usd: number;
           spend_incomplete: number;
           state: string;
+          proposed_by: string | null;
           last_at: string;
         },
         [string]
       >(
-        "SELECT id, connection_id, purpose, budget, budget_max, limit_json, spent_usd, spend_incomplete, state, last_at FROM conversations WHERE id = ?",
+        "SELECT id, connection_id, purpose, budget, budget_max, limit_json, spent_usd, spend_incomplete, state, proposed_by, last_at FROM conversations WHERE id = ?",
       )
       .get(id);
     if (row === null || row === undefined) return undefined;
@@ -596,6 +638,7 @@ export class HubStore {
       spentUSD: row.spent_usd,
       spendIncomplete: row.spend_incomplete === 1,
       state: HubStore.parseRoomState(row.state),
+      proposedBy: this.handleOf(row.proposed_by) ?? "",
       bowedOut: this.db
         .query<{ handle: string }, [string]>(
           `SELECT a.handle FROM conversation_members m

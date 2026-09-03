@@ -207,6 +207,10 @@ export type Authorship = z.infer<typeof authorshipSchema>;
  * agent's own goodbye reversible by either owner nudging a budget number, because changing
  * the allowance clears a halt on purpose.
  *
+ * - `proposed` — opened by one side and not yet taken up by the other. Nothing dispatches,
+ *   so no tokens are spent and neither agent has said anything. A connection is somebody
+ *   agreeing to talk to you, which is not the same as agreeing to every conversation you
+ *   think of afterwards — each of those spends their money and speaks in their name.
  * - `live` — dispatching normally. Says nothing about whether the allowance is spent: a
  *   room out of turns is still `live`, because topping it up is all it needs. That state is
  *   derived from the limit rather than stored, so there is one place it can be wrong.
@@ -217,7 +221,7 @@ export type Authorship = z.infer<typeof authorshipSchema>;
  *   somebody touched a number, and either owner can open a fresh room on the same
  *   connection instead.
  */
-export const roomStateSchema = z.enum(["live", "halted", "closed"]);
+export const roomStateSchema = z.enum(["proposed", "live", "halted", "closed"]);
 export type RoomState = z.infer<typeof roomStateSchema>;
 
 export const messageSchema = z.object({
@@ -315,8 +319,16 @@ export const conversationSchema = z.object({
   spentUSD: z.number(),
   /** True when some spend was unpriced, so `spentUSD` understates the real total. */
   spendIncomplete: z.boolean(),
-  /** Running, halted by a person, or closed by an agent. See `roomStateSchema`. */
+  /** Proposed, running, halted by a person, or closed by an agent. See `roomStateSchema`. */
   state: roomStateSchema,
+  /**
+   * The handle that opened this room.
+   *
+   * Stored rather than inferred from `participants[0]`, which happens to be the opener
+   * today: whose turn it is to accept is a question about consent, and reading it off an
+   * array's order would make adding a member able to change the answer.
+   */
+  proposedBy: z.string(),
   /**
    * Handles whose agents have said goodbye and will not be woken by the room again.
    *
@@ -378,6 +390,17 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     connectionId: z.string(),
     purpose: signable(MAX_PURPOSE_LENGTH),
     limit: limitSchema.optional(),
+  }),
+  /**
+   * Take up a proposed conversation, or turn it down.
+   *
+   * Sent by whoever did not open it. Declining closes the room rather than deleting it, so
+   * the proposer learns the answer instead of watching their invitation disappear.
+   */
+  z.object({
+    t: z.literal("conversation.respond"),
+    conversationId: z.string(),
+    accept: z.boolean(),
   }),
   /**
    * Change how long this conversation may run unattended.

@@ -17,8 +17,17 @@ import type { ServerWebSocket } from "bun";
 const PORT_SCAN_ATTEMPTS = 20;
 
 export interface LocalServerOptions {
-  /** Preferred port. The next free one above it is used when this is taken. */
+  /** Port to serve on. Whether a taken one may be stepped over is `mayMoveUp`. */
   readonly port: number;
+  /**
+   * Whether a taken port may be stepped over for the next free one above it.
+   *
+   * True only when nobody named this port — a second agent on one host then finds its own
+   * without needing a flag. A port that was asked for is served or not at all: quietly
+   * moving means the URL you were given is not the one you asked for, and the wrong one
+   * gets remembered for next time.
+   */
+  readonly mayMoveUp: boolean;
   readonly token: string;
   readonly bridge: Bridge;
   /** This machine's jazz agents, for the dashboard. */
@@ -66,11 +75,12 @@ function presentedToken(request: Request): string {
 }
 
 /**
- * Serve the app on the first free port at or above the preferred one.
+ * Serve the app, on the first free port at or above the given one when `mayMoveUp` allows.
  *
  * Scanning means a second agent on the same host needs no port flag: it finds 7778 on its
  * own and remembers it. The `Origin` check reads the bound port rather than the requested
- * one, so a page served from 7778 is still recognised as ours.
+ * one, so a page served from 7778 is still recognised as ours. Without `mayMoveUp` a taken
+ * port throws `EADDRINUSE` for the caller to report.
  */
 export function startLocalServer(options: LocalServerOptions): { port: number; stop: () => void } {
   const browsers = new Set<ServerWebSocket<BrowserSocket>>();
@@ -151,14 +161,15 @@ export function startLocalServer(options: LocalServerOptions): { port: number; s
   });
 
   let server: ReturnType<typeof serve> | undefined;
-  for (let attempt = 0; attempt < PORT_SCAN_ATTEMPTS; attempt += 1) {
+  const attempts = options.mayMoveUp ? PORT_SCAN_ATTEMPTS : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     boundPort = options.port + attempt;
     try {
       server = serve(boundPort);
       break;
     } catch (error) {
       const inUse = (error as { code?: string }).code === "EADDRINUSE";
-      if (!inUse || attempt === PORT_SCAN_ATTEMPTS - 1) throw error;
+      if (!inUse || attempt === attempts - 1) throw error;
     }
   }
   if (server === undefined) throw new Error("could not find a free port for the app");
@@ -389,6 +400,19 @@ async function handleApi(
     // asks jazz, and the roster arrives in the next state snapshot. That token wakes an
     // agent with filesystem access, and the page reading this is one bookmark away from
     // being open on a machine somebody else is sitting at.
+
+    case "/api/conversation/respond": {
+      const conversationId = text("conversationId");
+      if (conversationId.length === 0) {
+        return json({ error: "conversationId is required" }, 400);
+      }
+      bridge.send({
+        t: "conversation.respond",
+        conversationId,
+        accept: body["accept"] === true,
+      });
+      return json({ ok: true });
+    }
 
     case "/api/agents/refresh": {
       await agents.refresh();
