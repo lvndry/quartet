@@ -420,3 +420,122 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
 /* KaTeX sizes itself; colour and display rhythm are ours. */
 .md .katex { color: var(--cream); font-size: 1em; }
 .md .katex-display { margin: 0.7em 0; overflow-x: auto; overflow-y: hidden; padding: 0.15em 0; }
+
+/* ---------------------------------------------------------------- your agents
+
+   A roster, not a settings page: these are the players on this machine and one of
+   them is on stage. Which one is marked the way everything live is marked — lit
+   monogram, cyan edge — because that is the fact somebody opens this screen for.
+
+   The palette rule holds here too. Cyan is live, vermilion is a refusal or a
+   deletion, and brass stays unspent: nothing on this screen is a person speaking
+   into a room, and using it here would cost it its meaning in the rooms.
+
+   One extension the rest of the app did not need. Chrome is tracked uppercase
+   mono, but twelve form labels in that treatment would make the screen read as
+   all chrome, so field labels are sentence-case body in cream-dim. Scanning the
+   structure and reading the fields become two different acts. */
+
+.dash { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+
+.dash-top {
+  display: flex; align-items: center; gap: 0.5rem;
+  border-bottom: 1px solid var(--rule); padding-right: 1rem;
+}
+.dash-top .pane-title { padding-bottom: 0.85rem; }
+.dash-banner { margin: 0.7rem 1rem 0; }
+
+.dash-body {
+  display: grid; grid-template-columns: 15rem minmax(0, 1fr);
+  min-height: 0; flex: 1; overflow: hidden;
+}
+
+.dash-roster { border-right: 1px solid var(--rule); }
+
+.dash-row {
+  display: flex; gap: 0.6rem; align-items: center; width: 100%; text-align: left;
+  padding: 0.55rem 1rem; background: none; border: none;
+  border-bottom: 1px solid var(--rule-soft);
+  /* The cyan edge is reserved for the agent on stage, so every row keeps the space. */
+  border-left: 2px solid transparent;
+  cursor: pointer; transition: border-color 140ms, color 140ms;
+}
+.dash-row.open { background: var(--ink-raised); }
+.dash-row.live { border-left-color: var(--signal); }
+/* The row's two lines are spans inside a button, so the stack is set here rather than
+   inherited from `.row-main`, which only manages overflow. */
+.dash-row .row-main { display: flex; flex-direction: column; min-width: 0; }
+.dash-row .row-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dash-row-title {
+  display: flex; align-items: baseline; gap: 0.45rem; min-width: 0;
+  font-size: 0.87rem; color: var(--cream-dim);
+}
+.dash-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-row.live .dash-row-title { color: var(--cream); font-weight: 500; }
+.dash-onstage {
+  font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--signal);
+}
+.dash-new { border-style: dashed; color: var(--slate); width: calc(100% - 2rem); margin: 0.7rem 1rem; }
+
+.dash-editor { padding: 0.9rem 1.1rem 1.6rem; max-width: 34rem; }
+.dash-promote { width: 100%; margin-bottom: 0.5rem; }
+
+/* Group heads carry the structure, so they get the rule that runs to the edge. */
+.dash-group {
+  display: flex; align-items: center; gap: 0.6rem;
+  font-family: var(--mono); font-size: 0.6rem; font-weight: 600; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--slate); margin: 1.5rem 0 0.6rem;
+}
+.dash-group:first-of-type { margin-top: 0.4rem; }
+.dash-group::after { content: ""; flex: 1; height: 1px; background: var(--rule-soft); }
+
+.dash-label { display: block; font-size: 0.8rem; color: var(--cream-dim); margin: 0.6rem 0 0.2rem; }
+.dash-editor .field { width: 100%; }
+.dash-editor select.field { font-family: var(--mono); font-size: 0.8rem; }
+.field.wrong { border-color: var(--vermilion); }
+.dash-wrong { font-size: 0.78rem; color: var(--vermilion); margin: 0.25rem 0 0; }
+/* A statement of fact, not a failure: cream-dim would read as instruction, vermilion as error. */
+.dash-hint { font-size: 0.78rem; color: var(--slate); margin: 0.35rem 0 0; max-width: 58ch; }
+.dash-hint.dash-inline { margin: 0; }
+
+.dash-tools { margin-top: 0.5rem; }
+.dash-tool-cat {
+  font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--slate); margin: 0.75rem 0 0.25rem;
+}
+.dash-tool { display: flex; align-items: center; gap: 0.55rem; padding: 0.16rem 0; cursor: pointer; }
+.dash-tool input { accent-color: var(--signal); margin: 0; }
+.dash-tool-name { font-family: var(--mono); font-size: 0.79rem; color: var(--cream-dim); }
+.dash-tool.off .dash-tool-name {
+  color: var(--slate); text-decoration: line-through; text-decoration-color: var(--rule);
+}
+.dash-tool-tag {
+  margin-left: auto; font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--slate);
+  border: 1px solid var(--rule-soft); padding: 0 0.3rem;
+}
+.dash-tool-tag.denied { color: var(--vermilion); border-color: var(--vermilion); }
+
+.dash-actions { display: flex; gap: 0.5rem; align-items: center; margin-top: 1.4rem; }
+.dash-actions .btn:disabled { color: var(--slate); border-color: var(--rule-soft); cursor: default; }
+
+button.model-badge { cursor: pointer; }
+button.model-badge:hover, button.model-badge.open { color: var(--cream-dim); border-color: var(--cream-dim); }
+
+@media (max-width: 719px) {
+  .dash-body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .dash-roster { border-right: none; border-bottom: 1px solid var(--rule); max-height: 40%; }
+}
+
+.dash-companion {
+  display: grid; grid-template-columns: 4.5rem minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 0.4rem; align-items: center; margin-top: 0.4rem;
+}
+.dash-companion-name {
+  font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--cream-dim);
+}
+@media (max-width: 719px) {
+  .dash-companion { grid-template-columns: 1fr; }
+}

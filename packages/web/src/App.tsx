@@ -1,6 +1,7 @@
 import type React from "react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Conversation, Message } from "@quartet/protocol";
+import { Dashboard } from "./Dashboard";
 import {
   DEFAULT_TURN_BUDGET,
   MAX_ROOM_MEMBERS,
@@ -487,6 +488,7 @@ export default function App(): React.JSX.Element {
   const [selected, setSelected] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [navOpen, setNavOpen] = useState(false);
+  const [view, setView] = useState<"rooms" | "agents">("rooms");
 
   const conversation: Conversation | undefined = useMemo(
     () =>
@@ -529,11 +531,16 @@ export default function App(): React.JSX.Element {
             short={state.me.did !== undefined ? shortFp[state.me.did] ?? "unkeyed" : undefined}
           />
         )}
-        {state.myModel !== undefined && (
-          <span className="model-badge" title="What your agent is running, reported by jazz">
-            {state.myModel}
-          </span>
-        )}
+        {/* The badge already says what you are running, so it is the honest place to click
+            to change it — rather than a settings icon that says nothing. */}
+        <button
+          className={view === "agents" ? "model-badge open" : "model-badge"}
+          type="button"
+          title="Your agents on this machine"
+          onClick={() => setView(view === "agents" ? "rooms" : "agents")}
+        >
+          {state.myModel ?? "your agents"}
+        </button>
         <div className="spacer" />
         <span className={live && state.connectedToHub ? "status live" : "status"}>
           <span className="pip" />
@@ -547,6 +554,9 @@ export default function App(): React.JSX.Element {
         aria-hidden="true"
       />
 
+      {view === "agents" ? (
+        <Dashboard state={state} onClose={() => setView("rooms")} onAct={act} />
+      ) : (
       <div className="columns">
         <Sidebar
           state={state}
@@ -588,6 +598,7 @@ export default function App(): React.JSX.Element {
           }
         />
       </div>
+      )}
 
       {state.keyStoreProblem !== undefined && (
         <div className="key-alarm">{state.keyStoreProblem}</div>

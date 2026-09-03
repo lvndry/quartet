@@ -106,8 +106,10 @@ export class AgentAdmin {
     return fetchJazzAgentDetail(this.daemon, identifier);
   }
 
-  models(provider: string): Promise<JazzResult<readonly JazzModel[]>> {
-    return fetchJazzModels(this.daemon, provider);
+  models(provider: string, capability?: string): Promise<JazzResult<readonly JazzModel[]>> {
+    return capability === undefined
+      ? fetchJazzModels(this.daemon, provider)
+      : fetchJazzModels(this.daemon, provider, capability);
   }
 
   personas(): Promise<JazzResult<readonly JazzPersona[]>> {

@@ -76,6 +76,8 @@ export interface JazzCatalog {
   providers: string[];
   webSearchProviders: string[];
   reasoningEfforts: string[];
+  /** Modalities an agent can bind a companion for: vision, audio, video. */
+  perceptionCapabilities: string[];
 }
 
 /**
@@ -112,8 +114,7 @@ export interface JazzPersona {
 export interface JazzTools {
   tools: string[];
   categories: Record<string, string[]>;
-  /** Absent when this jazz is too old to say — not the same as nothing being on by default. */
-  defaultTools?: string[];
+  defaultTools: string[];
 }
 
 /** One agent in full, for the editor. Api keys are never served, only which providers set one. */

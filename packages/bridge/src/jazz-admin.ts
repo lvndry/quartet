@@ -40,6 +40,8 @@ export interface JazzCatalog {
   readonly providers: readonly string[];
   readonly webSearchProviders: readonly string[];
   readonly reasoningEfforts: readonly string[];
+  /** Modalities an agent can bind a companion for: vision, audio, video. */
+  readonly perceptionCapabilities: readonly string[];
 }
 
 /**
@@ -73,12 +75,12 @@ export interface JazzTools {
   /**
    * Which tools an agent gets whether or not anyone asked for them.
    *
-   * Optional because a jazz from before it existed does not say. Absent is not the same as
-   * empty: empty would mean "nothing is on by default", and a picker that believed that
-   * would offer to switch off tools it has no way to switch off. Absent means "this jazz
-   * cannot tell you", and the honest response is to stop offering the toggle.
+   * Required, because a tool picker cannot be honest without it: `config.tools` only ever
+   * adds, so without knowing which tools arrive anyway a checkbox cannot say whether
+   * unticking it would do anything. A jazz too old to report it is therefore a jazz too old
+   * to edit tools from here, and `unsupported` says so rather than the UI guessing.
    */
-  readonly defaultTools?: readonly string[];
+  readonly defaultTools: readonly string[];
 }
 
 /**
@@ -218,17 +220,28 @@ export function fetchJazzCatalog(daemon: DaemonSettings): Promise<JazzResult<Jaz
         providers,
         webSearchProviders: strings(body["webSearchProviders"]),
         reasoningEfforts: strings(body["reasoningEfforts"]),
+        perceptionCapabilities: strings(body["perceptionCapabilities"]),
       };
     },
     { missingMeans: "unsupported" },
   );
 }
 
+/**
+ * A provider's models, or only the ones that accept `capability`.
+ *
+ * The filtering and the order are jazz's, not this file's: "capable, best first" means priced
+ * before unpriced and then cheapest, and re-deciding that here would disagree with what
+ * jazz's own picker recommends.
+ */
 export function fetchJazzModels(
   daemon: DaemonSettings,
   provider: string,
+  capability?: string,
 ): Promise<JazzResult<readonly JazzModel[]>> {
-  return callJazz(daemon, `/models?provider=${encodeURIComponent(provider)}`, (body) => {
+  const query =
+    capability === undefined ? "" : `&capability=${encodeURIComponent(capability)}`;
+  return callJazz(daemon, `/models?provider=${encodeURIComponent(provider)}${query}`, (body) => {
     if (!Array.isArray(body["models"])) return undefined;
     return body["models"]
       .map((raw): JazzModel | undefined => {
@@ -293,13 +306,11 @@ export function fetchJazzTools(daemon: DaemonSettings): Promise<JazzResult<JazzT
         categories[category] = strings(names);
       }
     }
-    const defaultTools = Array.isArray(body["defaultTools"])
-      ? strings(body["defaultTools"])
-      : undefined;
+    if (!Array.isArray(body["defaultTools"])) return undefined;
     return {
       tools: strings(body["tools"]),
       categories,
-      ...(defaultTools !== undefined ? { defaultTools } : {}),
+      defaultTools: strings(body["defaultTools"]),
     };
   });
 }
