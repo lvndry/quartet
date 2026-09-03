@@ -78,9 +78,19 @@ export class AgentAdmin {
       agentIdFor(this.daemon.webhook),
     ]);
 
+    // The webhook may name its agent by *name* rather than id — `--agent sonnet` writes the
+    // flag through verbatim, and jazz resolves either, so such a config is correct. Resolved
+    // to an id here so that everything downstream can compare ids and only this line has to
+    // know an identifier can be one or the other.
+    const mine =
+      listing.kind === "ok" && myAgentId !== undefined
+        ? listing.agents.find((agent) => agent.id === myAgentId || agent.name === myAgentId)
+        : undefined;
+    const resolvedId = mine?.id ?? myAgentId;
+
     const next: JazzRoster = {
       agents: listing.kind === "ok" ? listing.agents : [],
-      ...(myAgentId !== undefined ? { myAgentId } : {}),
+      ...(resolvedId !== undefined ? { myAgentId: resolvedId } : {}),
       ...(listing.kind !== "ok" ? { problem: listing.kind } : {}),
       ...(catalog.kind === "ok" ? { catalog: catalog.value } : {}),
     };
@@ -106,10 +116,10 @@ export class AgentAdmin {
     return fetchJazzAgentDetail(this.daemon, identifier);
   }
 
-  models(provider: string, capability?: string): Promise<JazzResult<readonly JazzModel[]>> {
-    return capability === undefined
+  models(provider: string, role?: string): Promise<JazzResult<readonly JazzModel[]>> {
+    return role === undefined
       ? fetchJazzModels(this.daemon, provider)
-      : fetchJazzModels(this.daemon, provider, capability);
+      : fetchJazzModels(this.daemon, provider, role);
   }
 
   personas(): Promise<JazzResult<readonly JazzPersona[]>> {

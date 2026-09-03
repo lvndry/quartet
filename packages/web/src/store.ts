@@ -76,8 +76,8 @@ export interface JazzCatalog {
   providers: string[];
   webSearchProviders: string[];
   reasoningEfforts: string[];
-  /** Modalities an agent can bind a companion for: vision, audio, video. */
-  perceptionCapabilities: string[];
+  /** Jobs an agent can bind a companion for, each `"<action>:<modality>"`. */
+  companionRoles: string[];
 }
 
 /**

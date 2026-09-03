@@ -94,6 +94,49 @@ describe("reading the roster", () => {
     }
   });
 
+  it("resolves a webhook that names its agent rather than identifying it", async () => {
+    // `quartet connect --agent sonnet` writes the flag through verbatim, and jazz resolves a
+    // name the same as an id — so this config is correct, and the roster has to agree with it
+    // or nothing shows as speaking for you and the header claims no model at all.
+    await writeFile(
+      join(jazzHome, "config.json"),
+      JSON.stringify({
+        webhooks: [{ name: "quartet", agentId: "sonnet", promptTemplate: "{{payload}}" }],
+      }),
+    );
+    const stub = healthyDaemon();
+    try {
+      const { admin } = adminFor(stub.url);
+      const roster = await admin.refresh();
+
+      expect(roster.myAgentId).toBe("agt_sonnet");
+      expect(admin.myModel()).toBe("anthropic/claude-sonnet-4-6");
+    } finally {
+      stub.stop();
+    }
+  });
+
+  it("keeps an unresolvable webhook agent as it found it", async () => {
+    // Nothing to resolve it against is not the same as resolving it to nothing: overwriting
+    // would lose the only record of what the webhook actually points at.
+    await writeFile(
+      join(jazzHome, "config.json"),
+      JSON.stringify({
+        webhooks: [{ name: "quartet", agentId: "agt_ghost", promptTemplate: "{{payload}}" }],
+      }),
+    );
+    const stub = healthyDaemon();
+    try {
+      const { admin } = adminFor(stub.url);
+      const roster = await admin.refresh();
+
+      expect(roster.myAgentId).toBe("agt_ghost");
+      expect(admin.myModel()).toBeUndefined();
+    } finally {
+      stub.stop();
+    }
+  });
+
   it("derives the running model from whichever agent speaks here", async () => {
     const stub = healthyDaemon();
     try {

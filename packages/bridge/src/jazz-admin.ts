@@ -40,8 +40,14 @@ export interface JazzCatalog {
   readonly providers: readonly string[];
   readonly webSearchProviders: readonly string[];
   readonly reasoningEfforts: readonly string[];
-  /** Modalities an agent can bind a companion for: vision, audio, video. */
-  readonly perceptionCapabilities: readonly string[];
+  /**
+   * The jobs an agent can bind a companion for, each `"<action>:<modality>"`.
+   *
+   * Action and modality are separate axes because a model rarely does both — most models
+   * that read an image cannot draw one — so `analyze:image` and `generate:image` are
+   * independent slots on the same agent.
+   */
+  readonly companionRoles: readonly string[];
 }
 
 /**
@@ -220,7 +226,7 @@ export function fetchJazzCatalog(daemon: DaemonSettings): Promise<JazzResult<Jaz
         providers,
         webSearchProviders: strings(body["webSearchProviders"]),
         reasoningEfforts: strings(body["reasoningEfforts"]),
-        perceptionCapabilities: strings(body["perceptionCapabilities"]),
+        companionRoles: strings(body["companionRoles"]),
       };
     },
     { missingMeans: "unsupported" },
@@ -228,19 +234,18 @@ export function fetchJazzCatalog(daemon: DaemonSettings): Promise<JazzResult<Jaz
 }
 
 /**
- * A provider's models, or only the ones that accept `capability`.
+ * A provider's models, or only the ones that can do `role`.
  *
  * The filtering and the order are jazz's, not this file's: "capable, best first" means priced
  * before unpriced and then cheapest, and re-deciding that here would disagree with what
- * jazz's own picker recommends.
+ * jazz's own picker recommends for the same question.
  */
 export function fetchJazzModels(
   daemon: DaemonSettings,
   provider: string,
-  capability?: string,
+  role?: string,
 ): Promise<JazzResult<readonly JazzModel[]>> {
-  const query =
-    capability === undefined ? "" : `&capability=${encodeURIComponent(capability)}`;
+  const query = role === undefined ? "" : `&role=${encodeURIComponent(role)}`;
   return callJazz(daemon, `/models?provider=${encodeURIComponent(provider)}${query}`, (body) => {
     if (!Array.isArray(body["models"])) return undefined;
     return body["models"]

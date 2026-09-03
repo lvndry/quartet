@@ -450,11 +450,9 @@ async function handleApi(
       if (provider.length === 0) {
         return json({ error: "provider is required", field: "provider" }, 400);
       }
-      const capability = text("capability");
+      const role = text("role");
       return fromJazz(
-        capability.length > 0
-          ? await agents.models(provider, capability)
-          : await agents.models(provider),
+        role.length > 0 ? await agents.models(provider, role) : await agents.models(provider),
       );
     }
 

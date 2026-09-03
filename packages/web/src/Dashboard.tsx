@@ -192,6 +192,25 @@ function toggleTool(tool: string, draft: Draft, defaults: readonly string[]): Dr
   };
 }
 
+/**
+ * The roles jazz serves, gathered by their action half.
+ *
+ * Split on the key rather than listing the actions here: a role is `"<action>:<modality>"`,
+ * so jazz adding a third action should show up without this file being edited. Order follows
+ * jazz's own, which puts analysis — the half that has a consumer — first.
+ */
+function byAction(roles: readonly string[]): [string, string[]][] {
+  const grouped: [string, string[]][] = [];
+  for (const role of roles) {
+    const [action, modality] = role.split(":", 2);
+    if (action === undefined || modality === undefined) continue;
+    const existing = grouped.find(([name]) => name === action);
+    if (existing === undefined) grouped.push([action, [role]]);
+    else existing[1].push(role);
+  }
+  return grouped;
+}
+
 function problemText(problem: BridgeState["jazzProblem"]): string {
   switch (problem) {
     case "unreachable":
@@ -582,30 +601,33 @@ export function Dashboard({
               />
 
               <div className="dash-group">What it delegates to</div>
-              <p className="dash-hint">
-                A model bound here handles media this agent's own model cannot read. Quartet
-                drives jazz unattended, so an unbound modality does not stop to ask you — it
-                fails the turn instead.
-              </p>
-              {(catalog?.perceptionCapabilities ?? []).map((capability) => (
-                <CompanionRow
-                  key={capability}
-                  capability={capability}
-                  providers={catalog?.providers ?? []}
-                  bound={draft.companions[capability] ?? ""}
-                  editable={editable}
-                  onBind={(value) => {
-                    const next = { ...draft.companions };
-                    if (value.length === 0) delete next[capability];
-                    else next[capability] = value;
-                    setDraft({ ...draft, companions: next });
-                  }}
-                />
+              {byAction(catalog?.companionRoles ?? []).map(([action, roles]) => (
+                <div className="dash-delegation" key={action}>
+                  <div className="dash-action">{action}</div>
+                  <p className="dash-hint">
+                    {action === "generate"
+                      ? "Nothing delegates generation yet, so a model bound here is recorded and unused until something does."
+                      : "Media this agent's own model cannot read. Quartet drives jazz unattended, so an unbound modality does not stop to ask you — it fails the turn instead."}
+                  </p>
+                  {roles.map((role) => (
+                    <CompanionRow
+                      key={role}
+                      role={role}
+                      providers={catalog?.providers ?? []}
+                      bound={draft.companions[role] ?? ""}
+                      editable={editable}
+                      onBind={(value) => {
+                        const next = { ...draft.companions };
+                        if (value.length === 0) delete next[role];
+                        else next[role] = value;
+                        setDraft({ ...draft, companions: next });
+                      }}
+                    />
+                  ))}
+                </div>
               ))}
               {fieldNote("config.companions")}
-              {(catalog?.perceptionCapabilities ?? []).map((capability) =>
-                fieldNote(`config.companions.${capability}`),
-              )}
+              {(catalog?.companionRoles ?? []).map((role) => fieldNote(`config.companions.${role}`))}
 
               <div className="dash-group">What it keeps</div>
               <label className="dash-label" htmlFor="agent-context">
@@ -804,28 +826,30 @@ function ToolPicker({
 }
 
 /**
- * One modality's companion: a provider, then a model that can actually take that modality.
+ * One role's companion: a provider, then a model that can actually do that job.
  *
- * The model list is asked for with the capability attached, so jazz does the filtering and
- * the ordering — priced before unpriced, then cheapest. Deciding either here would disagree
- * with what jazz's own picker recommends for the same question.
+ * The model list is asked for with the role attached, so jazz does the filtering and the
+ * ordering — priced before unpriced, then cheapest. Deciding either here would disagree with
+ * what jazz's own picker recommends for the same question.
  *
- * A provider legitimately has none: Anthropic serves eleven vision models and no audio ones.
- * That is an answer, so it is stated rather than left as an empty menu.
+ * A provider legitimately has none: Anthropic serves eleven models that read an image and
+ * none that listen. That is an answer, so it is stated rather than left as an empty menu.
  */
 function CompanionRow({
-  capability,
+  role,
   providers,
   bound,
   editable,
   onBind,
 }: {
-  capability: string;
+  role: string;
   providers: readonly string[];
   bound: string;
   editable: boolean;
   onBind: (value: string) => void;
 }): ReactElement {
+  // The action is the group heading, so the row only has to name the modality.
+  const modality = role.split(":", 2)[1] ?? role;
   const [boundProvider, boundModel] = bound.split("/", 2);
   const [provider, setProvider] = useState(boundProvider ?? "");
   const [models, setModels] = useState<JazzModel[] | undefined>(undefined);
@@ -839,7 +863,7 @@ function CompanionRow({
     let current = true;
     setModels(undefined);
     setProblem(undefined);
-    void read<JazzModel[]>("agents/models", { provider, capability }).then((result) => {
+    void read<JazzModel[]>("agents/models", { provider, role }).then((result) => {
       if (!current) return;
       if ("value" in result) setModels(result.value);
       else setProblem(result.refused.error);
@@ -847,14 +871,14 @@ function CompanionRow({
     return () => {
       current = false;
     };
-  }, [provider, capability]);
+  }, [provider, role]);
 
   return (
     <div className="dash-companion">
-      <span className="dash-companion-name">{capability}</span>
+      <span className="dash-companion-name">{modality}</span>
       <select
         className="field"
-        aria-label={`${capability} companion provider`}
+        aria-label={`${role} companion provider`}
         value={provider}
         disabled={!editable}
         onChange={(event) => {
@@ -872,7 +896,7 @@ function CompanionRow({
       </select>
       <select
         className="field"
-        aria-label={`${capability} companion model`}
+        aria-label={`${role} companion model`}
         value={boundModel ?? ""}
         disabled={!editable || provider.length === 0 || models === undefined || models.length === 0}
         onChange={(event) =>

@@ -539,3 +539,9 @@ button.model-badge:hover, button.model-badge.open { color: var(--cream-dim); bor
 @media (max-width: 719px) {
   .dash-companion { grid-template-columns: 1fr; }
 }
+
+.dash-delegation { margin-top: 0.5rem; }
+.dash-action {
+  font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--cream-dim); margin-top: 0.6rem;
+}
