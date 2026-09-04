@@ -49,6 +49,13 @@ const HOST = process.env["QUARTET_HOST"] ?? "127.0.0.1";
 const TLS_CERT = process.env["QUARTET_TLS_CERT"];
 const TLS_KEY = process.env["QUARTET_TLS_KEY"];
 
+/**
+ * Whether this hub terminates TLS itself. One answer, asked in all three places that care:
+ * the refusal below, the serve config, and the scheme printed at boot. A cert without its key
+ * used to satisfy the refusal and print `https` while serving plaintext.
+ */
+const SERVES_TLS = TLS_CERT !== undefined && TLS_KEY !== undefined;
+
 function isLoopback(host: string): boolean {
   return host === "127.0.0.1" || host === "::1" || host === "localhost" || host === "[::1]";
 }
@@ -60,7 +67,7 @@ function isLoopback(host: string): boolean {
  * about reading it. A refusal rather than a warning, because a warning at boot is a warning
  * nobody reads and the failure it precedes is silent.
  */
-if (!isLoopback(HOST) && TLS_CERT === undefined && process.env["QUARTET_ALLOW_PLAINTEXT"] !== "1") {
+if (!isLoopback(HOST) && !SERVES_TLS && process.env["QUARTET_ALLOW_PLAINTEXT"] !== "1") {
   console.error(
     `\n  refusing to listen on ${HOST} without TLS.\n\n` +
       "  Every frame would cross the network readable, conversations included.\n" +
@@ -958,9 +965,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
 const server = Bun.serve<SocketData, never>({
   port: PORT,
   hostname: HOST,
-  ...(TLS_CERT !== undefined && TLS_KEY !== undefined
-    ? { tls: { cert: Bun.file(TLS_CERT), key: Bun.file(TLS_KEY) } }
-    : {}),
+  ...(SERVES_TLS ? { tls: { cert: Bun.file(TLS_CERT), key: Bun.file(TLS_KEY) } } : {}),
   fetch(request, bunServer) {
     // The socket's own peer address, not a forwarded header: a header is whatever the
     // caller wrote unless there is a proxy in front that is trusted to overwrite it, and a
@@ -1041,7 +1046,7 @@ const server = Bun.serve<SocketData, never>({
 // already expired fires on the next tick and appends to the room it belonged to.
 orchestrator.recover();
 
-const scheme = TLS_CERT !== undefined ? "https" : "http";
+const scheme = SERVES_TLS ? "https" : "http";
 console.log(`quartet hub listening on ${scheme}://${HOST}:${String(server.port)}`);
 
 // A friend's bridge dials out to this hub, same as yours does — it never needs to reach your
