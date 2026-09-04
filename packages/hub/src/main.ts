@@ -492,8 +492,10 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         if (view !== undefined) send(participant, { t: "connected", connection: view, conversation });
       }
 
-      // The purpose is a topic for the inviter's agent, not a line in its mouth.
-      orchestrator.onNudge(conversation.id, invite.from_agent, invite.purpose);
+      // The purpose is a topic for the inviter's agent, not a line in its mouth — and not an
+      // instruction in the hub's, either: it reaches the agent as `purpose` and the room
+      // simply starts.
+      orchestrator.onBegin(conversation.id, invite.from_agent);
       return;
     }
 
@@ -527,12 +529,12 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       for (const participant of store.conversationParticipantIds(frame.conversationId) ?? []) {
         send(participant, { t: "conversation", conversation: answered });
       }
-      // Accepting is what starts it, exactly as accepting an invitation does: the purpose is
-      // the instruction, and the proposer's agent is the one it was written for.
+      // Accepting is what starts it, exactly as accepting an invitation does. The purpose
+      // travels on its own field; the proposer's agent is the one asked to open.
       if (frame.accept) {
         const proposer = store.agentByHandle(answered.proposedBy);
         if (proposer !== undefined) {
-          orchestrator.onNudge(answered.id, proposer.id, answered.purpose);
+          orchestrator.onBegin(answered.id, proposer.id);
         }
       }
       return;

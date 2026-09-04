@@ -192,6 +192,20 @@ export class Orchestrator {
     this.apply(conversationId, { kind: "steer", agent: agentId, text: steer });
   }
 
+  /**
+   * Ask an agent to take the first turn, with no instruction attached.
+   *
+   * The hub used to start a room by filing the purpose as a steer, which put the hub's own
+   * words in the one field the agent is told to obey ahead of everything else. Sealed steers
+   * are what makes that unacceptable rather than merely untidy: a bridge can no longer tell an
+   * owner's instruction from the hub's by looking, so the hub does not get to write one. The
+   * purpose already reaches the agent as `purpose`, on its own terms, and starting a room
+   * needs nothing more than a poke.
+   */
+  onBegin(conversationId: string, agentId: string): void {
+    this.apply(conversationId, { kind: "steer", agent: agentId });
+  }
+
   onTurnSettled(conversationId: string, agentId: string, outcome: TurnOutcome): void {
     this.clearDeadline(conversationId, agentId);
     this.apply(conversationId, { kind: "settled", agent: agentId, outcome });
