@@ -583,3 +583,117 @@ button.model-badge.open .model-badge-more {
   font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.1em;
   text-transform: uppercase; color: var(--cream-dim); margin-top: 0.6rem;
 }
+
+/* ---------- devices ----------
+   Paired devices sit under the agent roster because they answer the same question: what is
+   acting as me. Revoke is the only vermilion control here — it is the one that takes
+   something away. */
+
+.devices { border-top: 1px solid var(--rule); margin-top: 0.9rem; padding: 0.9rem 0.75rem 1.1rem; }
+.device-row {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.45rem 0; border-bottom: 1px solid var(--rule-soft);
+}
+.device-row .row-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.btn.danger { border-color: var(--rule); color: var(--cream-dim); }
+.btn.danger:hover:not(:disabled) { border-color: var(--vermilion); background: var(--vermilion); color: var(--ink); }
+
+.pairing-offer { margin-top: 0.7rem; display: flex; flex-direction: column; align-items: center; gap: 0.4rem; text-align: center; }
+.pairing-qr { width: min(15rem, 100%); height: auto; image-rendering: pixelated; background: var(--cream); padding: 0.5rem; }
+.pairing-offer-code {
+  font-family: var(--mono); font-size: 1.5rem; letter-spacing: 0.28em;
+  text-indent: 0.28em; color: var(--cream); user-select: all;
+}
+
+/* ---------- pairing screen ----------
+   The only screen that renders without a credential, so it carries the wordmark and says in
+   plain words what pairing hands over. */
+
+.pairing { min-height: 100%; display: grid; place-items: center; padding: 1.5rem 1.1rem calc(1.5rem + env(safe-area-inset-bottom)); }
+.pairing-card {
+  width: min(26rem, 100%); display: flex; flex-direction: column; gap: 0.5rem;
+  border: 1px solid var(--rule); background: var(--ink-raised); padding: 1.4rem 1.2rem;
+}
+.pairing-card h1 { font-family: var(--shout); font-size: 1.3rem; font-weight: 500; margin: 0.6rem 0 0; }
+.pairing-lede { color: var(--cream-dim); font-size: 0.85rem; margin: 0 0 0.5rem; }
+.pairing-card label {
+  font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--cream-dim); margin-top: 0.5rem;
+}
+.pairing-card input {
+  background: var(--ink); border: 1px solid var(--rule); color: var(--cream);
+  padding: 0.7rem 0.75rem; width: 100%;
+}
+.pairing-card input:focus-visible { border-color: var(--signal); }
+.pairing-code { font-family: var(--mono); font-size: 1.25rem; letter-spacing: 0.24em; }
+.pairing-error { color: var(--vermilion); font-size: 0.85rem; margin: 0.6rem 0 0; }
+.pairing-card button[type="submit"] {
+  margin-top: 1rem; font-family: var(--mono); font-size: 0.72rem; font-weight: 600;
+  letter-spacing: 0.12em; text-transform: uppercase; padding: 0.85rem 1rem;
+  background: var(--vermilion); border: 1px solid var(--vermilion); color: var(--ink);
+  cursor: pointer;
+}
+.pairing-card button[type="submit"]:disabled { opacity: 0.4; cursor: default; }
+
+/* ---------- a phone, rather than a narrow window ----------
+   The breakpoints above fold the layout; these handle what a handset adds on top of width.
+   375–430px portrait is the range that matters, and the notch, the home indicator and the
+   on-screen keyboard are not width at all. */
+
+@media (max-width: 480px) {
+  body { font-size: 16px; }
+
+  /* iOS zooms the whole page when a focused input is under 16px, and never zooms back out.
+     Sizing the inputs up front is what stops the composer from wrecking the layout. */
+  input, textarea, select { font-size: 16px; }
+
+  .topbar { gap: 0.6rem; padding: 0.6rem 0.75rem; padding-top: calc(0.6rem + env(safe-area-inset-top)); }
+  .wordmark { font-size: 1.1rem; }
+  /* The fingerprint is the first thing to go: it is a thing you check deliberately, on a
+     screen with room for it, not something to crowd a phone's topbar with. */
+  .whoami { display: none; }
+
+  .composer { padding: 0.6rem 0.75rem calc(0.6rem + env(safe-area-inset-bottom)); }
+
+  .pane.nav { width: min(17rem, 82vw); }
+  .devices { padding-left: 0.5rem; padding-right: 0.5rem; }
+}
+
+/* Touch, rather than width: a device with no cursor cannot hover, so anything that only
+   appears on hover is invisible rather than subtle. The model badge is the case that
+   matters — it is how you reach the agent screen at all. */
+@media (hover: none) {
+  .model-badge .model-badge-more {
+    max-width: 10rem; opacity: 1; margin-left: 0.5rem;
+    padding-left: 0.5rem; border-left-color: currentColor;
+  }
+  /* Forty-four points is Apple's floor and a reasonable one; a cursor-sized control is a
+     coin toss with a thumb. */
+  .btn, .nav-toggle, .dash-row, .device-row .btn { min-height: 2.75rem; }
+  .btn { padding: 0.6rem 0.9rem; }
+}
+
+/* The on-screen keyboard shrinks the viewport rather than scrolling under it, but only where
+   dynamic viewport units are honoured. `100%` stays the fallback, so nothing here depends on
+   it landing. */
+@supports (height: 100dvh) {
+  html, body, #root { height: 100dvh; }
+}
+
+/* Last, deliberately: these undo parts of the `hover: none` block above for the narrowest
+   screens, and source order is what decides between two rules of equal specificity.
+
+   On a touch device the badge's label is always showing, so the model name and the label
+   together are wider than a phone's topbar — and the model name is the half you cannot act
+   on. The status is what gets pushed off otherwise, and "is this thing connected" is the one
+   thing the topbar owes a phone. */
+@media (max-width: 480px) {
+  .topbar { gap: 0.5rem; }
+  button.model-badge { max-width: 9rem; flex: 0 1 auto; min-width: 0; }
+  button.model-badge > span:first-child { display: none; }
+  /* Matching the touch block's specificity, not just following it: with the model name gone
+     the separator has nothing to separate, and reads as a stray mark. */
+  button.model-badge .model-badge-more { margin-left: 0; padding-left: 0; border-left-color: transparent; }
+  .nav-toggle { flex: 0 0 auto; }
+  .status { white-space: nowrap; flex: 0 0 auto; font-size: 0.58rem; letter-spacing: 0.06em; }
+}

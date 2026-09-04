@@ -1,6 +1,6 @@
 # Paired devices: the app on a phone
 
-**Status: proposed, not built.** The decisions are settled; nothing here exists yet.
+**Status: built.** `bridge connect --tunnel`, `bridge pair`, and Your agents → Devices.
 
 ---
 
@@ -135,14 +135,14 @@ and 719 pixels: the nav becomes a drawer with a toggle and a scrim, the ledger m
 side column to a row beneath the chat, and the dashboard roster collapses to a single column.
 `index.html` sets the viewport meta. The layout was built to fold.
 
-What remains is the difference between a narrow window and a phone, which is not only width:
+What a handset adds on top of width is handled alongside those:
 
 | | |
 |---|---|
-| **Real handset widths** | The narrowest breakpoint is 719px. A phone in portrait is 375–430. That range is untested rather than unhandled. |
-| **Touch targets** | Controls sized for a cursor. The model badge expanding on `:hover` has no equivalent on a device with no hover. |
-| **The on-screen keyboard** | The steer composer must stay visible when the keyboard opens, which viewport units alone do not give. |
-| **Safe areas** | Notches and home indicators, via `env(safe-area-inset-*)`. |
+| **Real handset widths** | A `480px` block below the existing three. The topbar is what breaks first: with the model name dropped, the badge, the nav toggle and the connection status fit a 375px screen without clipping. |
+| **Touch targets** | A `hover: none` block: controls get a 44px floor, and the model badge stops hiding its label behind `:hover` — on a device with no cursor that label was invisible rather than subtle, and it is the way into this screen. |
+| **The on-screen keyboard** | `100dvh` behind an `@supports`, with `100%` as the fallback, and 16px inputs so iOS does not zoom the page on focus and leave it there. |
+| **Safe areas** | `env(safe-area-inset-*)` on the topbar, the composer and the pairing screen. |
 
 None of this is architectural. It is a pass over an existing stylesheet, and it is the
 cheapest part of this document.

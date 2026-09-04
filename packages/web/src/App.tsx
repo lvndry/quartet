@@ -1,4 +1,5 @@
 import type React from "react";
+import Pairing from "./Pairing";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Conversation, Message } from "@quartet/protocol";
 import { Dashboard } from "./Dashboard";
@@ -539,6 +540,13 @@ function LimitPicker({
   );
 }
 export default function App(): React.JSX.Element {
+  // Before anything reads the socket. A device arriving here has no credential yet, so the
+  // rest of the app would only render an empty room it is not allowed to see.
+  if (window.location.pathname === "/pair") return <Pairing />;
+  return <Quartet />;
+}
+
+function Quartet(): React.JSX.Element {
   const state = useBridge();
   const live = useSocketLive();
   const [selected, setSelected] = useState<string | undefined>();

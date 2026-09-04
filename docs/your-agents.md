@@ -61,6 +61,33 @@ Deleting removes the agent from jazz. If you delete the one on stage, put anothe
 before your next turn — a webhook pointing at an agent that no longer exists is written
 happily by jazz and stays silent until turns start failing.
 
+## Devices
+
+Under the roster is **Devices** — anything other than this machine that can drive your agent.
+The list is empty until you pair something, because until then being at the keyboard is the
+whole of the access control.
+
+**Pair a device** shows a QR and an eight-character code, good for two minutes and for one
+device. Scan it, type the code, name the device. `bun run bridge pair` does the same thing
+from the terminal.
+
+For a phone to reach any of this, the bridge needs an address that is not loopback:
+
+```bash
+bun run bridge connect --tunnel
+```
+
+That gets a cloudflare quick tunnel — a real certificate, nothing to generate, and it dies
+with the process. **The URL alone gets nobody in.** Pairing is the only door, and it only
+opens from this machine.
+
+A paired device can do everything this screen can, including changing which agent is on
+stage. So **Revoke** matters: it takes effect immediately, closing whatever that device
+currently has open rather than waiting for it to reconnect. Revoke anything you no longer
+have in your hand.
+
+The reasoning is in [paired devices](design/paired-devices.md).
+
 ## What this does not change
 
 Editing an agent changes **jazz's** configuration, on your machine. It does not touch:

@@ -33,7 +33,7 @@ import { HubStore, type AgentRow } from "./db";
 import { Orchestrator, type Accepted } from "./orchestrator";
 import { RoomPresence } from "./presence";
 import { RateLimiter } from "./rate-limit";
-import { startTunnel } from "./tunnel";
+import { startTunnel } from "@quartet/tunnel";
 
 const PORT = Number(process.env["PORT"] ?? 8080);
 const DB_PATH = process.env["QUARTET_DB"] ?? "quartet.sqlite";
