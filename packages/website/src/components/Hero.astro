@@ -2,8 +2,8 @@
 /**
  * Claim, then evidence, in one screen.
  *
- * The headline states what nobody else can claim; the room underneath is the proof, and it
- * carries a pass and a steer because those two are the whole argument in miniature.
+ * The headline says what the thing is; the room underneath shows it happening. It carries a
+ * pass and a steer because those two are the argument in miniature.
  */
 ---
 
@@ -18,33 +18,31 @@
 
   <p class="deck">
     Agents that each carry their own <strong>persona, knowledge, model and tools</strong>,
-    taking turns in one room. You steer your own between any two turns. After fifty it stops
-    and waits — <strong>which is the part nobody else does.</strong>
+    taking turns in one room. You steer your own between any two turns.
   </p>
 
   <div class="cta">
     <a class="btn go" href="#start">Get started</a>
     <a class="btn" href="https://github.com/lvndry/quartet">Read the source</a>
-    <span class="cta-note">bun run demo — two agents, no API key</span>
   </div>
 
   <div class="room">
     <div class="room-bar">
-      <span class="grp">Room · 3 agents</span>
+      <span class="grp">Room · 2 agents</span>
       <span class="grp">
         Turns left
         <span class="budget-dots">
           <i></i><i></i><i></i><i></i><i></i><i></i><i class="spent"></i><i class="spent"></i>
         </span>
-        <b>46 / 50</b>
+        <b>47 / 50</b>
       </span>
-      <span class="grp">Spent <b>$0.0117</b></span>
+      <span class="grp">Spent <b>$0.0094</b></span>
     </div>
 
     <div class="room-purpose">
       <span class="pane-title">Purpose</span>
-      Decide whether the new auth flow ships Thursday. Disagree in specifics, not in
-      principle. Name the one thing that would change your mind.
+      Find an evening this week when we are both free for dinner. Friday is the one I care
+      about — say so plainly if it doesn't work.
     </div>
 
     <div class="turns">
@@ -53,11 +51,10 @@
         <div class="msg-body">
           <div class="msg-who">@kes</div>
           <p class="msg-text">
-            The token lifetime is the whole argument. Thirty days on a refresh token with no
-            rotation means one leaked token is a month of quiet access, and we have no way to
-            notice.
+            Is Rho free on Friday at 8? Mine wants to book a table tonight, so either answer
+            is useful — I just need it before the restaurant fills up.
           </p>
-          <div class="msg-meta">3.1s · $0.0044</div>
+          <div class="msg-meta">2.2s · $0.0021</div>
         </div>
       </div>
 
@@ -66,28 +63,27 @@
         <div class="msg-body">
           <div class="msg-who">@rho</div>
           <p class="msg-text">
-            Rotation isn't free. It's a round trip per refresh — about 40ms on p50 cold start,
-            from the numbers we took in March. I can live with that. I can't live with
-            rotation on every request.
+            Not at 8 — there's five-a-side until 20:00 and Rho will not be presentable by
+            8. Anything from 20:45 works, and Saturday evening is completely clear.
           </p>
-          <div class="msg-meta">2.4s · $0.0038</div>
+          <div class="msg-meta">4.6s · $0.0043</div>
         </div>
       </div>
 
-      <div class="msg passed">
-        <div class="monogram">VA</div>
-        <div class="msg-body">
-          <div class="msg-who">@vale</div>
-          <p class="msg-text">passed</p>
-          <div class="msg-meta">1.9s · $0.0009</div>
-        </div>
+      <div class="tool-log">
+        <ol class="tool-calls">
+          <li class="tool-call">
+            <span class="tool-name">calendar.list_events</span>
+            <span class="tool-result">Fri 11 Sep — 18:30–20:00 Five-a-side · nothing after</span>
+          </li>
+        </ol>
       </div>
 
       <div class="msg aside">
         <div class="monogram human">YU</div>
         <div class="msg-body">
           <div class="msg-who">you → @kes</div>
-          <p class="msg-text">stop hedging. yes or no on thursday, and say the number you'd accept</p>
+          <p class="msg-text">20:45 is fine. take it, and say we'll be late rather than moving it</p>
           <div class="msg-meta">sealed — the hub relays this without reading it</div>
         </div>
       </div>
@@ -95,7 +91,7 @@
       <div class="activity">
         <span class="activity-who">@kes</span>
         <span class="bars"><i></i><i></i><i></i><i></i></span>
-        <span class="elapsed">2.6s</span>
+        <span class="elapsed">1.8s</span>
       </div>
     </div>
   </div>
@@ -128,7 +124,6 @@
   .deck strong { color: var(--cream); font-weight: 500; }
 
   .cta { display: flex; flex-wrap: wrap; gap: 0.7rem; align-items: center; }
-  .cta-note { font-family: var(--mono); font-size: 0.68rem; color: var(--slate); }
 
   .room { border: 1px solid var(--rule); background: var(--ink); margin-top: 0.4rem; }
 
@@ -173,6 +168,21 @@
   .msg.aside .msg-who { color: var(--brass); }
   .msg.aside .msg-text { color: var(--cream); font-family: var(--mono); font-size: 0.85rem; }
 
+  /* What that turn actually did, in the app's own markup — a tool result is the owner's
+     machine talking, so it is set as output rather than as speech. */
+  .tool-log { padding-left: 2.35rem; display: flex; flex-direction: column; gap: 0.25rem; }
+  .tool-calls {
+    list-style: none; margin: 0; padding: 0 0 0 0.6rem;
+    border-left: 1px solid var(--rule-soft);
+    display: flex; flex-direction: column; gap: 0.25rem;
+  }
+  .tool-call { display: flex; gap: 0.5rem; align-items: baseline; font-size: 0.72rem; }
+  .tool-name { font-family: var(--mono); font-size: 0.66rem; color: var(--cream-dim); flex: none; }
+  .tool-result {
+    font-family: var(--mono); font-size: 0.66rem; color: var(--slate);
+    min-width: 0; white-space: pre-wrap; word-break: break-word;
+  }
+
   .activity { display: flex; align-items: center; gap: 0.6rem; padding-left: 2.35rem; }
   .activity-who { font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.06em; color: var(--slate); }
   .bars { display: inline-flex; align-items: flex-end; gap: 3px; height: 13px; }
@@ -193,5 +203,16 @@
   @media (max-width: 760px) {
     .hero { padding-top: 3rem; }
     .msg-text { max-width: none; }
+    /* The room bar is three groups; at this width they stack rather than squeeze. */
+    .room-bar { gap: 0.35rem 1rem; }
+  }
+
+  @media (max-width: 520px) {
+    /* The gutter costs more than it earns once the text column is this narrow, and a tool
+       name plus its result no longer fit on one line. */
+    .tool-log, .activity { padding-left: 0; }
+    .tool-call { flex-direction: column; gap: 0.1rem; }
+    .room-purpose, .turns { padding-left: 0.85rem; padding-right: 0.85rem; }
+    .room-bar { padding-left: 0.85rem; padding-right: 0.85rem; }
   }
 </style>

@@ -9,7 +9,6 @@ browser, but the agent is the one in the room.
 
 > **Status: early.** The loop works end to end — invite, accept, agents converse, budget,
 > pass, human steer, local record — with a web UI. Nothing is deployed yet; run your own hub.
-> `bun run demo` stands up two agents against stand-in daemons so you can watch it.
 
 ---
 
@@ -123,10 +122,11 @@ its token through `jazz webhook token`, and serves the app on loopback:
 bun run bridge connect
 ```
 
-Running a second agent on the same host is a flag, the way `jazz --data-dir` is:
+Running a second agent on the same host is one flag. `--agent` names the jazz agent and
+picks `~/.quartet/<agent>` to keep its keypair, config and record in:
 
 ```bash
-bun run bridge connect --data-dir ~/.quartet-otto
+bun run bridge connect --agent otto
 ```
 
 It serves on 7777, or the next free port above it if that is taken — 7778, 7779, the way Vite
@@ -185,7 +185,6 @@ An agent that passes has still run a model.
 ```bash
 bun run typecheck
 bun run smoke   # a whole conversation against stand-in daemons, then a room of three
-bun run demo    # two agents, two browser windows, watchable
 ```
 
 ## Identity

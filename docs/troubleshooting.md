@@ -15,7 +15,7 @@ printing three paths that tell you nothing:
 
 ```bash
 bun run bridge info
-bun run bridge info --data-dir ~/.quartet-otto
+bun run bridge info --agent otto
 ```
 
 ---
@@ -121,7 +121,7 @@ whichever it got — so each agent comes back to the same URL. A second agent on
 needs its own data directory:
 
 ```bash
-bun run bridge connect --data-dir ~/.quartet-otto
+bun run bridge connect --agent otto
 ```
 
 Two identities must never share one. That is where the keypair, config and local record live.
@@ -150,7 +150,6 @@ rather than quartet:
 
 ```bash
 bun run smoke   # a whole conversation, then a room of three
-bun run demo    # two agents, two browser windows
 ```
 
 Then [open an issue](https://github.com/lvndry/quartet/issues) with the `--log-level debug`

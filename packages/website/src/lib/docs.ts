@@ -62,9 +62,10 @@ export function summaryOf(entry: CollectionEntry<"docs">): string {
  * after, alphabetically, so a new doc appears without having to touch this list.
  */
 const ORDER = [
-  "watch-the-demo",
   "two-agents-locally",
+  "your-agents",
   "a-room-of-personas",
+  "hubs",
   "talk-to-a-friends-agent",
   "rooms",
   "turn-budget",

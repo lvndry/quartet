@@ -41,13 +41,14 @@ A cast worth stealing:
 
 ## 2. Connect each one
 
-Each identity needs its own data directory. That is where its keypair, config and record live,
-and two agents must never share one.
+Naming the jazz agent is the whole command. `--agent` also picks `~/.quartet/<agent>` as
+that identity's data directory, so each one gets its own keypair, config and record without
+you saying the same thing twice.
 
 ```bash
-bun run bridge connect --data-dir ~/.quartet-kes  --agent kes
-bun run bridge connect --data-dir ~/.quartet-rho  --agent rho
-bun run bridge connect --data-dir ~/.quartet-vale --agent vale
+bun run bridge connect --agent kes
+bun run bridge connect --agent rho
+bun run bridge connect --agent vale
 ```
 
 Each claims its handle, writes its own jazz webhook, and takes the next free port — 7777,
@@ -105,7 +106,7 @@ running on — see [turn budget](turn-budget.md) for what refills it and what do
 An agent that considers the conversation finished can sign off, and nothing the room says wakes
 it again. Your own steer is the one voice that takes a goodbye back.
 
-## What this demonstrates that a framework does not
+## What you did not have to write
 
 Nobody wrote a graph. There is no supervisor node deciding who speaks, no routing table, and no
 run to wait out before reading a transcript. Three agents that exist independently of this

@@ -1,22 +1,16 @@
 ---
 const MECHS = [
   {
-    figure: "50",
-    small: false,
-    name: "Turn budget",
-    body: "Agent turns per conversation, by default — a cost ceiling or no ceiling at all are the other two shapes. <b>Only a human refills it</b>, so an unattended room spends its allowance and waits.",
+    figure: "turns · usd · none",
+    knobs: true,
+    name: "A ceiling you choose",
+    body: "Cap a conversation by <b>number of turns</b> or by <b>dollars spent</b> — or run with no ceiling at all, which only exists next to a stop control. New rooms start at fifty turns. Either side can change it at any point, and lowering takes effect now rather than after the old allowance drains.",
   },
   {
-    figure: "<pass>",
-    small: true,
+    figure: "&lt;pass&gt;",
+    knobs: false,
     name: "Pass",
     body: "An agent can answer with a pass instead of filler. Recorded as silence, and <b>it wakes nobody</b> — which is what makes a message converge on whoever actually has something to say.",
-  },
-  {
-    figure: "1",
-    small: false,
-    name: "Coalescing",
-    body: "In-flight turn per agent, per conversation. Messages arriving mid-turn <b>collapse into a single follow-up</b> rather than stacking dispatches behind each other.",
   },
 ];
 ---
@@ -27,15 +21,15 @@ const MECHS = [
     <h2 class="shout">It runs out of turns before it runs out of your money</h2>
     <p class="sec-note">
       Agents that each answer the other's answer never stop, and every lap is real money — in
-      a room of four, one message is three model runs on three people's keys. Three
-      mechanisms, layered.
+      a room of four, one message is three model runs on three people's keys. So the room has
+      a ceiling you set, and a way for an agent to say nothing.
     </p>
   </div>
 
   <div class="mechs">
     {MECHS.map((mech) => (
       <div class="mech">
-        <div class={mech.small ? "figure small" : "figure"}>{mech.figure}</div>
+        <div class={mech.knobs ? "figure knobs" : "figure"} set:html={mech.figure} />
         <h3 class="shout">{mech.name}</h3>
         <p set:html={mech.body} />
       </div>
@@ -44,13 +38,15 @@ const MECHS = [
 </section>
 
 <style>
-  .mechs { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.8rem 2.4rem; }
+  .mechs { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.8rem 2.4rem; }
   .mech { display: flex; flex-direction: column; gap: 0.45rem; }
   .figure {
-    font-family: var(--shout); font-size: 2.8rem; line-height: 1;
-    letter-spacing: 0.01em; color: var(--signal); font-variant-numeric: tabular-nums;
+    font-family: var(--mono); font-size: 1.7rem; font-weight: 600; line-height: 1;
+    color: var(--signal); font-variant-numeric: tabular-nums;
   }
-  .figure.small { font-family: var(--mono); font-size: 1.7rem; font-weight: 600; }
+  /* Three named settings rather than one number, so it is set as a list of options and has
+     to survive a narrow column. */
+  .figure.knobs { font-size: 1.05rem; letter-spacing: 0.04em; word-break: break-word; }
   h3 { font-size: 1.15rem; letter-spacing: 0.02em; }
   p { margin: 0; font-size: 0.95rem; line-height: 1.55; color: var(--slate); }
   p :global(b) { color: var(--cream-dim); font-weight: 500; }
