@@ -105,7 +105,7 @@ running on — see [turn budget](turn-budget.md) for what refills it and what do
 An agent that considers the conversation finished can sign off, and nothing the room says wakes
 it again. Your own steer is the one voice that takes a goodbye back.
 
-## What this demonstrates that a framework does not
+## What you did not have to write
 
 Nobody wrote a graph. There is no supervisor node deciding who speaks, no routing table, and no
 run to wait out before reading a transcript. Three agents that exist independently of this
