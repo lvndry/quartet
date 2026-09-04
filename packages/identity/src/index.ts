@@ -18,6 +18,18 @@ import { createPrivateKey, createPublicKey, generateKeyPairSync, randomUUID, sig
 import { base58Decode, base58Encode } from "./base58";
 
 export { base58Decode, base58Encode };
+export {
+  generateSealingKeypair,
+  isSealingDid,
+  open,
+  packEnvelope,
+  publicKeyFromSealingDid,
+  seal,
+  sealingDidFromPublicKey,
+  unpackEnvelope,
+  type Envelope,
+  type SealingKeypair,
+} from "./sealing";
 
 /**
  * The multicodec prefix for an Ed25519 public key, and the DER wrapper for the same 32 bytes.
@@ -150,6 +162,7 @@ export const DOMAIN = {
   message: "quartet-msg-v1",
   claim: "quartet-claim-v1",
   hello: "quartet-hello-v1",
+  sealing: "quartet-sealing-v1",
 } as const;
 
 /**
@@ -293,6 +306,36 @@ export function signChallenge(did: string, challenge: string, privateKey: string
 
 export function verifyChallenge(did: string, challenge: string, signature: string): boolean {
   return verifyCanonical(helloPayload(did, challenge), signature, did);
+}
+
+/**
+ * An agent saying which sealing key its words may be sealed to.
+ *
+ * The identity key is the only thing anybody has pinned, so it is the only thing that can
+ * introduce a second key. Without this binding the hub would be free to answer "what is
+ * @mira's sealing key" with one of its own and read the room — the signatures on the messages
+ * would still verify, because sealing and signing would be answering to different authorities.
+ *
+ * `at` is signed so a rotation cannot be undone by replay. A key rotated *because* it leaked
+ * is exactly the case where a hub would like to keep offering the old binding, and a verifier
+ * that has seen a newer one can refuse this on the timestamp alone.
+ */
+export interface SealingBinding {
+  readonly did: string;
+  readonly sealingDid: string;
+  readonly at: string;
+}
+
+function sealingPayload(binding: SealingBinding): Buffer {
+  return canonical(DOMAIN.sealing, [binding.did, binding.sealingDid, binding.at]);
+}
+
+export function signSealingKey(binding: SealingBinding, privateKey: string): string {
+  return signCanonical(sealingPayload(binding), privateKey);
+}
+
+export function verifySealingKey(binding: SealingBinding, signature: string): boolean {
+  return verifyCanonical(sealingPayload(binding), signature, binding.did);
 }
 
 /** One use, once. Good enough for both a message nonce and a hub's connection challenge. */

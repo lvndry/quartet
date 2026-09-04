@@ -85,6 +85,21 @@ export const MAX_MESSAGE_LENGTH = 10_000;
 export const MAX_PURPOSE_LENGTH = MAX_MESSAGE_LENGTH;
 
 /**
+ * The same ceiling, measured after sealing.
+ *
+ * A sealed line travels as the JSON of an envelope, so the bound the hub can actually check
+ * is on the ciphertext rather than the words. Base64 costs a third, GCM adds a nonce and a
+ * tag, and every member of the room carries a wrapped key and a did of their own — so a
+ * full room's worth of overhead on a maximum-length message is roughly
+ * `4/3 × MAX_MESSAGE_LENGTH` plus a kilobyte of structure. Rounded up generously, because
+ * the cost of guessing low is a legitimate message the hub refuses to relay.
+ *
+ * It bounds a blob the hub cannot read, which is the point: the hub keeps a size limit
+ * without regaining a content one.
+ */
+export const MAX_SEALED_LENGTH = 16_000;
+
+/**
  * Text that survives being turned into bytes and back.
  *
  * A signature covers UTF-8 bytes, and an unpaired surrogate — which `JSON.parse` will happily
@@ -479,7 +494,15 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   z.object({
     t: z.literal("nudge"),
     conversationId: z.string(),
-    steer: z.string().min(1).max(MAX_MESSAGE_LENGTH),
+    /**
+     * Sealed to the sender's own key, and opaque here.
+     *
+     * A steer is a person talking to their own agent, and it round-trips through the hub only
+     * because the hub is what schedules the turn — one bridge writes it and the same bridge
+     * reads it back. There is nobody to agree a key with, so there is no reason for the hub to
+     * ever hold these words. It stores the blob and hands it back.
+     */
+    steer: z.string().min(1).max(MAX_SEALED_LENGTH),
   }),
   z.object({
     t: z.literal("pass"),
@@ -595,7 +618,13 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
      * does, rather than inferring a conversation started mid-sentence.
      */
     earlier: z.number().int().nonnegative(),
-    /** Present when the owner asked for this turn. Trusted, unlike everything else here. */
+    /**
+     * Present when the owner asked for this turn. Trusted, unlike everything else here.
+     *
+     * Still sealed — this is the same blob the bridge sent as a `nudge`, handed back
+     * unopened. The bridge unseals it on arrival, so the hub relays an instruction it has
+     * never read.
+     */
     steer: z.string().optional(),
     /**
      * How much room is left, when it is nearly gone.

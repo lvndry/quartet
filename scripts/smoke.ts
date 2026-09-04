@@ -19,6 +19,7 @@ import { readLedger } from "../packages/bridge/src/ledger";
 import { CLOSE_SENTINEL, PASS_SENTINEL } from "../packages/protocol/src/index";
 import {
   generateKeypair,
+  generateSealingKeypair,
   linkAfter,
   newNonce,
   signChallenge,
@@ -28,6 +29,7 @@ import {
   type Keypair,
 } from "../packages/identity/src/index";
 import { Attestor } from "../packages/bridge/src/attest";
+import { Sealer } from "../packages/bridge/src/sealer";
 import { Journal } from "../packages/bridge/src/journal";
 import { KnownKeys } from "../packages/bridge/src/known";
 
@@ -257,6 +259,7 @@ const bridgeA = new Bridge(
   hubUrl,
   { url: `http://127.0.0.1:${String(DAEMON_A_PORT)}`, webhook: "quartet", token: "test-token" },
   new Attestor(keyA, new Journal(join(workDir, "chain-mira.json"))),
+  new Sealer({ current: generateSealingKeypair(), retired: [] }),
   // Two bridges in one process, so each is pointed at its own pin file — on a real host
   // these are two data directories and the default would already be separate.
   new KnownKeys(join(workDir, "known-mira.json")),
@@ -265,6 +268,7 @@ const bridgeB = new Bridge(
   hubUrl,
   { url: `http://127.0.0.1:${String(DAEMON_B_PORT)}`, webhook: "quartet", token: "test-token" },
   new Attestor(keyB, new Journal(join(workDir, "chain-otto.json"))),
+  new Sealer({ current: generateSealingKeypair(), retired: [] }),
   new KnownKeys(join(workDir, "known-otto.json")),
 );
 
@@ -362,10 +366,19 @@ check(
   transcript.some((message) => message.kind === "pass"),
   "a pass was recorded as silence rather than as a message",
 );
-const firstCall = daemonA.calls[0] as { body: { transcript: unknown[]; steer?: string } };
+const firstCall = daemonA.calls[0] as {
+  body: { transcript: unknown[]; purpose?: string; steer?: string };
+};
 check(
-  firstCall?.body.steer === PURPOSE,
-  "the inviter's agent was steered with the purpose before it spoke",
+  firstCall?.body.purpose === PURPOSE,
+  "the inviter's agent opened the room knowing what it was for",
+);
+// A steer is the field the agent is told to obey ahead of the room, and only an owner's own
+// bridge can write one — it arrives sealed to a key the hub does not hold. So the hub starting
+// a conversation must not look like the owner speaking, however convenient the purpose is.
+check(
+  firstCall?.body.steer === undefined,
+  "and the hub did not put its own words in the owner's mouth to do it",
 );
 
 const beforeNudge = (stateA.messages[conversationId] ?? []).length;
@@ -552,10 +565,10 @@ if (genuine !== undefined) {
 // first conversation already established — that is what a connection is for.
 {
   const connectionId = stateA.connections[0]?.id ?? fail("no connection");
-  // Opening a room steers the opener's agent with the purpose, so that turn gets a forced
-  // answer too — otherwise it takes whatever the cycling script happens to be up to, which
-  // may be a pass, and then there is nothing to wait for.
-  daemonA.forceNext("Settling in.");
+  // Opening a room only proposes it: the first turn spends the other owner's tokens, so it
+  // waits to be taken up. Accepting is what starts it, and the opener's agent is the one asked
+  // to speak — so that turn gets a forced answer, otherwise it takes whatever the cycling
+  // script happens to be up to, which may be a pass, and then there is nothing to wait for.
   bridgeA.send({
     t: "conversation.open",
     connectionId,
@@ -566,6 +579,9 @@ if (genuine !== undefined) {
   const roomId =
     stateA.conversations.find((room) => room.purpose === "say goodnight")?.id ??
     fail("no second room");
+
+  daemonA.forceNext("Settling in.");
+  bridgeB.send({ t: "conversation.respond", conversationId: roomId, accept: true });
 
   const roomFor = (state: typeof stateA) => state.conversations.find((room) => room.id === roomId);
 

@@ -29,6 +29,7 @@ import {
 import { fingerprint, parseTag } from "@quartet/identity";
 import type { DaemonSettings } from "./config";
 import type { Attestor, Verdict } from "./attest";
+import type { Sealer } from "./sealer";
 import type { JazzProblem, JazzRoster } from "./agent-admin";
 import { describeModel, type JazzAgent } from "./jazz-agents";
 import type { JazzCatalog } from "./jazz-admin";
@@ -218,6 +219,7 @@ export class Bridge {
     private readonly hubUrl: string,
     private readonly daemon: DaemonSettings,
     private readonly attestor: Attestor,
+    private readonly sealer: Sealer,
     private readonly known: KnownKeys = new KnownKeys(),
   ) {}
 
@@ -318,6 +320,17 @@ export class Bridge {
    * a message to the other party, so they never enter the shared transcript.
    */
   nudge(conversationId: string, text: string): void {
+    // Sealed before anything else happens, because a steer that cannot be sealed must not be
+    // sent in the clear as a fallback — the whole reason this is sealed is that the hub has
+    // no business holding a person's instructions to their own agent.
+    const sealed = this.sealer.toSelf(text, conversationId);
+    if (sealed === undefined) {
+      this.lastError = "could not seal your instruction, so it was not sent";
+      log.error("sealing a steer failed", { conversation: conversationId });
+      this.publish();
+      return;
+    }
+
     const aside: Aside = { at: new Date().toISOString(), conversationId, text };
     this.asides.set(conversationId, [...(this.asides.get(conversationId) ?? []), aside]);
     log.info("you → your agent", { conversation: conversationId, chars: text.length });
@@ -328,7 +341,7 @@ export class Bridge {
         this.publish();
       }
     });
-    this.send({ t: "nudge", conversationId, steer: text });
+    this.send({ t: "nudge", conversationId, steer: sealed });
   }
 
   /** Short forms for every key on screen: mine, the directory's, and both sides of a conflict. */
@@ -672,7 +685,7 @@ export class Bridge {
           frame.purpose,
           frame.transcript,
           frame.earlier,
-          frame.steer,
+          this.openSteer(frame.conversationId, frame.steer),
           frame.notice,
         );
         return;
@@ -757,6 +770,28 @@ export class Bridge {
       this.lastError = `the room has this line; the local record could not save it: ${error}`;
       log.error("ledger write failed", { id: entry.id, error });
     }
+  }
+
+  /**
+   * The steer the hub handed back, in the words the person actually typed.
+   *
+   * A steer that will not open still lets the turn run, unsteered. The alternative is
+   * refusing a turn the hub has already charged for and armed a deadline on, which strands
+   * the room over a failure the other party had no part in — so the turn goes ahead and the
+   * app says what was lost. The one thing not on offer is proceeding quietly: a person whose
+   * instruction vanished will read the answer as their agent ignoring them.
+   */
+  private openSteer(conversationId: string, sealed: string | undefined): string | undefined {
+    if (sealed === undefined) return undefined;
+
+    const opened = this.sealer.open(sealed, conversationId);
+    if (opened.state === "opened") return opened.text;
+
+    this.lastError =
+      "your last instruction could not be unsealed, so this turn ran without it — the room is unaffected";
+    log.error("a steer did not open", { conversation: conversationId, why: opened.state });
+    this.publish();
+    return undefined;
   }
 
   /**

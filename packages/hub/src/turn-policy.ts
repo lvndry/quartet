@@ -73,7 +73,14 @@ export type TurnOutcome = "spoke" | "passed" | "closed" | "failed";
 
 export type TurnEvent =
   | { readonly kind: "message"; readonly author: AgentId }
-  | { readonly kind: "steer"; readonly agent: AgentId; readonly text: string }
+  /**
+   * Wake an agent, with or without something to tell it.
+   *
+   * `text` absent is a bare poke — the hub starting a new room, where the purpose is the
+   * whole of the instruction and travels on its own field. Only an owner's own bridge
+   * produces the other kind, and by the time it reaches here it is sealed and unreadable.
+   */
+  | { readonly kind: "steer"; readonly agent: AgentId; readonly text?: string }
   | { readonly kind: "settled"; readonly agent: AgentId; readonly outcome: TurnOutcome }
   | { readonly kind: "spend"; readonly usd: number; readonly incomplete: boolean }
   | { readonly kind: "stop" }
