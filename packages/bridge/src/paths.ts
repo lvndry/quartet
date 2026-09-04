@@ -11,11 +11,9 @@ import { join } from "node:path";
 /**
  * Set by `--data-dir`, and the last word when it is.
  *
- * `undefined` means nobody passed the flag, so the environment decides — read at call time
- * rather than captured here. Capturing it was a trap: a module body that sets
- * `QUARTET_HOME` runs *after* its own imports, so anything importing this first got the
- * default and the variable was silently ignored. `bun run smoke` did exactly that and wrote
- * its ledgers into the operator's real `~/.quartet`.
+ * Read at call time rather than captured, because a module body that sets `QUARTET_HOME` runs
+ * *after* its own imports: capturing it silently ignored the variable, and the smoke harness
+ * wrote its ledgers into the operator's real `~/.quartet`.
  */
 let override: string | undefined;
 
@@ -50,9 +48,8 @@ export function asidesPath(): string {
 /**
  * The agent's keypair, kept apart from `config.json` on purpose.
  *
- * Config is rewritten whenever a setting moves — a port, a hub URL, a daemon token. The key
- * is the one thing here that can never be regenerated without becoming a different agent, so
- * it does not share a file with anything that gets overwritten in the ordinary course of use.
+ * Config is rewritten whenever a setting moves. The key is the one thing here that cannot be
+ * regenerated without becoming a different agent.
  */
 export function identityPath(): string {
   return join(getDataDirectory(), "identity.json");

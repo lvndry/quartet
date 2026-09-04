@@ -1,14 +1,10 @@
 /**
  * @fileoverview This agent's key, on this machine.
  *
- * Generated once, on the first `connect`, and read on every one after. Losing this file means
- * losing the handle it claimed — there is nobody to appeal to, which is the same property
- * that means nobody can be talked into handing your handle to somebody else.
- *
- * The file is 0600 and holds a private key in the clear. That is a deliberate match for where
- * the rest of this data dir already sits rather than a considered maximum: `config.json`
- * beside it holds two bearer tokens on the same terms. A keychain would be better and is a
- * separate piece of work, not a reason to keep the identity in a worse place meanwhile.
+ * Generated once on the first `connect`. Losing it loses the handle it claimed — the same
+ * property that means nobody can be talked into handing your handle away. 0600, in the clear;
+ * see `docs/design.md` §7 for why that is a match for the rest of the directory rather than a
+ * considered maximum.
  */
 
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -31,10 +27,8 @@ function isKeypair(value: unknown): value is Keypair {
 /**
  * The keypair for this data directory, generating one the first time.
  *
- * A file that exists but does not parse is left exactly where it is and reported. Quietly
- * writing a fresh key over it would be the one unrecoverable mistake this module can make:
- * the old key is how the agent proves it is the same agent, and a corrupt file is far more
- * likely to be a half-finished write worth rescuing than a key nobody wants.
+ * A file that exists but does not parse is left where it is and reported. Writing a fresh key
+ * over it is the one unrecoverable mistake available here.
  */
 export async function loadIdentity(): Promise<Keypair | { error: string }> {
   const path = identityPath();
@@ -43,11 +37,9 @@ export async function loadIdentity(): Promise<Keypair | { error: string }> {
   try {
     raw = await readFile(path, "utf-8");
   } catch (error) {
-    // Only a file that is genuinely *not there* means a new agent. Every other reason a read
-    // fails — a permissions problem, a failing disk, too many open files — describes a key
-    // that exists and cannot be reached right now, and generating over one of those would
-    // destroy the identity for good: the hub has the old did bound to the handle, so the
-    // agent could not even re-claim its own name.
+    // Only a genuine ENOENT means a new agent. Every other failure describes a key that
+    // exists and cannot be reached, and generating over one would destroy the identity: the
+    // hub has the old did bound to the handle, so it could not even re-claim its own name.
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       const detail = error instanceof Error ? error.message : "unknown error";
       return { error: `could not read ${path}: ${detail}. Not generating a new key over it.` };
@@ -55,15 +47,14 @@ export async function loadIdentity(): Promise<Keypair | { error: string }> {
     const created = generateKeypair();
     try {
       await mkdir(dirname(path), { recursive: true });
-      // "wx" fails rather than truncates if something appeared between the read and here,
-      // so two bridges racing to first-run in one directory cannot erase each other's key.
+      // "wx" fails rather than truncates, so two bridges racing to first-run in one directory
+      // cannot erase each other's key.
       await writeFile(path, `${JSON.stringify(created, null, 2)}\n`, {
         encoding: "utf-8",
         mode: SECRET_FILE_MODE,
         flag: "wx",
       });
-      // `mode` on write is masked by the process umask, so it is asserted separately rather
-      // than assumed — a key readable by every process on the box is not a small miss.
+      // Masked by the umask on write, so asserted separately.
       await chmod(path, SECRET_FILE_MODE);
     } catch (writeError) {
       const detail = writeError instanceof Error ? writeError.message : "unknown error";

@@ -1,17 +1,11 @@
 /**
  * @fileoverview Who an agent is, provably, without asking anybody.
  *
- * An agent's identity is an Ed25519 keypair its own bridge generates and never sends
- * anywhere. The public half is published as a `did:key` — a W3C identifier that *is* the
- * key, so there is no registry to query, no certificate authority to trust, and nothing the
- * hub can revoke or reassign. The hub learns a did the way it learns a display name: it is
- * told, and it repeats it.
+ * Ed25519 keypairs published as `did:key`, so there is no registry to query, no authority to
+ * trust and nothing the hub can revoke — `docs/design.md` §2.
  *
- * That is the whole point. The hub relays messages it cannot forge and cannot alter, so
- * "whose hub is this" stops being a question the security of a conversation depends on.
- *
- * Deliberately free of I/O and of any quartet type. It signs bytes and checks bytes; where
- * the key is stored is the bridge's problem and what a message *is* belongs to the protocol.
+ * Deliberately free of I/O and of any quartet type. It signs bytes and checks bytes; where a
+ * key is stored is the bridge's problem, and what a message *is* belongs to the protocol.
  */
 
 import { createPrivateKey, createPublicKey, generateKeyPairSync, randomUUID, sign, verify, createHash } from "node:crypto";
@@ -32,11 +26,8 @@ export {
 } from "./sealing";
 
 /**
- * The multicodec prefix for an Ed25519 public key, and the DER wrapper for the same 32 bytes.
- *
  * Two spellings of one key: the first is what `did:key` is defined in terms of, the second is
- * the only shape `node:crypto` will accept. Neither is negotiable, so both are constants
- * rather than something built at each call site.
+ * the only shape `node:crypto` will accept.
  */
 const ED25519_MULTICODEC = Uint8Array.from([0xed, 0x01]);
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
@@ -47,19 +38,16 @@ const RAW_PUBLIC_KEY_BYTES = 32;
 /**
  * How many bytes of the key's digest a person is asked to compare out of band.
  *
- * Eight, so sixty-four bits. An attacker who wants to be mistaken for somebody has to grind
- * a preimage of that digest, and sixty-four bits puts that out of reach of anyone who is not
- * spending real money — while still being short enough to read down a phone line, which is
- * the failure mode that actually matters. A fingerprint nobody compares protects nobody.
+ * Sixty-four bits: out of grinding reach for anyone not spending real money, and still short
+ * enough to read down a phone line. A fingerprint nobody compares protects nobody.
  */
 const FINGERPRINT_BYTES = 8;
 
 /**
  * What one agent's bridge holds on disk.
  *
- * The public key is not a field because the did already is one — that is the property that
- * makes `did:key` worth using, and storing a second copy only creates a way for the two to
- * disagree.
+ * The public key is not a field because the did already is one; a second copy would only be a
+ * way for the two to disagree.
  */
 export interface Keypair {
   readonly did: string;
@@ -191,10 +179,8 @@ function signCanonical(payload: Buffer, privateKey: string): string {
 /**
  * Whether these exact bytes were signed by the holder of this did.
  *
- * False, never a throw. Everything reaching this function came off a socket, so a malformed
- * did or a signature that is not base64 is an ordinary rejection and not an exceptional
- * condition — and a verifier that throws is a verifier somebody eventually wraps in a
- * try/catch that swallows the answer.
+ * False, never a throw. Everything here came off a socket, so malformed input is an ordinary
+ * rejection — and a verifier that throws gets wrapped in a catch that swallows the answer.
  */
 function verifyCanonical(payload: Buffer, signature: string, did: string): boolean {
   const raw = publicKeyFromDid(did);
@@ -215,10 +201,9 @@ function verifyCanonical(payload: Buffer, signature: string, did: string): boole
 /**
  * One line an agent said, as its author signed it.
  *
- * The hub's own message id is deliberately not in here: it does not exist yet when the bridge
- * signs, and it is a hub-local filing number rather than anything about authorship. What has
- * to be covered is everything a hub could otherwise change without detection — who spoke,
- * where, when, whether it was speech or silence, and the words.
+ * Covers everything a hub could otherwise change without detection. The hub's own message id
+ * is deliberately not in here — it does not exist yet when the bridge signs, and it is a
+ * filing number rather than anything about authorship.
  */
 export interface SignedMessage {
   readonly did: string;
@@ -229,14 +214,19 @@ export interface SignedMessage {
   /** Makes two identical lines in one conversation distinct, so neither can replay the other. */
   readonly nonce: string;
   /**
-   * The digest of this author's previous signed line, chaining their own messages together.
+   * The digest of this author's previous signed line. Empty on the first.
    *
-   * Empty on the first. Signatures alone stop a relay from *changing* what was said; they do
-   * nothing about a relay that drops a line, because what is left still verifies perfectly.
-   * A chain is what turns a deletion into a visible gap, and it is in the signed payload from
-   * the start so that turning the check on later is a change to a verifier, not to a format.
+   * Signatures alone say nothing about a relay that *drops* a line, because what is left
+   * verifies perfectly. A chain turns a deletion into a visible gap — `docs/design.md` §2.
    */
   readonly prev: string;
+  /**
+   * The hub's name for the turn this line answers.
+   *
+   * Signed, so authorship covers *which turn* produced the line and not only its words. The
+   * bridge is handed this at dispatch and cannot invent one.
+   */
+  readonly dispatch: string;
   readonly text: string;
 }
 
@@ -248,6 +238,7 @@ function messagePayload(message: SignedMessage): Buffer {
     message.authoredAt,
     message.nonce,
     message.prev,
+    message.dispatch,
     message.text,
   ]);
 }
@@ -263,9 +254,8 @@ export function verifyMessage(message: SignedMessage, signature: string): boolea
 /**
  * The digest a following message names as its `prev`.
  *
- * Taken over the signature rather than the text: a signature already commits to every field
- * of the message including its own `prev`, so hashing it chains the whole history in one
- * step, and it cannot be reproduced by anybody who did not hold the key.
+ * Over the signature rather than the text: a signature already commits to every field
+ * including its own `prev`, so hashing it chains the whole history in one step.
  */
 export function linkAfter(signature: string): string {
   return createHash("sha256").update(signature, "utf-8").digest("hex");
@@ -274,8 +264,8 @@ export function linkAfter(signature: string): string {
 /**
  * A handle claim: this key is asking to be known as this name, at this moment.
  *
- * The timestamp is signed so a claim overheard once cannot be replayed years later against a
- * hub that has since forgotten the handle.
+ * The timestamp is signed so one overheard cannot be replayed against a hub that has since
+ * forgotten the handle.
  */
 export interface HandleClaim {
   readonly did: string;

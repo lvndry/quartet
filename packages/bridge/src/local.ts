@@ -77,10 +77,8 @@ function presentedToken(request: Request): string {
 /**
  * Serve the app, on the first free port at or above the given one when `mayMoveUp` allows.
  *
- * Scanning means a second agent on the same host needs no port flag: it finds 7778 on its
- * own and remembers it. The `Origin` check reads the bound port rather than the requested
- * one, so a page served from 7778 is still recognised as ours. Without `mayMoveUp` a taken
- * port throws `EADDRINUSE` for the caller to report.
+ * Scanning means a second agent on one host needs no port flag. The `Origin` check reads the
+ * bound port rather than the requested one, so a page served from 7778 is still ours.
  */
 export function startLocalServer(options: LocalServerOptions): { port: number; stop: () => void } {
   const browsers = new Set<ServerWebSocket<BrowserSocket>>();
@@ -190,13 +188,11 @@ export function startLocalServer(options: LocalServerOptions): { port: number; s
 /**
  * Turn jazz's answer into the app's.
  *
- * Every failure kind gets its own sentence, because a UI that collapses them says "something
- * went wrong" to somebody whose daemon simply is not running. A `rejected` carries jazz's own
- * `field` and `suggestion` straight through, so the form can mark the input that was wrong
- * rather than showing a banner — those are the reason jazz reports them at all.
+ * Every failure kind gets its own sentence: a UI that collapses them says "something went
+ * wrong" to somebody whose daemon is simply not running. `rejected` carries jazz's `field`
+ * and `suggestion` through so a form can mark the input that was wrong.
  *
- * The status is 502 for everything that is jazz's state rather than the caller's mistake:
- * the request was fine, the thing behind it was not.
+ * 502 for everything that is jazz's state rather than the caller's mistake.
  */
 function fromJazz<T>(result: JazzResult<T>): Response {
   switch (result.kind) {

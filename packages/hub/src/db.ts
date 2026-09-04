@@ -1,20 +1,13 @@
 /**
  * @fileoverview Everything the hub remembers.
  *
- * SQLite rather than Postgres because the hub holds live WebSockets in memory: the socket
- * registry is already per-process state that cannot be shared across nodes without a pub/sub
- * layer, so a single process with a single file is the honest expression of the
- * architecture rather than a shortcut. Every read and write goes through this module so the
- * swap is real the day that stops being true.
+ * SQLite, for the reason in `docs/design.md` §8: the socket registry is already per-process
+ * state, so one process with one file is the honest expression of that. Every read and write
+ * goes through this module, so the swap is real the day it stops being true.
  *
- * Two modelling choices are deliberate and cheap now, painful later:
- *
- * - **A person is a row, not a column.** One published agent per person is enforced in
- *   policy, not in the schema, so allowing several later is a policy change rather than a
- *   migration of every foreign key that pointed at an agent.
- * - **A connection is separate from a conversation.** An invite establishes the first;
- *   a purpose line opens the second. Conflating them would mean re-inviting somebody every
- *   time you wanted to talk about something new.
+ * Two modelling choices are cheap now and painful later, so they are made here rather than
+ * left to policy: a person is a row rather than a column, and a connection is separate from
+ * a conversation. Both are explained in `docs/design.md` §3.
  */
 
 import { Database } from "bun:sqlite";
@@ -61,32 +54,38 @@ interface MessageRow {
   sig_at: string | null;
   sig_nonce: string | null;
   sig_prev: string | null;
+  sig_dispatch: string | null;
   sig_value: string | null;
 }
 
 /**
  * The projection every transcript read shares.
  *
- * One string so the two readers cannot drift into selecting different columns and then
- * disagreeing about what a message is. The join also decides what happens to a message
- * whose author has been deleted: it disappears, which is what the per-row lookup this
- * replaced did too.
+ * One string, so two readers cannot drift into disagreeing about what a message is. The join
+ * also decides what happens to a message whose author is gone: it disappears.
  */
 const MESSAGE_SELECT = `SELECT m.id, m.conversation_id, a.handle, m.kind, m.text, m.at,
-            m.sig_did, m.sig_at, m.sig_nonce, m.sig_prev, m.sig_value
+            m.sig_did, m.sig_at, m.sig_nonce, m.sig_prev, m.sig_dispatch, m.sig_value
      FROM messages m
      JOIN agents a ON a.id = m.author_agent`;
 
 /**
  * What counts as an agent having had its say: its own words, or its own deliberate silence.
  *
- * Deliberately not "any message attributed to this agent". A system note is the room
- * talking about itself, and it is attributed to whoever's action provoked it — so a failed
- * turn writes a `trouble` note in the agent's own name, and counting that as an answer meant
- * the retry was suppressed and the message was never answered by anybody. The same
- * reasoning decides where an agent's next turn starts reading from, so both use this.
+ * Deliberately not "any message attributed to this agent". A system note is the room talking
+ * about itself and is attributed to whoever provoked it — so counting a failed turn's note as
+ * an answer suppressed the retry and nobody answered the message at all.
  */
 const OWN_UTTERANCE = "m.kind IN ('agent', 'pass')";
+
+/**
+ * How long a settled dispatch is remembered.
+ *
+ * Long enough that a bridge which slept through the weekend is not mistaken for a replay,
+ * short enough that the table stays small. Forgetting one early costs nothing: the message
+ * nonce constraint refuses the duplicate anyway.
+ */
+const DISPATCH_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface InviteRow {
   id: string;
@@ -101,20 +100,20 @@ interface InviteRow {
 /**
  * Reassemble a stored signature, or nothing at all.
  *
- * All-or-nothing on purpose. A row with some of the columns filled is a hub that has been
- * edited underneath itself, and handing back a half-built signature would turn that into a
- * verification failure on somebody's screen — which reads as "your correspondent is lying"
- * rather than "this hub's database is damaged".
+ * All-or-nothing: a partly filled row is a hub edited underneath itself, and a half-built
+ * signature would surface as "your correspondent is lying" rather than "this database is
+ * damaged".
  */
 function signatureOf(row: MessageRow): Signature | undefined {
-  const { sig_did, sig_at, sig_nonce, sig_prev, sig_value } = row;
+  const { sig_did, sig_at, sig_nonce, sig_prev, sig_dispatch, sig_value } = row;
   if (sig_did === null || sig_at === null || sig_nonce === null) return undefined;
-  if (sig_prev === null || sig_value === null) return undefined;
+  if (sig_prev === null || sig_dispatch === null || sig_value === null) return undefined;
   return {
     did: sig_did,
     authoredAt: sig_at,
     nonce: sig_nonce,
     prev: sig_prev,
+    dispatch: sig_dispatch,
     value: sig_value,
   };
 }
@@ -151,6 +150,11 @@ export class HubStore {
         display_name  TEXT NOT NULL,
         bio           TEXT,
         token         TEXT NOT NULL UNIQUE,
+        -- The key this agent signs with. Nullable because a row can exist before a key is
+        -- presented; an agent without one can be talked to and cannot be checked, and the
+        -- app says which. Unique through a partial index below, since NULLs must stay free
+        -- to collide.
+        did           TEXT,
         created_at    TEXT NOT NULL
       );
 
@@ -182,6 +186,9 @@ export class HubStore {
         spent_usd      REAL NOT NULL DEFAULT 0,
         spend_incomplete INTEGER NOT NULL DEFAULT 0,
         state          TEXT NOT NULL DEFAULT 'live',
+        -- Who opened the room. Stored rather than read off the member order, because whose
+        -- turn it is to accept is a question about consent and member order is not.
+        proposed_by    TEXT,
         created_at     TEXT NOT NULL,
         last_at        TEXT NOT NULL
       );
@@ -192,15 +199,17 @@ export class HubStore {
         author_agent     TEXT NOT NULL REFERENCES agents(id),
         kind             TEXT NOT NULL,
         text             TEXT NOT NULL,
-        at               TEXT NOT NULL
+        at               TEXT NOT NULL,
+        sig_did          TEXT,
+        sig_at           TEXT,
+        sig_nonce        TEXT,
+        sig_prev         TEXT,
+        sig_dispatch     TEXT,
+        sig_value        TEXT
       );
 
-      -- Who is in a room.
-      --
-      -- Membership used to be read off the room's connection, which is a pair by
-      -- definition, so every room was two people whatever anyone wanted. A connection is
-      -- still a pair — it is a relationship between two people and that is the right
-      -- model — but it is now only where a room started, not who is in it.
+      -- Who is in a room. Not read off the connection, which is a pair by definition: that
+      -- is where a room started, not who is in it.
       CREATE TABLE IF NOT EXISTS conversation_members (
         conversation_id TEXT NOT NULL REFERENCES conversations(id),
         agent_id        TEXT NOT NULL REFERENCES agents(id),
@@ -208,20 +217,21 @@ export class HubStore {
         -- When this member's agent said goodbye. Durable, because a hub restart must not
         -- resurrect an agent whose owner is no longer paying for it to talk.
         bowed_out_at    TEXT,
+        -- When this member asked for the room to be erased for everyone. Erasure happens
+        -- only once every current member has, so this is a vote that has to survive a
+        -- restart: losing it would silently reset an agreement people had already reached.
+        erase_asked_at  TEXT,
         PRIMARY KEY (conversation_id, agent_id)
       );
 
       CREATE INDEX IF NOT EXISTS idx_members_agent ON conversation_members(agent_id);
 
-      -- Turns the hub has charged for and is waiting on.
-      --
-      -- Durable because the charge is: the budget is written to disk at dispatch, so a hub
-      -- restart used to leave a conversation paid up and silent, with no in-flight entry to
-      -- replay, no deadline left to fire, and nothing in the transcript saying why it had
-      -- gone quiet. Orchestrator.recover reads these back at boot.
+      -- Turns the hub has charged for and is waiting on. Durable because the charge is:
+      -- Orchestrator.recover reads these back at boot.
       CREATE TABLE IF NOT EXISTS turns_in_flight (
         conversation_id TEXT NOT NULL REFERENCES conversations(id),
         agent_id        TEXT NOT NULL REFERENCES agents(id),
+        dispatch_id     TEXT NOT NULL,
         dispatched_at   TEXT NOT NULL,
         pending         INTEGER NOT NULL DEFAULT 0,
         steered         INTEGER NOT NULL DEFAULT 0,
@@ -230,87 +240,52 @@ export class HubStore {
         PRIMARY KEY (conversation_id, agent_id)
       );
 
+      -- Every turn the hub has handed out, and whether it has been answered.
+      --
+      -- Separate from turns_in_flight, which is one row per agent per room and is what the
+      -- turn policy reads. This is the ledger, and it answers two different questions: was
+      -- this agent given the floor, and has it already used it. Deliberately outlives the
+      -- deadline — see docs/design.md §4.
+      CREATE TABLE IF NOT EXISTS dispatches (
+        id              TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        agent_id        TEXT NOT NULL,
+        dispatched_at   TEXT NOT NULL,
+        settled_at      TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_dispatches_room ON dispatches(conversation_id, agent_id);
+      CREATE INDEX IF NOT EXISTS idx_dispatches_settled ON dispatches(settled_at);
+
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, at);
+      -- One nonce per author per room, ever. The constraint is the enforcement rather than a
+      -- check some future caller can forget to make.
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_sig_nonce
+        ON messages(conversation_id, sig_did, sig_nonce)
+        WHERE sig_nonce IS NOT NULL;
       -- Serves owesTurn, which asks who spoke last rather than what was said. Without it
       -- that answer costs a scan of every message in the room, on every event.
       CREATE INDEX IF NOT EXISTS idx_messages_author ON messages(conversation_id, author_agent);
       CREATE INDEX IF NOT EXISTS idx_invites_to ON invites(to_agent, status);
     `);
 
-    // `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, so a database created
-    // before the ceiling was configurable needs the column added explicitly. Read once,
-    // before any of them are added, because the backfill below turns on what was *missing*.
-    const conversationColumns = this.columnsOf("conversations");
-    this.addMissingColumns("conversations", {
-      budget_max: `INTEGER NOT NULL DEFAULT ${String(DEFAULT_TURN_BUDGET)}`,
-      limit_json: `TEXT NOT NULL DEFAULT '{"kind":"turns","turns":${String(DEFAULT_TURN_BUDGET)}}'`,
-      spent_usd: "REAL NOT NULL DEFAULT 0",
-      spend_incomplete: "INTEGER NOT NULL DEFAULT 0",
-      state: "TEXT NOT NULL DEFAULT 'live'",
-      proposed_by: "TEXT",
-    });
-
-    // A database written before rooms had three states carries one `stopped` flag, which
-    // cannot say whether a person halted the room or an agent said goodbye. `halted` is the
-    // safe reading of the two: it is the one a person can lift by carrying on, so a
-    // misread costs a conversation nothing. The old column is left where it is — SQLite
-    // makes dropping one a table rewrite, and nothing reads it now.
-    if (!conversationColumns.includes("state") && conversationColumns.includes("stopped")) {
-      this.db.exec("UPDATE conversations SET state = 'halted' WHERE stopped = 1");
-    }
-
-    // Rooms written before membership was its own table have theirs implied by their
-    // connection. Seeding from that is exact rather than a guess: a two-party room's members
-    // were precisely the two ends of the pair it came from.
-    this.addMissingColumns("conversation_members", { bowed_out_at: "TEXT" });
-
-    this.db.exec(`
-      INSERT OR IGNORE INTO conversation_members (conversation_id, agent_id, joined_at)
-      SELECT c.id, n.a_agent, c.created_at FROM conversations c
-        JOIN connections n ON n.id = c.connection_id;
-      INSERT OR IGNORE INTO conversation_members (conversation_id, agent_id, joined_at)
-      SELECT c.id, n.b_agent, c.created_at FROM conversations c
-        JOIN connections n ON n.id = c.connection_id;
-    `);
-
-    this.addMissingColumns("invites", {
-      limit_json: `TEXT NOT NULL DEFAULT '{"kind":"turns","turns":${String(DEFAULT_TURN_BUDGET)}}'`,
-    });
-
-    // Nullable, because a hub that predates signing still has agents that never presented a
-    // key, and they keep working. Unique through a partial index rather than a column
-    // constraint: SQLite cannot add UNIQUE in an ALTER, and NULLs must stay free to collide.
-    this.addMissingColumns("agents", { did: "TEXT" });
-
-    // The signature is stored in pieces rather than as a JSON blob so that a hub cannot be
-    // the thing that reshapes it. It goes out exactly as it came in.
-    this.addMissingColumns("messages", {
-      sig_did: "TEXT",
-      sig_at: "TEXT",
-      sig_nonce: "TEXT",
-      sig_prev: "TEXT",
-      sig_value: "TEXT",
-    });
-
     this.db.exec(
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_did ON agents(did) WHERE did IS NOT NULL",
     );
+
+    // Past their retention they are history nobody reads, and the table would grow forever.
+    this.db.run("DELETE FROM dispatches WHERE settled_at IS NOT NULL AND settled_at < ?", [
+      new Date(Date.now() - DISPATCH_RETENTION_MS).toISOString(),
+    ]);
   }
 
-  private columnsOf(table: string): string[] {
-    return this.db
-      .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
-      .all()
-      .map((column) => column.name);
-  }
-
-  private addMissingColumns(table: string, definitions: Record<string, string>): void {
-    const present = this.columnsOf(table);
-    for (const [column, definition] of Object.entries(definitions)) {
-      if (!present.includes(column)) {
-        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-      }
-    }
+  /**
+   * Run several writes as one, so a crash cannot land half of them.
+   *
+   * The turn transition is why this exists — see `docs/design.md` §4.
+   */
+  transaction<T>(work: () => T): T {
+    return this.db.transaction(work)();
   }
 
   /* ---------------- agents and people ---------------- */
@@ -575,9 +550,8 @@ export class HubStore {
   /**
    * Take up a proposed room, or turn it down, as the side that did not open it.
    *
-   * Returns the room when the answer took effect. The proposer cannot answer their own
-   * proposal — that would make the approval decorative — and a room past `proposed` is
-   * already answered, so a repeated tap changes nothing.
+   * The proposer cannot answer their own proposal, which would make the approval decorative.
+   * A room past `proposed` is already answered, so a repeated tap changes nothing.
    */
   respondToConversation(
     conversationId: string,
@@ -639,17 +613,30 @@ export class HubStore {
       spendIncomplete: row.spend_incomplete === 1,
       state: HubStore.parseRoomState(row.state),
       proposedBy: this.handleOf(row.proposed_by) ?? "",
-      bowedOut: this.db
-        .query<{ handle: string }, [string]>(
-          `SELECT a.handle FROM conversation_members m
-           JOIN agents a ON a.id = m.agent_id
-           WHERE m.conversation_id = ? AND m.bowed_out_at IS NOT NULL
-           ORDER BY m.bowed_out_at, a.handle`,
-        )
-        .all(id)
-        .map((member) => member.handle),
+      bowedOut: this.markedMembers(id, "bowed_out_at"),
+      eraseAsked: this.markedMembers(id, "erase_asked_at"),
       lastAt: row.last_at,
     };
+  }
+
+  /**
+   * Members carrying a timestamp in one column, by handle.
+   *
+   * Ordered by that timestamp so the list the app shows does not jump around.
+   *
+   * The column name is interpolated, which is safe only because both callers pass a literal —
+   * keeping it to one function is the point.
+   */
+  private markedMembers(conversationId: string, column: "bowed_out_at" | "erase_asked_at"): string[] {
+    return this.db
+      .query<{ handle: string }, [string]>(
+        `SELECT a.handle FROM conversation_members m
+         JOIN agents a ON a.id = m.agent_id
+         WHERE m.conversation_id = ? AND m.${column} IS NOT NULL
+         ORDER BY m.${column}, a.handle`,
+      )
+      .all(conversationId)
+      .map((member) => member.handle);
   }
 
   conversationsFor(agentId: string): Conversation[] {
@@ -736,14 +723,46 @@ export class HubStore {
   }
 
   /**
+   * Record that this member wants the room erased for everyone.
+   *
+   * Keeps the first timestamp — asking twice is not a stronger ask — and returns whether this
+   * was new, so a repeated tap does not say the same thing in the room again.
+   */
+  askErase(conversationId: string, agentId: string): boolean {
+    const written = this.db.run(
+      `UPDATE conversation_members SET erase_asked_at = ?
+       WHERE conversation_id = ? AND agent_id = ? AND erase_asked_at IS NULL`,
+      [nowIso(), conversationId, agentId],
+    );
+    return written.changes === 1;
+  }
+
+  /**
+   * Whether every current member has asked for erasure.
+   *
+   * "Current" is what keeps this reachable: somebody who leaves is no longer waited on, so an
+   * absentee cannot freeze the request forever.
+   */
+  everyoneAskedErase(conversationId: string): boolean {
+    const row = this.db
+      .query<{ members: number; asked: number }, [string]>(
+        `SELECT COUNT(*) AS members,
+                COUNT(erase_asked_at) AS asked
+         FROM conversation_members WHERE conversation_id = ?`,
+      )
+      .get(conversationId);
+    if (row === null || row === undefined) return false;
+    return row.members === row.asked;
+  }
+
+  /**
    * Erase a room and everything said in it from the hub's own copy.
    *
-   * Deleted child-first because foreign keys are enforced: a conversation row cannot go
-   * while a message or membership row still points at it. Each participant's own local
-   * bridge journal is a separate, durable record of what it said — this only clears the
-   * hub's shared copy, which is the part everyone in the room has a say over together.
+   * Child-first, because foreign keys are enforced. Each participant's own bridge journal is
+   * a separate durable record and is untouched — this is only the shared copy.
    */
   deleteConversation(conversationId: string): void {
+    this.db.run("DELETE FROM dispatches WHERE conversation_id = ?", [conversationId]);
     this.db.run("DELETE FROM turns_in_flight WHERE conversation_id = ?", [conversationId]);
     this.db.run("DELETE FROM messages WHERE conversation_id = ?", [conversationId]);
     this.db.run("DELETE FROM conversation_members WHERE conversation_id = ?", [conversationId]);
@@ -756,6 +775,22 @@ export class HubStore {
         "SELECT agent_id FROM conversation_members WHERE conversation_id = ? AND agent_id = ?",
       )
       .get(conversationId, agentId);
+    return row !== null && row !== undefined;
+  }
+
+  /**
+   * Whether this author has already used this nonce in this room.
+   *
+   * The unique index enforces it; this exists so a replay is refused with a sentence rather
+   * than a constraint violation.
+   */
+  nonceUsed(conversationId: string, did: string, nonce: string): boolean {
+    const row = this.db
+      .query<{ id: string }, [string, string, string]>(
+        `SELECT id FROM messages
+         WHERE conversation_id = ? AND sig_did = ? AND sig_nonce = ?`,
+      )
+      .get(conversationId, did, nonce);
     return row !== null && row !== undefined;
   }
 
@@ -774,8 +809,8 @@ export class HubStore {
     this.db.run(
       `INSERT INTO messages
          (id, conversation_id, author_agent, kind, text, at,
-          sig_did, sig_at, sig_nonce, sig_prev, sig_value)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          sig_did, sig_at, sig_nonce, sig_prev, sig_dispatch, sig_value)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.conversationId,
@@ -787,6 +822,7 @@ export class HubStore {
         signature?.authoredAt ?? null,
         signature?.nonce ?? null,
         signature?.prev ?? null,
+        signature?.dispatch ?? null,
         signature?.value ?? null,
       ],
     );
@@ -805,9 +841,8 @@ export class HubStore {
   /**
    * The most recent messages in rooms this agent is in, oldest first per conversation.
    *
-   * Windowed, because this runs on every hello: an agent in a dozen long-running rooms was
-   * pulling six thousand rows on each reconnect, which is precisely when a flapping network
-   * makes it run again. The browser asks for anything older by the page.
+   * Windowed because this runs on every hello, which is exactly when a flapping network makes
+   * it run repeatedly. The browser asks for anything older by the page.
    */
   messagesForAgent(agentId: string, perConversation = WELCOME_TRANSCRIPT_WINDOW): Message[] {
     return this.conversationsFor(agentId).flatMap((conversation) =>
@@ -816,10 +851,10 @@ export class HubStore {
   }
 
   /**
-   * The most recent `limit` messages, oldest first — the window an agent answers from.
+   * The most recent `limit` messages, oldest first.
    *
-   * The author's handle comes from a join rather than a lookup per row. It was a query per
-   * message, on the hub's hottest read.
+   * The handle comes from a join, not a lookup per row: that was a query per message on the
+   * hub's hottest read.
    */
   transcript(conversationId: string, limit: number): Message[] {
     const rows = this.db
@@ -947,15 +982,14 @@ export class HubStore {
   /**
    * Record a turn as in flight, or update what is queued behind it.
    *
-   * `dispatched_at` is written once and never touched again, so the deadline a recovered
-   * turn is given is measured from when the money was actually spent rather than from when
-   * the hub happened to come back.
+   * `dispatched_at` is written once, so a recovered turn's deadline is measured from when the
+   * money was spent rather than from when the hub came back.
    */
   saveInFlight(conversationId: string, agentId: string, entry: InFlight): void {
     this.db.run(
       `INSERT INTO turns_in_flight
-         (conversation_id, agent_id, dispatched_at, pending, steered, queued_steer, dispatch_steer)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+         (conversation_id, agent_id, dispatch_id, dispatched_at, pending, steered, queued_steer, dispatch_steer)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (conversation_id, agent_id) DO UPDATE SET
          pending = excluded.pending,
          steered = excluded.steered,
@@ -964,6 +998,7 @@ export class HubStore {
       [
         conversationId,
         agentId,
+        entry.dispatch,
         nowIso(),
         entry.pending ? 1 : 0,
         entry.steered ? 1 : 0,
@@ -980,6 +1015,55 @@ export class HubStore {
     ]);
   }
 
+  /* ---------------- the dispatch ledger ---------------- */
+
+  /** In the same transaction as the charge, so no bridge holds a turn the hub would refuse. */
+  recordDispatch(conversationId: string, agentId: string, dispatchId: string): void {
+    this.db.run(
+      `INSERT OR IGNORE INTO dispatches (id, conversation_id, agent_id, dispatched_at)
+       VALUES (?, ?, ?, ?)`,
+      [dispatchId, conversationId, agentId, nowIso()],
+    );
+  }
+
+  /**
+   * Whether this dispatch is one this agent may still answer.
+   *
+   * Three answers rather than a boolean, because they are different accusations: `unknown` is
+   * speaking out of turn, `settled` is a replay. `open` stays open past the deadline — the
+   * turn was charged for, so a late answer is still that agent's.
+   */
+  dispatchState(
+    conversationId: string,
+    agentId: string,
+    dispatchId: string,
+  ): "open" | "settled" | "unknown" {
+    const row = this.db
+      .query<{ settled_at: string | null }, [string, string, string]>(
+        `SELECT settled_at FROM dispatches
+         WHERE id = ? AND conversation_id = ? AND agent_id = ?`,
+      )
+      .get(dispatchId, conversationId, agentId);
+    if (row === null || row === undefined) return "unknown";
+    return row.settled_at === null ? "open" : "settled";
+  }
+
+  /**
+   * Spend a dispatch, if it is this agent's to spend and nobody has spent it.
+   *
+   * Scoped to the room and the agent rather than the id alone: the id travels in the
+   * signature, so "whoever quotes it may settle it" would let one member answer another's
+   * turn.
+   */
+  settleDispatch(conversationId: string, agentId: string, dispatchId: string): boolean {
+    const written = this.db.run(
+      `UPDATE dispatches SET settled_at = ?
+       WHERE id = ? AND conversation_id = ? AND agent_id = ? AND settled_at IS NULL`,
+      [nowIso(), dispatchId, conversationId, agentId],
+    );
+    return written.changes === 1;
+  }
+
   /** Every turn the hub was waiting on, for the orchestrator to pick back up at boot. */
   allInFlight(): { conversationId: string; agentId: string; dispatchedAt: string; entry: InFlight }[] {
     return this.db
@@ -987,6 +1071,7 @@ export class HubStore {
         {
           conversation_id: string;
           agent_id: string;
+          dispatch_id: string;
           dispatched_at: string;
           pending: number;
           steered: number;
@@ -995,7 +1080,7 @@ export class HubStore {
         },
         []
       >(
-        `SELECT conversation_id, agent_id, dispatched_at, pending, steered, queued_steer, dispatch_steer
+        `SELECT conversation_id, agent_id, dispatch_id, dispatched_at, pending, steered, queued_steer, dispatch_steer
          FROM turns_in_flight`,
       )
       .all()
@@ -1004,6 +1089,7 @@ export class HubStore {
         agentId: row.agent_id,
         dispatchedAt: row.dispatched_at,
         entry: {
+          dispatch: row.dispatch_id,
           pending: row.pending === 1,
           steered: row.steered === 1,
           ...(row.queued_steer !== null ? { queuedSteer: row.queued_steer } : {}),

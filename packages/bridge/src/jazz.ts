@@ -8,9 +8,12 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { CLOSE_SENTINEL, PASS_SENTINEL } from "@quartet/protocol";
+import { CLOSE_SENTINEL, PASS_SENTINEL, type HumanQuestion } from "@quartet/protocol";
 import type { DaemonSettings } from "./config";
+import { logger } from "./log";
 import { webhookPromptTemplate } from "./prompt";
+
+const log = logger("daemon");
 
 /** What a turn cost, when the daemon could tell. `incomplete` means the figure is a floor. */
 export interface TurnCost {
@@ -18,12 +21,9 @@ export interface TurnCost {
   readonly incomplete: boolean;
 }
 
-export interface HumanQuestion {
-  readonly question: string;
-  readonly suggestions: readonly { readonly value: string; readonly label?: string; readonly description?: string }[];
-  readonly allowCustom: boolean;
-  readonly allowMultiple: boolean;
-}
+// Defined in the protocol package because the app renders it. Re-exported so this module
+// stays the one place the bridge reaches for anything about a jazz turn.
+export type { HumanQuestion };
 
 export type TurnResult =
   | {
@@ -38,60 +38,82 @@ export type TurnResult =
   | { readonly kind: "failed"; readonly reason: string };
 
 /**
- * Cap chosen to sit under jazz's own 20 KB body limit with room for the JSON envelope.
+ * Under jazz's own 20 KB body limit, with room for the JSON envelope.
  *
- * Exported because it is the budget `composeTurnPayload` builds to. It is a property of the
- * local daemon, which is why the bridge decides what fits rather than the hub: the hub does
- * not know what anybody's jazz will accept, and for a while the only thing the bridge could
- * do about an oversized payload was kill the turn.
+ * A property of the local daemon, which is why the bridge decides what fits rather than the
+ * hub: the hub does not know what anybody's jazz will accept.
  */
 export const MAX_PAYLOAD_BYTES = 18_000;
 
 /**
  * How long the daemon can go without reporting progress before a turn gives up on it.
  *
- * Bun's `fetch` gives up at five minutes by default, and a fixed deadline on top of that has
- * the same problem one level up: a turn that reads a calendar, searches the web and writes a
- * file can legitimately run long, and a wall-clock cap either has to be too short for that or
- * too long to catch a daemon that is actually wedged. Neither number is right, because the
- * question a fixed deadline can't answer is "is it still working?".
+ * Idle rather than wall-clock, because a fixed cap cannot answer "is it still working?": a
+ * turn that reads a calendar and searches the web runs long legitimately, so any number is
+ * either too short for that or too long to catch a wedged daemon. `createIdleWatchdog` re-arms
+ * this on every progress event, so only real silence ends a turn.
  *
- * The progress heartbeat already answers that: `createIdleWatchdog` below re-arms this
- * deadline on every progress event, so a turn that keeps reporting tool use never trips it,
- * no matter how long it runs. Only real silence — no progress at all for this long — ends the
- * turn. Half an hour, because that is a long time for the daemon to go quiet while genuinely
- * healthy.
+ * Bun's `fetch` gives up at five minutes by default — measured at 300.08s against a server
+ * that accepts and never answers — so `runTurn` turns that off and this is the only deadline
+ * left.
  */
 export const TURN_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * What the watchdog saw, for a log line that has to explain why a turn ended.
+ *
+ * Together these separate "never said anything at all" from "was working and then stopped",
+ * which need different answers.
+ */
+export interface WatchdogStats {
+  readonly pokes: number;
+  readonly quietMs: number;
+}
 
 /**
  * An abort signal that fires after `idleMs` of silence, not before — `poke()` pushes the
  * deadline out again each time it is called, so a caller that keeps hearing from the daemon
  * can keep a turn alive indefinitely while one that goes quiet still gets bounded.
  */
-export function createIdleWatchdog(idleMs: number): {
+export interface TurnWatchdog {
   readonly signal: AbortSignal;
   readonly poke: () => void;
   readonly dispose: () => void;
-} {
+  readonly stats: () => WatchdogStats;
+}
+
+export function createIdleWatchdog(idleMs: number): TurnWatchdog {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout>;
+  let pokes = 0;
+  let lastArmedAt = Date.now();
   const arm = (): void => {
     clearTimeout(timer);
+    lastArmedAt = Date.now();
     timer = setTimeout(() => {
       controller.abort(new DOMException("The operation timed out.", "TimeoutError"));
     }, idleMs);
   };
   arm();
-  return { signal: controller.signal, poke: arm, dispose: () => clearTimeout(timer) };
+  return {
+    signal: controller.signal,
+    poke: () => {
+      pokes += 1;
+      arm();
+    },
+    dispose: () => {
+      clearTimeout(timer);
+    },
+    stats: () => ({ pokes, quietMs: Date.now() - lastArmedAt }),
+  };
 }
 
 /**
  * Whether this is the request giving up rather than the daemon being absent.
  *
- * Worth separating because they need opposite things said. "Not reachable" sends somebody
- * to check whether jazz is running; a timeout means it is running and probably still
- * working, and the useful next step is `jazz runs`.
+ * They need opposite things said: one sends somebody to check whether jazz is running, the
+ * other means it is running and `jazz runs` is the next step. Says nothing about *whose*
+ * timeout — see the catch in `runTurn`.
  */
 function isTimeout(error: unknown): boolean {
   const name = error instanceof Error ? error.name : "";
@@ -99,13 +121,37 @@ function isTimeout(error: unknown): boolean {
 }
 
 /**
+ * Everything an error will admit to, flattened into log fields.
+ *
+ * The part that identifies what broke is routinely one level down in `cause`; the top-level
+ * message is often just "fetch failed".
+ */
+function describeError(error: unknown): Record<string, string | undefined> {
+  const thrown = error instanceof Error ? error : undefined;
+  const cause = thrown?.cause;
+  const causeError = cause instanceof Error ? cause : undefined;
+  const code = (error as { code?: unknown } | null)?.code;
+  return {
+    err: thrown === undefined ? String(error) : `${thrown.name}: ${thrown.message}`,
+    code: typeof code === "string" || typeof code === "number" ? String(code) : undefined,
+    cause:
+      causeError !== undefined
+        ? `${causeError.name}: ${causeError.message}`
+        : cause === undefined
+          ? undefined
+          : String(cause),
+  };
+}
+
+function seconds(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+/**
  * Header jazz reads a loopback progress URL from. Must match its own constant.
  *
- * No companion subscription header, deliberately. Jazz narrows to named event kinds when
- * asked and sends everything when not, and everything is what quartet wants: a room is the
- * one place a person is watching a turn, so anything the daemon can say about one belongs
- * here. Naming kinds would also pin this to the list jazz sends today and quietly opt out
- * of any it learns to send later.
+ * No subscription header, deliberately: jazz sends everything when not asked to narrow, and
+ * naming kinds would pin this to the list it sends today.
  */
 const PROGRESS_HEADER = "x-jazz-progress-url";
 
@@ -114,24 +160,27 @@ export async function runTurn(
   threadKey: string,
   payload: string,
   /**
-   * From `createIdleWatchdog` — the caller owns arming it, poking it on progress, and
-   * disposing it, since only the caller sees the progress events that should keep it alive.
+   * From `createIdleWatchdog`. The caller pokes and disposes it, since only the caller sees
+   * the progress events. Taken whole rather than as a bare signal because a turn that dies
+   * has to report how much progress it saw first.
    */
-  signal: AbortSignal,
-  /**
-   * Where this machine's daemon should report what the run is doing.
-   *
-   * Optional because a jazz without the route ignores it, and because a turn is perfectly
-   * valid without progress — it is just silent.
-   */
+  watchdog: TurnWatchdog,
+  /** Optional: a jazz without the route ignores it, and a turn without progress is valid. */
   progressUrl?: string,
 ): Promise<TurnResult> {
-  // Should be unreachable: every payload quartet sends is composed to this budget. Kept as
-  // a guard for any future caller that builds one another way, because the alternative is
-  // jazz rejecting it and the room being told nothing useful about why.
+  // Should be unreachable: every payload is composed to this budget. A guard for a future
+  // caller that builds one another way, whose alternative is jazz rejecting it and the room
+  // being told nothing useful about why.
   if (Buffer.byteLength(payload, "utf8") > MAX_PAYLOAD_BYTES) {
     return { kind: "failed", reason: "the turn payload was too large for the daemon" };
   }
+
+  const startedAt = Date.now();
+  log.debug("waking the agent", {
+    thread: threadKey,
+    bytes: Buffer.byteLength(payload, "utf8"),
+    reporting: progressUrl === undefined ? "off" : "on",
+  });
 
   let response: Response;
   try {
@@ -144,10 +193,31 @@ export async function runTurn(
         ...(progressUrl !== undefined ? { [PROGRESS_HEADER]: progressUrl } : {}),
       },
       body: payload,
-      signal,
-    });
+      signal: watchdog.signal,
+      // Bun's own five-minute cap is off because the watchdog above is the deadline that
+      // knows whether the daemon is still working. Left on, it fired first on any turn whose
+      // tool call ran longer than five minutes and threw the same `TimeoutError` the
+      // watchdog throws, so the turn died at five minutes wearing a thirty-minute message.
+      timeout: false,
+    } as RequestInit & { timeout: boolean });
   } catch (error) {
-    if (isTimeout(error)) {
+    const stats = watchdog.stats();
+    const elapsed = Date.now() - startedAt;
+    const fields = {
+      ...describeError(error),
+      elapsed: seconds(elapsed),
+      progress: stats.pokes,
+      quiet: seconds(stats.quietMs),
+      reporting: progressUrl === undefined ? "off" : "on",
+      thread: threadKey,
+    };
+
+    // Nothing but this turn's watchdog aborts this signal, so `aborted` is the only fact that
+    // tells our idle deadline apart from a timeout the fetch implementation imposed itself.
+    // Both surface as `TimeoutError`, so the name cannot separate them — and the bridge has
+    // reported "gone quiet for 30m" over a turn that died in five minutes.
+    if (watchdog.signal.aborted) {
+      log.error("no progress for the idle deadline — giving up on this turn", fields);
       return {
         kind: "failed",
         reason:
@@ -155,6 +225,19 @@ export async function runTurn(
           "progress — the run may still be going; check `jazz runs`",
       };
     }
+
+    if (isTimeout(error)) {
+      log.error("the http client timed out on its own, before quartet's idle deadline", fields);
+      return {
+        kind: "failed",
+        reason:
+          `the request to the daemon timed out after ${seconds(elapsed)}, short of quartet's ` +
+          `${String(Math.round(TURN_TIMEOUT_MS / 60_000))}m idle deadline — the run may still be ` +
+          "going; check `jazz runs`",
+      };
+    }
+
+    log.error("the request to the daemon failed", fields);
     return { kind: "failed", reason: "jazz daemon is not reachable — is `jazz daemon` running?" };
   }
 
@@ -199,6 +282,7 @@ export async function runTurn(
   }
 
   if (response.status === 404) {
+    log.error("jazz does not know this webhook", { webhook: daemon.webhook, status: 404 });
     return {
       kind: "failed",
       reason:
@@ -211,6 +295,7 @@ export async function runTurn(
   // overwrites the keyring, so following it strands quartet's copy even harder than
   // whatever stranded it first. `quartet connect --new-token` mints *and* saves.
   if (response.status === 401) {
+    log.error("jazz rejected the token", { webhook: daemon.webhook, status: 401 });
     return {
       kind: "failed",
       reason:
@@ -221,6 +306,13 @@ export async function runTurn(
 
   if (!response.ok) {
     const detail = (await response.json().catch(() => null)) as { error?: string } | null;
+    // The status is logged as well as the sentence: the sentence is what the room is told,
+    // the number is what a reader can look up.
+    log.error("jazz refused the turn", {
+      status: response.status,
+      detail: detail?.error ?? "no body",
+      elapsed: seconds(Date.now() - startedAt),
+    });
     return {
       kind: "failed",
       reason: detail?.error ?? `jazz answered ${String(response.status)}`,
@@ -230,6 +322,11 @@ export async function runTurn(
   const body = (await response.json().catch(() => null)) as
     | { answer?: string; costUSD?: number; costIncomplete?: boolean }
     | null;
+  if (body === null) {
+    log.error("jazz answered 200 with a body quartet could not parse", {
+      elapsed: seconds(Date.now() - startedAt),
+    });
+  }
   return interpretAnswer(body);
 }
 
@@ -245,6 +342,7 @@ export async function answerParkedRun(
   note?: string,
   questionResponse?: string,
 ): Promise<TurnResult> {
+  const startedAt = Date.now();
   let response: Response;
   try {
     response = await fetch(`${daemon.url}/runs/${encodeURIComponent(runId)}/answer`, {
@@ -259,12 +357,19 @@ export async function answerParkedRun(
         ...(questionResponse !== undefined ? { response: questionResponse } : {}),
       }),
     });
-  } catch {
+  } catch (error) {
+    log.error("could not answer the parked run", { run: runId, ...describeError(error) });
     return { kind: "failed", reason: "jazz daemon is not reachable — is `jazz daemon` running?" };
   }
 
   if (!response.ok) {
     const detail = (await response.json().catch(() => null)) as { error?: string } | null;
+    log.error("jazz refused to resume the parked run", {
+      run: runId,
+      status: response.status,
+      detail: detail?.error ?? "no body",
+      elapsed: seconds(Date.now() - startedAt),
+    });
     return {
       kind: "failed",
       reason: detail?.error ?? `jazz answered ${String(response.status)}`,
@@ -274,6 +379,11 @@ export async function answerParkedRun(
   const body = (await response.json().catch(() => null)) as
     | { answer?: string; costUSD?: number; costIncomplete?: boolean }
     | null;
+  if (body === null) {
+    log.error("jazz answered the parked run with a body quartet could not parse", {
+      elapsed: seconds(Date.now() - startedAt),
+    });
+  }
   return interpretAnswer(body);
 }
 

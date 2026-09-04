@@ -1,16 +1,9 @@
 /**
  * @fileoverview The bridge: your half of quartet, running on your machine.
  *
- * It holds one outbound socket to the hub and talks to jazz over loopback, which is what
- * lets anyone take part without exposing a port, a tunnel, or a public daemon.
- *
- * It is also the app's backend. The browser talks to *this*, not to the hub — so the page
- * reading your ledger is same-origin with the process that holds it, and the awkward
- * request (a public page reaching into a private network) never has to exist.
- *
- * State is mirrored rather than queried: the hub pushes, the bridge keeps a copy, and the
- * browser gets the whole snapshot on every change. For a two-person conversation that is a
- * few kilobytes, and it buys the absence of a second incremental protocol to keep in step.
+ * One outbound socket to the hub, jazz over loopback, and the app's backend. State is
+ * mirrored rather than queried: the hub pushes, this keeps a copy, the browser gets the whole
+ * snapshot on every change. `docs/design.md` §1 says why all three of those are deliberate.
  */
 
 import {
@@ -23,24 +16,25 @@ import {
   type Invite,
   type Message,
   type Agent,
+  type Aside,
+  type BridgeState,
   type Limit,
   type PeerPresence,
+  type Activity,
 } from "@quartet/protocol";
 import { fingerprint, parseTag } from "@quartet/identity";
 import type { DaemonSettings } from "./config";
 import type { Attestor, Verdict } from "./attest";
 import type { Sealer } from "./sealer";
-import type { JazzProblem, JazzRoster } from "./agent-admin";
-import { describeModel, type JazzAgent } from "./jazz-agents";
-import type { JazzCatalog } from "./jazz-admin";
-import { KnownKeys, type Conflict } from "./known";
+import type { JazzRoster } from "./agent-admin";
+import { describeModel } from "./jazz-agents";
+import { KnownKeys } from "./known";
 import {
   answerParkedRun,
   createIdleWatchdog,
   MAX_PAYLOAD_BYTES,
   runTurn,
   TURN_TIMEOUT_MS,
-  type HumanQuestion,
   type TurnResult,
 } from "./jazz";
 import {
@@ -59,106 +53,16 @@ import {
   type ToolCall,
 } from "./tool-log";
 
-/** What your own agent is doing right now, per conversation. Drives the UI's live states. */
-export type Activity =
-  | { readonly state: "idle" }
-  | {
-      readonly state: "thinking";
-      readonly since: number;
-      /** What the daemon last said it was doing. A tool name, not a thought. */
-      readonly doing?: string;
-    }
-  | {
-      readonly state: "needs-you";
-      readonly runId: string;
-      readonly pending:
-        | { readonly kind: "approval"; readonly message?: string }
-        | { readonly kind: "question"; readonly question: HumanQuestion };
-    };
-
-/** An aside you typed to your own agent. Local only — it never reaches the other party. */
-export interface Aside {
-  readonly at: string;
-  readonly conversationId: string;
-  readonly text: string;
-}
-
-export interface BridgeState {
-  readonly connectedToHub: boolean;
-  readonly me?: Agent;
-  /**
-   * `provider/model` for the jazz agent answering on this machine, when jazz will say.
-   *
-   * Derived from the roster rather than stored, so switching agent or editing its model is
-   * reflected here immediately. It used to be a constructor argument read once at startup,
-   * which meant the header went on claiming the old model for the life of the process.
-   */
-  readonly myModel?: string;
-  /** This machine's jazz agents, for the dashboard. Not hub agents — those are `directory`. */
-  readonly jazzAgents: readonly JazzAgent[];
-  /** Which of them speaks for you here. */
-  readonly myAgentId?: string;
-  readonly jazzProblem?: JazzProblem;
-  /** The menus an agent editor is built from. Absent when this jazz is too old to serve them. */
-  readonly jazzCatalog?: JazzCatalog;
-  readonly connections: Connection[];
-  readonly conversations: Conversation[];
-  readonly invites: Invite[];
-  readonly directory: DirectoryEntry[];
-  readonly messages: Record<string, Message[]>;
-  /** Whether the oldest message held for a room really is the room's first. */
-  readonly atStart: Record<string, boolean>;
-  readonly asides: Record<string, Aside[]>;
-  readonly activity: Record<string, Activity>;
-  /**
-   * What your own agent's current turn has actually done, per conversation.
-   *
-   * Never leaves this machine: the hub is told a tool's name and nothing else. See
-   * `ToolCall`.
-   */
-  readonly toolCalls: Record<string, readonly ToolCall[]>;
-  /** Everyone in each room but you. Empty until the hub says otherwise. */
-  readonly presence: Record<string, PeerPresence[]>;
-  readonly ledger: LedgerEntry[];
-  /**
-   * What checking each message's signature concluded, by message id.
-   *
-   * Carried beside the messages rather than folded into them: a verdict is this machine's
-   * conclusion, not part of what was said, and putting it inside a Message would make it
-   * look like something the hub had told us.
-   */
-  readonly verdicts: Record<string, Verdict>;
-  /**
-   * Handles whose key has changed since this machine first saw them.
-   *
-   * Surfaced rather than resolved. A changed key is a new device or a reinstall about as
-   * often as it is an attack, and a bridge cannot tell the two apart — but a person who
-   * compares a fingerprint can, and they cannot do that if nobody tells them.
-   */
-  readonly keyConflicts: Conflict[];
-  /**
-   * The readable short form of every key this bridge can name, by did.
-   *
-   * Computed here because the app runs in a browser and the digest comes from `node:crypto`.
-   * Shipping the derived string rather than teaching the page to hash keeps one implementation
-   * of what a fingerprint is, which is the only way two of them can never disagree.
-   */
-  readonly fingerprints: Record<string, string>;
-  /** Set when this machine's pin file could not be read, so no key here is vouched for. */
-  readonly keyStoreProblem?: string;
-  readonly lastError?: string;
-}
+// The app's view of this process, defined once in the protocol package. They used to be
+// declared here and declared again by hand in the web client, with nothing that would have
+// failed if the two had drifted.
+export type { Activity, Aside, BridgeState, ToolCall } from "@quartet/protocol";
 
 const log = logger("bridge");
 const hubLog = logger("hub");
 const daemonLog = logger("daemon");
 
-/**
- * How often to tell the hub a turn is still running.
- *
- * Comfortably inside the hub's own deadline, so one dropped beat is survivable and only a
- * bridge that has genuinely stopped answering trips it.
- */
+/** Comfortably inside the hub's deadline, so one dropped beat is survivable. */
 const PROGRESS_EVERY_MS = 45_000;
 
 const RECONNECT_MIN_MS = 1_000;
@@ -185,10 +89,9 @@ export class Bridge {
   private ledger: LedgerEntry[] = [];
   private lastError: string | undefined;
   /**
-   * What the owner asked for, per conversation, until the resulting message comes back.
+   * What the owner asked for, until the resulting message comes back.
    *
-   * Held here rather than passed through the send because the ledger is written when the hub
-   * confirms, by which point the turn that produced it is long over.
+   * The ledger is written when the hub confirms, by which point the turn is long over.
    */
   private readonly pendingSteer = new Map<string, string>();
   /** Frames that arrived while the socket was down. Flushed after welcome, after hello. */
@@ -198,19 +101,23 @@ export class Bridge {
   /**
    * One-time secrets that let this machine's daemon report into a running turn.
    *
-   * The progress URL is handed to the daemon and comes back as an inbound request, so it
-   * needs to be one only the daemon could have. A nonce per turn, dropped when the turn
-   * ends: anything else on this machine can reach the port, and "your agent is reading your
+   * Anything on this machine can reach the loopback port, and "your agent is reading your
    * calendar" is not a sentence somebody else should be able to put in the room.
    */
   private readonly progressKeys = new Map<string, string>();
   /**
    * The idle watchdog's `poke`, per conversation with a turn in flight.
    *
-   * `onDaemonProgress` and `takeTurn` share a conversation id but not a call stack — this is
-   * how a progress event reaches the watchdog guarding the fetch that is still awaiting it.
+   * `onDaemonProgress` and `takeTurn` share a conversation id but not a call stack.
    */
   private readonly watchdogPokes = new Map<string, () => void>();
+  /**
+   * The hub's name for the turn currently running, per conversation.
+   *
+   * Everything a turn produces has to name it. Held here because the heartbeat timer and the
+   * daemon's progress callback both need it and neither shares a stack with the turn.
+   */
+  private readonly dispatches = new Map<string, string>();
 
   private readonly verdicts = new Map<string, Verdict>();
 
@@ -223,12 +130,7 @@ export class Bridge {
     private readonly known: KnownKeys = new KnownKeys(),
   ) {}
 
-  /**
-   * The jazz roster changed — adopt it and tell the app.
-   *
-   * `AgentAdmin` owns the roster and this holds the copy the snapshot is built from, rather
-   * than the bridge asking jazz anything itself: the bridge's job is the hub conversation.
-   */
+  /** `AgentAdmin` owns the roster; this holds the copy the snapshot is built from. */
   setJazzRoster(roster: JazzRoster): void {
     this.jazzRoster = roster;
     this.publish();
@@ -682,6 +584,7 @@ export class Bridge {
       case "turn":
         await this.takeTurn(
           frame.conversationId,
+          frame.dispatch,
           frame.purpose,
           frame.transcript,
           frame.earlier,
@@ -696,14 +599,13 @@ export class Bridge {
         return;
 
       case "history": {
-        // Prepended, and deduped against what is already held: a page that overlaps the
-        // window welcome carried must not double every message in the room.
+        // Deduped against what is held: a page overlapping welcome's window must not double
+        // every message in the room.
         const held = this.messages.get(frame.conversationId) ?? [];
         const known = new Set(held.map((message) => message.id));
         const older = frame.messages.filter((message) => !known.has(message.id));
-        // Checked like everything else — a page nobody verified would be the easy place to
-        // put words somebody never said. Judged against itself, and not settled: these are
-        // older than the running position, so they must not move it backwards.
+        // Checked like everything else, judged against itself, and not settled: these are
+        // older than the running position and must not move it backwards.
         this.attestor.startWindow();
         for (const message of frame.messages) this.judge(message, true);
         this.messages.set(frame.conversationId, [...older, ...held]);
@@ -802,6 +704,7 @@ export class Bridge {
    */
   private async takeTurn(
     conversationId: string,
+    dispatch: string,
     purpose: string,
     transcript: readonly Message[],
     earlier: number,
@@ -820,15 +723,16 @@ export class Bridge {
       conversation: conversationId,
       steered: steer !== undefined ? "yes" : undefined,
     });
+    // Held for the whole turn, including across an approval the owner has to answer.
+    this.dispatches.set(conversationId, dispatch);
     this.activity.set(conversationId, { state: "thinking", since: startedAt });
     // One turn, one log. What the last turn did is answered by the message it produced.
     this.toolCalls.delete(conversationId);
     this.publish();
-    this.startBeating(conversationId);
+    this.startBeating(conversationId, dispatch);
 
-    // Composed to what this machine's daemon will accept. What does not fit is reported
-    // rather than silently lost, and never turned into a failed turn: a size ceiling on one
-    // request is not a ceiling on the conversation.
+    // Trimmed to what this machine's daemon will accept, and reported rather than silently
+    // lost: a size ceiling on one request is not a ceiling on the conversation.
     const composed = composeTurnPayload(
       {
         you: me.handle,
@@ -862,18 +766,21 @@ export class Bridge {
       this.daemon,
       conversationId,
       composed.payload,
-      watchdog.signal,
+      watchdog,
       progressUrl,
     );
     this.progressKeys.delete(progressKey);
     this.watchdogPokes.delete(conversationId);
     watchdog.dispose();
 
-    this.finishTurn(conversationId, result, startedAt, steer);
+    this.finishTurn(conversationId, dispatch, result, startedAt, steer);
   }
 
   /**
    * Approve or decline a parked jazz tool from this app, then finish the turn.
+   *
+   * The *same* turn, so it answers under the dispatch that turn was given — a parked run is
+   * the one case where a person's deliberation sits in the middle of a dispatch.
    */
   async resolveApproval(
     conversationId: string,
@@ -882,22 +789,24 @@ export class Bridge {
     note?: string,
     questionResponse?: string,
   ): Promise<void> {
+    const dispatch = this.dispatches.get(conversationId);
+    if (dispatch === undefined) {
+      log.error("no turn is waiting on you in that conversation", { conversation: conversationId });
+      return;
+    }
     const startedAt = Date.now();
     this.activity.set(conversationId, { state: "thinking", since: startedAt });
     this.publish();
     const result = await answerParkedRun(this.daemon, runId, approved, note, questionResponse);
-    this.finishTurn(conversationId, result, startedAt, this.pendingSteer.get(conversationId));
+    this.finishTurn(conversationId, dispatch, result, startedAt, this.pendingSteer.get(conversationId));
   }
 
   /**
    * Tell the hub, on a timer, that this turn is still running.
    *
-   * The hub cannot see a model thinking; all it has is silence, and it used to read three
-   * minutes of silence as a bridge that had died. A turn that reads a calendar and searches
-   * the web exceeds that easily, so the room announced "no answer in time" while the run was
-   * alive and the answer, when it came, had nothing waiting for it.
+   * The hub cannot see a model thinking; all it has is silence. See `docs/design.md` §4.
    */
-  private startBeating(conversationId: string): void {
+  private startBeating(conversationId: string, dispatch: string): void {
     this.stopBeating(conversationId);
     this.beating.set(
       conversationId,
@@ -906,7 +815,7 @@ export class Bridge {
           this.stopBeating(conversationId);
           return;
         }
-        this.send({ t: "progress", conversationId });
+        this.send({ t: "progress", conversationId, dispatch });
       }, PROGRESS_EVERY_MS),
     );
   }
@@ -914,8 +823,7 @@ export class Bridge {
   /**
    * Where this bridge is reachable, once its own server is listening.
    *
-   * Set by the local server rather than assumed, because the port is whatever was free and
-   * a URL built from a guess would send the daemon somewhere else entirely.
+   * Set by the local server rather than assumed: the port is whatever was free.
    */
   private localOrigin: string | undefined;
 
@@ -926,16 +834,28 @@ export class Bridge {
   /**
    * The daemon reporting what a turn is doing.
    *
-   * Returns whether the key was live, so the caller can refuse an unknown one rather than
-   * accept anything that arrives on the port.
+   * Returns whether the key was live, so the caller refuses an unknown one rather than
+   * accepting anything that arrives on the port.
    */
   onDaemonProgress(key: string, event: DaemonProgressEvent): boolean {
     const conversationId = this.progressKeys.get(key);
-    if (conversationId === undefined) return false;
+    if (conversationId === undefined) {
+      // Worth a line rather than a silent `false`: this is how a turn ends up looking idle
+      // while the daemon is busy. The key itself is deliberately not logged — it is the
+      // one-time secret that authorises reporting into a live turn, and a bearer value does
+      // not belong in a log at any level. The count separates a stale report from one for a
+      // turn nobody started.
+      daemonLog.debug("progress for an unknown key, ignored", { live: this.progressKeys.size });
+      return false;
+    }
 
     // The daemon just proved it is still alive — push the idle deadline back out. Done
     // before the activity check, because a run parked on an approval is still a live run.
     this.watchdogPokes.get(conversationId)?.();
+    daemonLog.debug("progress", {
+      kind: typeof event.kind === "string" ? event.kind : "unknown",
+      tool: typeof event.toolName === "string" ? event.toolName : undefined,
+    });
 
     const tool = typeof event.toolName === "string" ? event.toolName : undefined;
     if (tool === undefined) return true;
@@ -963,9 +883,10 @@ export class Bridge {
     this.publish();
     if (doing === undefined) return true;
     // The other side gets the name, on the heartbeat that already re-arms the deadline.
-    // Only the name: `event.result` is output from this machine, and a room is not the
-    // place for it. See `ToolCall`.
-    this.send({ t: "progress", conversationId, note: doing });
+    // Only the name: `event.result` is output from this machine, and a room is not the place
+    // for it. See `ToolCall`. Named with the dispatch, like everything else a turn produces.
+    const dispatch = this.dispatches.get(conversationId);
+    if (dispatch !== undefined) this.send({ t: "progress", conversationId, dispatch, note: doing });
     return true;
   }
 
@@ -978,13 +899,14 @@ export class Bridge {
 
   private finishTurn(
     conversationId: string,
+    dispatch: string,
     result: TurnResult,
     startedAt: number,
     steer: string | undefined,
   ): void {
     const took = `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
-    // A parked run is the only outcome that is still going, and it has the hub's longer
-    // approval deadline rather than this heartbeat.
+    // A parked run is the only outcome still going, and it has the hub's longer approval
+    // deadline rather than this heartbeat.
     this.stopBeating(conversationId);
 
     switch (result.kind) {
@@ -994,16 +916,18 @@ export class Bridge {
           cost: result.cost.costUSD !== undefined ? `$${result.cost.costUSD.toFixed(4)}` : "unpriced",
           chars: result.text.length,
         });
-        // The ledger is written when the hub confirms this message, not here — see
-        // `recordOutgoing`. The steer is parked so that confirmation can say what prompted it.
+        // The ledger is written when the hub confirms — see `recordOutgoing`. The steer is
+        // parked so that confirmation can say what prompted it.
         if (steer !== undefined) this.pendingSteer.set(conversationId, steer);
         this.activity.set(conversationId, { state: "idle" });
         if (result.closing) daemonLog.info("closing the conversation");
+        this.dispatches.delete(conversationId);
         this.send({
           t: "say",
           conversationId,
+          dispatch,
           text: result.text,
-          authorship: this.attestor.speak(conversationId, "agent", result.text),
+          authorship: this.attestor.speak(conversationId, "agent", dispatch, result.text),
           ...(result.closing ? { closing: true } : {}),
           ...(result.cost.costUSD !== undefined ? { costUSD: result.cost.costUSD } : {}),
           ...(result.cost.incomplete ? { costIncomplete: true } : {}),
@@ -1015,10 +939,12 @@ export class Bridge {
       case "passed":
         daemonLog.info("passed", { took });
         this.activity.set(conversationId, { state: "idle" });
+        this.dispatches.delete(conversationId);
         this.send({
           t: "pass",
           conversationId,
-          authorship: this.attestor.speak(conversationId, "pass", ""),
+          dispatch,
+          authorship: this.attestor.speak(conversationId, "pass", dispatch, ""),
           ...(result.cost.costUSD !== undefined ? { costUSD: result.cost.costUSD } : {}),
           ...(result.cost.incomplete ? { costIncomplete: true } : {}),
         });
@@ -1032,16 +958,18 @@ export class Bridge {
           runId: result.runId,
           pending: result.pending,
         });
-        this.send({ t: "waiting", conversationId });
+        this.send({ t: "waiting", conversationId, dispatch });
         this.publish();
         return;
 
       case "failed":
         daemonLog.error(result.reason, { took });
         this.activity.set(conversationId, { state: "idle" });
+        this.dispatches.delete(conversationId);
         this.send({
           t: "trouble",
           conversationId,
+          dispatch,
           reason: result.reason,
         });
         this.publish();

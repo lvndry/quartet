@@ -1,13 +1,11 @@
 /**
  * @fileoverview This machine's jazz agents as the app sees them, and the operations on them.
  *
- * One place that knows the current roster, so the browser never has to. The web UI holds the
- * daemon's address and token nowhere: it posts to the local app, this asks jazz, and the
- * answer arrives in the next state snapshot. That is the same boundary the daemon token has
- * always had — it wakes an agent with filesystem access and must not leave this process.
+ * One place that knows the roster, so the browser never holds the daemon's address or token:
+ * it posts to the local app, this asks jazz, and the answer arrives in the next snapshot. That
+ * token wakes an agent with filesystem access and must not leave this process.
  *
- * Deliberately not a second rulebook. Every refusal comes back from jazz with the field it
- * concerns, and is passed through untouched.
+ * Deliberately not a second rulebook — every refusal is jazz's own, passed through untouched.
  */
 
 import type { DaemonSettings } from "./config";
@@ -34,8 +32,8 @@ import { logger } from "./log";
 
 const log = logger("agents");
 
-/** Why the roster could not be read, in the terms the UI has to say something about. */
-export type JazzProblem = "unreachable" | "unauthorized" | "unsupported" | "failed";
+import type { JazzProblem } from "@quartet/protocol";
+export type { JazzProblem };
 
 export interface JazzRoster {
   readonly agents: readonly JazzAgent[];

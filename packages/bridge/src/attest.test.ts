@@ -32,7 +32,8 @@ async function restart(who: string, keypair: Keypair): Promise<Attestor> {
 
 function say(author: Attestor, index: number, conversationId = "cnv_1"): Message {
   const text = `line ${String(index)}`;
-  const authorship = author.speak(conversationId, "agent", text);
+  const dispatch = `dsp_${String(index)}`;
+  const authorship = author.speak(conversationId, "agent", dispatch, text);
   const message: Message = {
     id: `msg_${String(index)}`,
     conversationId,
@@ -45,6 +46,7 @@ function say(author: Attestor, index: number, conversationId = "cnv_1"): Message
       authoredAt: authorship.authoredAt,
       nonce: authorship.nonce,
       prev: authorship.prev,
+      dispatch,
       value: authorship.signature,
     },
   };

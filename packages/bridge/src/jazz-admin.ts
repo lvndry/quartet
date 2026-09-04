@@ -11,83 +11,27 @@
  * diverging copy — and the menus exist precisely so the UI cannot offer a value jazz rejects.
  */
 
+import type {
+  JazzAgentConfig,
+  JazzAgentDetail,
+  JazzCatalog,
+  JazzModel,
+  JazzPersona,
+  JazzTools,
+} from "@quartet/protocol";
 import type { DaemonSettings } from "./config";
 
-/** Full config, minus the api keys jazz will not hand out. Shape follows jazz's own. */
-export type JazzAgentConfig = Readonly<Record<string, unknown>>;
-
-/** One agent in full, as `GET /agents/:id` answers. */
-export interface JazzAgentDetail {
-  readonly id: string;
-  readonly name: string;
-  readonly description?: string;
-  readonly persona: string;
-  readonly provider: string;
-  readonly model: string;
-  readonly tools: readonly string[];
-  readonly config: JazzAgentConfig;
-  /**
-   * Providers with a per-agent key override.
-   *
-   * The keys themselves are never served, so this is how an editor says "a key is set"
-   * honestly instead of rendering a blank box that means either "unset" or "hidden".
-   */
-  readonly apiKeyProviders: readonly string[];
-}
-
-/** The fixed vocabularies. Exactly the arrays jazz validates against. */
-export interface JazzCatalog {
-  readonly providers: readonly string[];
-  readonly webSearchProviders: readonly string[];
-  readonly reasoningEfforts: readonly string[];
-  /**
-   * The jobs an agent can bind a companion for, each `"<action>:<modality>"`.
-   *
-   * Action and modality are separate axes because a model rarely does both — most models
-   * that read an image cannot draw one — so `analyze:image` and `generate:image` are
-   * independent slots on the same agent.
-   */
-  readonly companionRoles: readonly string[];
-}
-
-/**
- * One model a provider serves.
- *
- * The capability flags are not description, they are what makes a form field meaningful:
- * a temperature input on a model that ignores temperature is a control that silently does
- * nothing, and every current Claude reasoning model reports `supportsTemperature: false`.
- */
-export interface JazzModel {
-  readonly id: string;
-  readonly displayName?: string;
-  readonly supportsTools: boolean;
-  readonly supportsTemperature: boolean;
-  readonly isReasoningModel: boolean;
-  readonly inputPricePerMillion?: number;
-  readonly outputPricePerMillion?: number;
-}
-
-export interface JazzPersona {
-  readonly id: string;
-  readonly name: string;
-  readonly description: string;
-  readonly tone?: string;
-  readonly style?: string;
-}
-
-export interface JazzTools {
-  readonly tools: readonly string[];
-  readonly categories: Readonly<Record<string, readonly string[]>>;
-  /**
-   * Which tools an agent gets whether or not anyone asked for them.
-   *
-   * Required, because a tool picker cannot be honest without it: `config.tools` only ever
-   * adds, so without knowing which tools arrive anyway a checkbox cannot say whether
-   * unticking it would do anything. A jazz too old to report it is therefore a jazz too old
-   * to edit tools from here, and `unsupported` says so rather than the UI guessing.
-   */
-  readonly defaultTools: readonly string[];
-}
+// Every one of these is rendered by the agent editor in the app, so they are defined with
+// the rest of the bridge↔app contract and re-exported here, where this module's callers
+// expect to find them.
+export type {
+  JazzAgentConfig,
+  JazzAgentDetail,
+  JazzCatalog,
+  JazzModel,
+  JazzPersona,
+  JazzTools,
+};
 
 /**
  * What asking jazz for something came to, in terms a caller can act on.

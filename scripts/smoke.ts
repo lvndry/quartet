@@ -580,11 +580,21 @@ if (genuine !== undefined) {
     stateA.conversations.find((room) => room.purpose === "say goodnight")?.id ??
     fail("no second room");
 
-  daemonA.forceNext("Settling in.");
-  bridgeB.send({ t: "conversation.respond", conversationId: roomId, accept: true });
-
   const roomFor = (state: typeof stateA) => state.conversations.find((room) => room.id === roomId);
 
+  await waitFor(
+    "@otto to be offered the second room",
+    () => roomFor(stateB)?.state === "proposed",
+    20_000,
+    () => roomFor(stateB)?.state,
+  );
+  check(
+    (stateB.messages[roomId] ?? []).length === 0,
+    "a room proposed on an existing connection spends nothing until it is taken up",
+  );
+
+  daemonA.forceNext("Settling in.");
+  bridgeB.send({ t: "conversation.respond", conversationId: roomId, accept: true });
   await waitFor(
     "the opening turn to settle",
     () => (stateA.messages[roomId] ?? []).some((message) => message.text === "Settling in."),
@@ -655,6 +665,15 @@ class Party {
   private socket!: WebSocket;
   /** This party's own signing chain, one link per room. */
   private readonly chain = new Map<string, string>();
+  /**
+   * Set to keep the next turn instead of passing on it.
+   *
+   * Everything a turn produces has to name the dispatch that turn was given, so a party
+   * that has already settled every turn it was offered cannot exercise any of those frames.
+   */
+  holdNextTurn = false;
+  /** The dispatch of a turn this party is deliberately sitting on. */
+  heldDispatch: string | undefined;
 
   constructor(
     readonly handle: string,
@@ -670,6 +689,7 @@ class Party {
         const frame = JSON.parse(String(event.data)) as {
           t: string;
           conversationId?: string;
+          dispatch?: string;
           nonce?: string;
         };
         this.frames.push(frame);
@@ -687,8 +707,13 @@ class Party {
         // party that took its turn and never settled it would quietly stop being dispatched
         // to — and every later assertion about being woken would fail for that reason rather
         // than the one it was testing. A pass is the cheapest way to be well behaved.
-        if (frame.t === "turn" && frame.conversationId !== undefined) {
-          this.pass(frame.conversationId);
+        if (frame.t === "turn" && frame.conversationId !== undefined && frame.dispatch !== undefined) {
+          if (this.holdNextTurn) {
+            this.holdNextTurn = false;
+            this.heldDispatch = frame.dispatch;
+            return;
+          }
+          this.pass(frame.conversationId, frame.dispatch);
         }
       });
     });
@@ -700,21 +725,33 @@ class Party {
     cleanups.push(() => this.socket.close());
   }
 
-  /** A pass is this agent's silence, so the hub wants it signed like speech. */
-  private pass(conversationId: string): void {
+  /**
+   * A pass is this agent's silence, so the hub wants it signed like speech — and named, so
+   * the hub can see it answers a turn it actually handed out.
+   */
+  private pass(conversationId: string, dispatch: string): void {
     const authoredAt = new Date().toISOString();
     const nonce = newNonce();
     const prev = this.chain.get(conversationId) ?? "";
     const signature = signMessage(
-      { did: this.keypair.did, conversationId, kind: "pass", authoredAt, nonce, prev, text: "" },
+      { did: this.keypair.did, conversationId, kind: "pass", authoredAt, nonce, prev, dispatch, text: "" },
       this.keypair.privateKey,
     );
     this.chain.set(conversationId, linkAfter(signature));
     this.send({
       t: "pass",
       conversationId,
+      dispatch,
       authorship: { authoredAt, nonce, prev, signature },
     });
+  }
+
+  /** Settle a turn this party was sitting on. */
+  passHeld(conversationId: string): void {
+    const dispatch = this.heldDispatch;
+    if (dispatch === undefined) return;
+    this.heldDispatch = undefined;
+    this.pass(conversationId, dispatch);
   }
 
   send(frame: Record<string, unknown>): void {
@@ -798,22 +835,53 @@ check(
   "a message in a room of three wakes both of the others",
 );
 
-// A heartbeat for a room you are in is accepted, and for one you are not is refused. This
-// is the frame that stops the hub reading a slow turn as a dead bridge, so the wire path
-// for it matters as much as the timer that drives it.
+// A heartbeat is accepted for a turn you are actually holding, and refused otherwise. This
+// is the frame that stops the hub reading a slow turn as a dead bridge, so the wire path for
+// it matters as much as the timer that drives it — and it is also a line in somebody else's
+// room ("their agent is reading your calendar"), so an agent with no turn has no business
+// putting one there.
 const errorsBefore = nia.count("error");
-nia.send({ t: "progress", conversationId });
+nia.holdNextTurn = true;
+// @nia asks her own agent for a turn rather than waiting for one of the others to say
+// something. A steer reaches its own agent directly and tops up an allowance that has run
+// out, so this does not depend on where the cycling daemons happen to have got to — and the
+// room is out of turns by this point, which is exactly when waiting on a cascade is a race.
+nia.send({ t: "nudge", conversationId, steer: "hold on, checking something" });
+await waitFor(
+  "@nia to be given a turn she can sit on",
+  () => nia.heldDispatch !== undefined,
+  20_000,
+  () => ({
+    niaTurns: nia.count("turn"),
+    lastNiaError: nia.last<{ detail: string }>("error")?.detail,
+    room: stateB.conversations.find((room) => room.id === conversationId),
+  }),
+);
+nia.send({ t: "progress", conversationId, dispatch: nia.heldDispatch });
 await Bun.sleep(600);
 check(
   nia.count("error") === errorsBefore,
-  "a member's heartbeat for its own room is accepted",
+  "a heartbeat for a turn the hub is holding for you is accepted",
 );
-ada.send({ t: "progress", conversationId });
-await waitFor("the outsider's heartbeat to be refused", () => ada.count("error") > errorsBefore);
+
+nia.send({ t: "progress", conversationId, dispatch: "a-turn-nobody-gave-out" });
+await waitFor("the invented turn to be refused", () => nia.count("error") > errorsBefore);
+check(
+  String(nia.last<{ detail: string }>("error")?.detail ?? "").includes("not holding that turn"),
+  "and a heartbeat naming a turn nobody was given is not",
+);
+
+const adaErrorsBefore = ada.count("error");
+ada.send({ t: "progress", conversationId, dispatch: nia.heldDispatch ?? "x" });
+await waitFor("the outsider's heartbeat to be refused", () => ada.count("error") > adaErrorsBefore);
 check(
   String(ada.last<{ detail: string }>("error")?.detail ?? "").includes("not in that conversation"),
-  "and a heartbeat from outside the room is not",
+  "and one from outside the room is refused before the turn is even looked at",
 );
+
+// Tidy up: one turn in flight per agent, so a turn sat on forever would quietly stop @nia
+// being dispatched to and every later assertion would fail for that reason instead of its own.
+nia.passHeld(conversationId);
 
 nia.send({ t: "conversation.leave", conversationId });
 await waitFor(

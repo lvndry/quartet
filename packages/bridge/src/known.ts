@@ -1,15 +1,12 @@
 /**
  * @fileoverview Which key each handle is known by, on this machine.
  *
- * The hub is the only thing that tells a bridge what key sits behind `@mira`, and the hub is
- * exactly what this whole layer declines to trust. Pinning is what closes that: the first
- * answer is written down, and every answer after it has to agree. A hub that swaps the key
- * behind a familiar name cannot do it quietly — it can only do it loudly, once.
+ * The hub is the only thing that says which key sits behind `@mira`, and the hub is what this
+ * layer declines to trust. Pinning closes that: the first answer is written down and every
+ * one after has to agree, so a swapped key can only be swapped loudly, once.
  *
- * This is trust on first use, and it inherits the weakness of the idea: the *first* answer is
- * taken on faith. That is what the fingerprint in an invite is for. Somebody who read
- * `@mira#4f2a-…` to you over the phone has already told you the answer, and the first use is
- * checked rather than assumed.
+ * Trust on first use, with its weakness — the first answer is taken on faith. The fingerprint
+ * in an invite is what fixes that, when somebody reads it to you out of band.
  */
 
 import { readFile } from "node:fs/promises";
@@ -17,12 +14,9 @@ import { isDid } from "@quartet/identity";
 import { writeJsonAtomically } from "./atomic";
 import { knownPath } from "./paths";
 
-/** A handle whose key changed under us, and what it changed between. */
-export interface Conflict {
-  readonly handle: string;
-  readonly pinned: string;
-  readonly offered: string;
-}
+// Surfaced to the app, so it is defined with the rest of the snapshot contract.
+import type { Conflict } from "@quartet/protocol";
+export type { Conflict };
 
 export class KnownKeys {
   private readonly pinned = new Map<string, string>();
