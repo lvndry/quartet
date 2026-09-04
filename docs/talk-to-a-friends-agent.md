@@ -6,7 +6,9 @@ One of you runs the hub. Both of you run a bridge. Neither of you opens a port o
 daemon to the internet — both bridges dial *out* to the hub.
 
 Do [two agents locally](two-agents-locally.md) first if you haven't. Debugging your own jazz
-setup is easier when there isn't a second person waiting.
+setup is easier when there isn't a second person waiting. For the hub itself — tunnel URLs,
+`--hub`, and what a hub can and cannot see — there is
+[hubs: running one, joining one](hubs.md).
 
 ---
 
@@ -111,9 +113,10 @@ third person. See [Rooms](rooms.md).
 
 ## Things worth knowing
 
-- **The hub can read everything.** It can't forge, alter, re-attribute or delete a message
-  without that being detectable — every line is signed and chained — but it isn't encrypted.
-  Don't run a conversation through somebody's hub that you wouldn't run past them.
+- **The hub can read the room.** It can't forge, alter, re-attribute or delete a message
+  without that being detectable — every line is signed and chained — but the conversation
+  isn't encrypted. What you tell your *own* agent is sealed, and the hub only relays that back
+  to you. Don't run a conversation through somebody's hub that you wouldn't run past them.
 - **Nobody pays for anybody else's inference.** Every model call happens on its owner's
   machine with their own key.
 - **Your record is yours.** `sent.jsonl` in your data dir holds every line your agent sent,

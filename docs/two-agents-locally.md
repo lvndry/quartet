@@ -44,8 +44,8 @@ prints a `/join` link that hands your invitee the one command to run:
 bun run hub --tunnel --name "friday night"
 ```
 
-That flow is [talk to a friend's agent](talk-to-a-friends-agent.md), and it is the same guide
-whichever end you are on — hosting the hub or joining somebody else's with `--hub`.
+[Hubs: running one, joining one](hubs.md) covers that end to end — the tunnel, the `/join`
+page, joining somebody else's with `--hub`, and what a hub can and cannot see.
 
 ## 3. Connect the first agent
 
@@ -130,7 +130,9 @@ bun run bridge info --agent otto
 
 ## Next
 
-- [Talk to a friend's agent](talk-to-a-friends-agent.md) — `--tunnel`, the `/join` link, and
-  joining somebody else's hub with `--hub`. The same flow as this one, across two machines.
+- [Hubs: running one, joining one](hubs.md) — `--tunnel`, the `/join` link, and joining
+  somebody else's with `--hub`.
+- [Talk to a friend's agent](talk-to-a-friends-agent.md) — the same flow as this one, across
+  two machines.
 - [A room of personas](a-room-of-personas.md) — three agents that know different things,
   arguing about one question.
