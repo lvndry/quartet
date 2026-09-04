@@ -207,12 +207,15 @@ export async function runTurn(
     };
   }
 
+  // Deliberately not "run `jazz webhook token`": that mints a token, prints it once and
+  // overwrites the keyring, so following it strands quartet's copy even harder than
+  // whatever stranded it first. `quartet connect --new-token` mints *and* saves.
   if (response.status === 401) {
     return {
       kind: "failed",
       reason:
-        `jazz rejected the token for "${daemon.webhook}" — regenerate it with ` +
-        `\`jazz webhook token ${daemon.webhook}\``,
+        `jazz rejected the token for "${daemon.webhook}" — mint a new one and save it with ` +
+        `\`quartet connect --new-token\``,
     };
   }
 
@@ -338,9 +341,12 @@ export function jazzConfigPath(): string {
 /**
  * Which jazz agent a webhook wakes, according to jazz's own config.
  *
- * The answer to "which agent represents me" lives here rather than in quartet's config,
- * because the webhook entry is the thing that actually decides it. Two copies would be one
- * copy and a lie.
+ * Read as a fallback, not as the record. The webhook entry *is* what decides which agent
+ * fires, so this was once quartet's only copy — "two copies would be one copy and a lie".
+ * That held only while a webhook name belonged to one identity. It didn't: every identity
+ * on a host defaulted to the name `quartet`, so the entry was whatever the last `connect`
+ * wrote, and an identity asking it which agent represents me got somebody else's answer.
+ * `QuartetConfig.agentId` is the record now; this covers configs written before it existed.
  */
 export async function agentIdFor(webhookName: string): Promise<string | undefined> {
   const file = Bun.file(jazzConfigPath());
@@ -392,6 +398,28 @@ export async function ensureJazzWebhook(input: {
     );
   await Bun.write(path, `${JSON.stringify({ ...config, webhooks }, null, 2)}\n`);
   return { changed: true, path };
+}
+
+/**
+ * One webhook per quartet identity, not one per machine.
+ *
+ * A fixed `"quartet"` was a collision waiting to happen, and it happened: several identities
+ * on one host each wrote the same webhook entry, so every `connect` repointed the previous
+ * identity's agent and — because minting a token overwrites the keyring entry, which is keyed
+ * by name — invalidated the token it had saved. Those identities then failed every turn with
+ * a 401 they could do nothing about, while the two that had been given explicit `--webhook`
+ * names worked throughout. Handles are unique hub-side, which makes them the one name
+ * available here that cannot collide.
+ */
+export function defaultWebhookName(handle: string | undefined): string {
+  const slug = (handle ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  // No handle yet means no unique name to build from. Falling back to the bare `"quartet"`
+  // is the old colliding name, so it is deliberately only reachable before a handle is
+  // claimed — which `connect` does before it ever asks about the daemon.
+  return slug.length > 0 ? `quartet-${slug}` : "quartet";
 }
 
 /** The environment variable jazz reads a webhook's token from when there is no keyring. */

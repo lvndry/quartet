@@ -22,6 +22,7 @@ import { getDataDirectory, identityPath, setDataDirectory } from "./paths";
 import {
   agentIdFor,
   daemonReachable,
+  defaultWebhookName,
   ensureJazzWebhook,
   webhookConfigured,
   webhookTokenEnvVar,
@@ -38,7 +39,6 @@ import { currentLogLevel, LOG_LEVELS, logger, parseLogLevel, setLogLevel } from 
 import { startLocalServer } from "./local";
 
 const DEFAULT_LOCAL_PORT = 7777;
-const DEFAULT_WEBHOOK = "quartet";
 const DEFAULT_DAEMON_URL = "http://localhost:4747";
 
 /**
@@ -229,23 +229,36 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
     // Whichever agent this webhook already names, unless a flag overrides it. A webhook
     // with no agent recorded is a broken setup rather than a default to fill in, so that
     // asks instead of writing a placeholder nothing can run.
-    const recorded = await agentIdFor(config.daemon.webhook);
-    // An `--agent` flag goes through the same check as one typed at setup: it names an agent
-    // this daemon has, or connect stops. Writing it unchecked pointed the webhook at nothing
-    // and only failed at the first turn, long after the command said it had succeeded.
+    // `--webhook` moves an existing setup onto another name. A rename needs its own token:
+    // the name is what the keyring entry is keyed by, so nothing is stored under the new
+    // one yet.
+    const renamed = argValue("webhook") ?? argValue("trigger");
+    const webhookName = renamed ?? config.daemon.webhook;
+    // This identity's own record, falling back to jazz's entry only for a setup written
+    // before quartet kept one. An `--agent` flag goes through the same check as one typed
+    // at setup: it names an agent this daemon has, or connect stops. Writing it unchecked
+    // pointed the webhook at nothing and only failed at the first turn, long after the
+    // command said it had succeeded.
+    const recorded = config.agentId ?? (await agentIdFor(webhookName));
     const agentId =
       argValue("agent") !== undefined || recorded === undefined
         ? await chooseAgent(config.daemon.url)
         : recorded;
     if (agentId === undefined) return undefined;
-    const refreshed = await ensureJazzWebhook({
-      webhookName: config.daemon.webhook,
-      agentId,
-    });
+    const refreshed = await ensureJazzWebhook({ webhookName, agentId });
     if (refreshed.changed) {
-      console.log(`\n  ✓ refreshed the "${config.daemon.webhook}" prompt in ${refreshed.path}`);
+      console.log(`\n  ✓ refreshed the "${webhookName}" prompt in ${refreshed.path}`);
     }
-    return config;
+
+    // A stored token can be stranded: anything that runs `jazz webhook token` mints a fresh
+    // secret over the keyring entry, and the one saved here stops being accepted. There is
+    // no way to read the live one back — jazz prints a token once — so the only repair is to
+    // mint another and save it, which is what this asks for.
+    const needsToken = renamed !== undefined || hasFlag("new-token") || argValue("token") !== undefined;
+    if (!needsToken) return { ...config, agentId };
+    const token = await resolveOrMintToken(webhookName);
+    if (token === undefined) return undefined;
+    return { ...config, agentId, daemon: { ...config.daemon, webhook: webhookName, token } };
   }
 
   console.log("\nQuartet talks to your agent through a jazz webhook.\n");
@@ -259,9 +272,8 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
   const agentId = await chooseAgent(daemonUrl);
   if (agentId === undefined) return undefined;
 
-  // One webhook per agent, not one per machine: two agents sharing a daemon would otherwise
-  // point the same webhook at whichever connected last.
-  const webhookName = argValue("webhook") ?? argValue("trigger") ?? DEFAULT_WEBHOOK;
+  const webhookName =
+    argValue("webhook") ?? argValue("trigger") ?? defaultWebhookName(config.handle);
 
   const written = await ensureJazzWebhook({ webhookName, agentId });
   console.log(
@@ -273,17 +285,7 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
   const token = await resolveOrMintToken(webhookName);
   if (token === undefined) return undefined;
 
-  // The daemon reads its webhook list once, at startup. The token is resolved per request,
-  // so only a newly *added* webhook needs the restart — but saying nothing here means the
-  // first conversation silently 404s and there is no clue why.
-  if (written.changed) {
-    console.log(
-      `\n  ! Restart \`jazz daemon\` before talking — it reads its webhooks at startup,\n` +
-        `    so the one just added is not live yet.`,
-    );
-  }
-
-  return { ...config, daemon: { url: daemonUrl, webhook: webhookName, token } };
+  return { ...config, agentId, daemon: { url: daemonUrl, webhook: webhookName, token } };
 }
 
 /**
@@ -559,11 +561,13 @@ function usage(): void {
       "    --data-dir <path>        this agent's config and record (overrides $QUARTET_HOME)",
       "    --agent <id>             which jazz agent represents you — also picks",
       "                             ~/.quartet/<id> as the data dir when --data-dir is not given",
-      "    --webhook <name>         webhook name (use a distinct one per agent)",
+      "    --webhook <name>         webhook name (default: quartet-<handle>)",
       "    --daemon <url>           where jazz is listening (default :4747)",
       "    --handle <name>          claim this handle without being asked",
       "    --name <text>            display name",
       "    --token <secret>         supply the webhook token instead of generating one",
+      "    --new-token              mint a fresh webhook token and save it, for when jazz",
+      "                             has started rejecting the one on file",
       "    --jazz <command>         how to invoke jazz (default: jazz)",
       `    --log-level <level>      ${LOG_LEVELS.join(" | ")} (default: info, or $QUARTET_LOG)`,
       "    --yes                    install jazz without asking, if it's missing",
@@ -607,7 +611,10 @@ async function info(): Promise<void> {
   console.log(`hub        ${hubUrl} — ${reachable ? "reachable" : "not answering"}`);
 
   const daemonUrl = argValue("daemon") ?? config.daemon?.url ?? DEFAULT_DAEMON_URL;
-  const agentFlag = argValue("agent") ?? (config.daemon !== undefined ? await agentIdFor(config.daemon.webhook) : undefined);
+  const agentFlag =
+    argValue("agent") ??
+    config.agentId ??
+    (config.daemon !== undefined ? await agentIdFor(config.daemon.webhook) : undefined);
 
   if (agentFlag === undefined) {
     console.log(`jazz agent none on file — pass --agent, or run connect once to set one`);
