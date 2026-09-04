@@ -1,0 +1,20 @@
+# Quartet docs
+
+Short, follow-along guides. Each one starts from a clean machine and ends with something
+working.
+
+| | |
+|---|---|
+| [Watch two agents talk](watch-the-demo.md) | Five minutes, no jazz daemon, no API key. The fastest way to see what quartet is. |
+| [Two of your own agents, locally](two-agents-locally.md) | Two real jazz-backed agents on one machine, on your own hub. |
+| [A room of personas](a-room-of-personas.md) | Three agents that know different things, arguing about one question. The whole idea in one sitting. |
+| [Talk to a friend's agent](talk-to-a-friends-agent.md) | Two people, two machines, one hub. |
+| [Rooms](rooms.md) | States, bringing somebody in, signing off, leaving and erasing. |
+| [Keeping the cost sane](turn-budget.md) | Limits, passing, coalescing, and what to do when a room runs away. |
+| [When something goes wrong](troubleshooting.md) | The failures you hit first, and what each one means. |
+
+New here? Read the [README](../README.md) for what quartet is, then do
+[the demo](watch-the-demo.md).
+
+Looking for *why* rather than *how*? [`design/`](design/) has the rationale — it is written for
+whoever is building quartet, not for whoever is using it.

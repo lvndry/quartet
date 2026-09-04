@@ -1,0 +1,116 @@
+@import "@quartet/theme/tokens.css";
+
+/*
+ * The site's own layer. Everything above the tokens line is shared with the app; everything
+ * below is marketing-surface only — wider measure, larger type, and the section rhythm a
+ * scrolling page needs and a three-pane app does not.
+ */
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation: none !important; transition: none !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--cream);
+  font-family: var(--body);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; }
+:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+img { max-width: 100%; }
+
+.wrap { max-width: 1140px; margin: 0 auto; padding: 0 1.5rem; }
+.skip {
+  position: absolute; left: -9999px; top: 0; background: var(--ink-raised);
+  color: var(--cream); padding: 0.6rem 1rem; z-index: 50;
+  font-family: var(--mono); font-size: 0.7rem;
+}
+.skip:focus { left: 0; }
+
+/* ---------- topbar ---------- */
+
+.topbar {
+  border-bottom: 1px solid var(--rule);
+  background: var(--ink-raised);
+  position: sticky; top: 0; z-index: 10;
+}
+.topbar-in { display: flex; align-items: center; gap: 1.25rem; padding: 0.7rem 0; }
+.wordmark {
+  font-family: var(--shout); font-size: 1.35rem; letter-spacing: 0.02em;
+  text-transform: uppercase; line-height: 1; text-decoration: none;
+}
+.wordmark span { color: var(--vermilion); }
+.topbar .spacer { flex: 1; }
+.nav-links { display: flex; gap: 1.35rem; }
+.nav-links a {
+  font-family: var(--mono); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--slate); text-decoration: none;
+  transition: color 140ms ease;
+}
+.nav-links a:hover, .nav-links a[aria-current="page"] { color: var(--vermilion); }
+
+/* ---------- shared bits ---------- */
+
+.btn {
+  font-family: var(--mono); font-size: 0.66rem; font-weight: 600; letter-spacing: 0.12em;
+  text-transform: uppercase; background: transparent; border: 1px solid var(--rule);
+  color: var(--cream-dim); padding: 0.62rem 1rem; cursor: pointer; text-decoration: none;
+  display: inline-block;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+.btn:hover { border-color: var(--vermilion); color: var(--vermilion); }
+.btn.go { border-color: var(--vermilion-dim); color: var(--vermilion); }
+.btn.go:hover { background: var(--vermilion); color: var(--ink); }
+
+.pane-title {
+  font-family: var(--mono); font-size: 0.62rem; font-weight: 600; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--slate); margin: 0;
+}
+
+.monogram {
+  flex: none; width: 26px; height: 26px; display: grid; place-items: center;
+  border: 1px solid var(--rule); background: var(--ink-sunk);
+  font-family: var(--mono); font-size: 0.64rem; font-weight: 600; color: var(--cream-dim);
+}
+.monogram.human { border-color: var(--brass); color: var(--brass); }
+.monogram.on { border-color: var(--signal); color: var(--signal); }
+
+/* ---------- section rhythm ---------- */
+
+.section { padding: 5.5rem 0 0; }
+.sec-head { display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 2rem; }
+h1, h2, h3 { text-wrap: balance; }
+.shout {
+  font-family: var(--shout); text-transform: uppercase; letter-spacing: 0.01em;
+  line-height: 1; margin: 0;
+}
+h2.shout { font-size: clamp(1.8rem, 3.8vw, 3rem); max-width: 17em; }
+h2.shout span, h1.shout span { color: var(--vermilion); }
+.sec-note { margin: 0; color: var(--slate); max-width: 62ch; font-size: 1rem; }
+.sec-note a { color: var(--signal); }
+
+/* ---------- footer ---------- */
+
+footer.site {
+  padding: 1.8rem 0 3.5rem; margin-top: 5.5rem; border-top: 1px solid var(--rule);
+  font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--slate);
+  display: flex; flex-wrap: wrap; gap: 0.5rem 1.6rem;
+}
+footer.site a { color: var(--slate); text-decoration: none; }
+footer.site a:hover { color: var(--vermilion); }
+
+@media (max-width: 760px) {
+  .section { padding-top: 3.75rem; }
+  .nav-links { gap: 1rem; }
+  .nav-links a:first-child { display: none; }
+}

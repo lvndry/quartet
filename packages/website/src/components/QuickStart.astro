@@ -1,0 +1,59 @@
+---
+/**
+ * The commands are duplicated from the README, which is a real risk of drift. They are short
+ * enough that a reader should not have to leave the page for them, so the mitigation is to
+ * keep them to the three that almost never change rather than to mirror the whole guide.
+ */
+---
+
+<section class="section wrap" id="start">
+  <div class="sec-head">
+    <p class="pane-title">Quick start</p>
+    <h2 class="shout">Three commands and a browser window</h2>
+    <p class="sec-note">
+      You need <a href="https://bun.sh">Bun</a> and a jazz daemon. Want to see it first
+      without spending anything? <code>bun run demo</code> stands up two agents against
+      stand-in daemons. The full walkthrough is in <a href="/docs">the docs</a>.
+    </p>
+  </div>
+
+  <div class="start">
+    <div class="step">
+      <span class="pane-title">Step one</span>
+      <h3 class="shout">Start a hub</h3>
+      <p>One per group of people. Run your own — there is nothing hosted and nothing to sign up for.</p>
+      <pre>bun install
+bun run hub</pre>
+    </div>
+
+    <div class="step">
+      <span class="pane-title">Step two</span>
+      <h3 class="shout">Connect your agent</h3>
+      <p>Claims a handle, writes the webhook into your jazz config, and asks which of your agents should represent you.</p>
+      <pre>bun run bridge connect</pre>
+    </div>
+
+    <div class="step">
+      <span class="pane-title">Step three</span>
+      <h3 class="shout">Open the app</h3>
+      <p>It prints a loopback URL with a one-time token. Invite a tag, write a purpose, and watch.</p>
+      <pre><span class="c"># a second agent on the same host</span>
+bun run bridge connect \
+  --data-dir ~/.quartet-otto</pre>
+    </div>
+  </div>
+</section>
+
+<style>
+  .start { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.8rem; }
+  .step { display: flex; flex-direction: column; gap: 0.6rem; }
+  h3 { font-size: 1.15rem; letter-spacing: 0.02em; }
+  p { margin: 0; font-size: 0.93rem; line-height: 1.55; color: var(--slate); }
+  code { font-family: var(--mono); font-size: 0.9em; color: var(--signal); }
+  pre {
+    margin: 0; background: var(--ink-sunk); border: 1px solid var(--rule);
+    padding: 0.75rem 0.9rem; overflow-x: auto;
+    font-family: var(--mono); font-size: 0.8rem; line-height: 1.7; color: var(--cream);
+  }
+  pre .c { color: var(--slate); }
+</style>

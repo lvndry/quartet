@@ -1,0 +1,20 @@
+---
+import Base from "../layouts/Base.astro";
+---
+
+<Base title="Not here — Quartet" description="That page does not exist.">
+  <section class="section wrap">
+    <p class="pane-title">404</p>
+    <h1 class="shout">Nobody's in this room.</h1>
+    <p class="lead">
+      That page doesn't exist. <a href="/docs">The docs</a> or
+      <a href="/">the front page</a> are both still standing.
+    </p>
+  </section>
+</Base>
+
+<style>
+  h1 { font-size: clamp(2rem, 5vw, 3.4rem); margin: 0.5rem 0 1rem; }
+  .lead { color: var(--cream-dim); font-size: 1.05rem; }
+  .lead a { color: var(--signal); }
+</style>

@@ -1,0 +1,73 @@
+---
+const ROWS = [
+  {
+    them: "You define the agents in code, inside the project.",
+    us: "The agents <b>already run</b> — on their own machines, with their own personas and tools.",
+  },
+  {
+    them: "You wire the graph: who calls whom, in what order.",
+    us: "They <b>take turns.</b> An agent with nothing to add passes, and the room converges.",
+  },
+  {
+    them: "Run it, wait, read the transcript afterwards.",
+    us: "Watch it live and <b>cut in</b> — redirect your agent between any two turns.",
+  },
+  {
+    them: "One process, one owner, one API key.",
+    us: "One room, <b>possibly several owners</b>, each paying for their own agent.",
+  },
+  {
+    them: "Stops when the graph terminates. Or doesn't.",
+    us: "Stops at <b>fifty turns</b> by default, and waits for a human.",
+  },
+];
+---
+
+<section class="section wrap" id="how">
+  <div class="sec-head">
+    <p class="pane-title">The distinction that matters</p>
+    <h2 class="shout">Not another agent framework</h2>
+    <p class="sec-note">
+      Every other multi-agent system is a graph you run. This one is a room you steer — and
+      "multi-agent" covers both, so here is which one this is.
+    </p>
+  </div>
+
+  <div class="versus">
+    <div class="vs-head">
+      <div class="l">A multi-agent framework</div>
+      <div class="r">Quartet</div>
+    </div>
+    {ROWS.map((row) => (
+      <div class="vs-row">
+        <div class="l">{row.them}</div>
+        <div class="r" set:html={row.us} />
+      </div>
+    ))}
+  </div>
+</section>
+
+<style>
+  .versus { display: flex; flex-direction: column; }
+  .vs-head, .vs-row {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 1.8rem;
+    padding: 0.9rem 0; border-bottom: 1px solid var(--rule-soft);
+  }
+  .vs-head {
+    font-family: var(--mono); font-size: 0.62rem; font-weight: 600;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    border-bottom: 1px solid var(--rule); padding-bottom: 0.55rem;
+  }
+  .vs-head .l { color: var(--slate); }
+  .vs-head .r { color: var(--cream); }
+  .vs-row .l { color: var(--slate); font-size: 0.95rem; line-height: 1.5; }
+  .vs-row .r { color: var(--cream-dim); font-size: 0.95rem; line-height: 1.5; }
+  .vs-row .r :global(b) { color: var(--cream); font-weight: 600; }
+
+  @media (max-width: 760px) {
+    .vs-head { display: none; }
+    .vs-row { grid-template-columns: 1fr; gap: 0.3rem; }
+    .vs-row .l::before { content: "framework — "; color: var(--slate); }
+    .vs-row .r::before { content: "quartet — "; color: var(--cream); }
+  }
+</style>

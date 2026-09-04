@@ -1,0 +1,94 @@
+---
+const DOORS = [
+  {
+    name: "The working session",
+    sub: "Specialists who disagree",
+    blurb:
+      "Agents that know different things, arguing about a decision you have to make. Not one model playing three experts — three agents with genuinely different tools, contexts and models.",
+    cast: [
+      { mark: "KE", who: "@kes", what: "security persona · reads the repo, looks up CVEs" },
+      { mark: "RH", who: "@rho", what: "performance persona · has the benchmark history" },
+      { mark: "VA", who: "@vale", what: "product persona · no tools — it can only talk" },
+    ],
+    purpose:
+      "Decide whether the new auth flow ships Thursday. Name the one thing that would change your mind.",
+  },
+  {
+    name: "The scene",
+    sub: "Characters who want things",
+    blurb:
+      "The same machinery with personas that are people rather than functions. You direct your character between turns; it speaks in its own voice. A pass is a character choosing silence.",
+    cast: [
+      { mark: "MI", who: "@mireille", what: "harbourmaster · knows the tides, lies about them" },
+      { mark: "OT", who: "@otto", what: "customs officer · incorruptible, bored" },
+      { mark: "SA", who: "@sable", what: "passenger · carrying a forged manifest" },
+    ],
+    purpose:
+      "3am on the quay. The manifest doesn't match the cargo. Nobody leaves until somebody says something true.",
+  },
+];
+---
+
+<section class="section wrap">
+  <div class="sec-head">
+    <p class="pane-title">Two front doors, one machine</p>
+    <h2 class="shout">The working session and the scene</h2>
+    <p class="sec-note">
+      Same machinery both times. What changes is only what the personas know, and what the
+      purpose asks for. Personas come from
+      <a href="https://github.com/lvndry/jazz">jazz</a>, which ships a few and lets you write
+      your own.
+    </p>
+  </div>
+
+  <div class="doors">
+    {DOORS.map((door) => (
+      <article class="door">
+        <div class="door-top">
+          <div class="door-name shout">{door.name}</div>
+          <span class="pane-title">{door.sub}</span>
+        </div>
+        <div class="door-body">
+          <p>{door.blurb}</p>
+          <div class="cast">
+            <span class="pane-title">Cast</span>
+            {door.cast.map((member) => (
+              <div class="cast-row">
+                <span class="monogram">{member.mark}</span>
+                <span class="cast-text">
+                  <span class="who">{member.who}</span>
+                  <span class="what">{member.what}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+          <div class="purpose">
+            <span class="pane-title">Purpose</span>
+            {door.purpose}
+          </div>
+        </div>
+      </article>
+    ))}
+  </div>
+</section>
+
+<style>
+  .doors { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 1.1rem; }
+  .door { border: 1px solid var(--rule); background: var(--ink-raised); display: flex; flex-direction: column; }
+  .door-top { padding: 1.1rem; border-bottom: 1px solid var(--rule); }
+  .door-name { font-size: 1.5rem; margin-bottom: 0.4rem; }
+  .door-body { padding: 1.1rem; display: flex; flex-direction: column; gap: 1.1rem; }
+  .door-body > p { margin: 0; font-size: 0.95rem; line-height: 1.55; color: var(--cream-dim); }
+
+  .cast { display: flex; flex-direction: column; gap: 0.7rem; }
+  .cast-row { display: flex; gap: 0.7rem; align-items: flex-start; }
+  .cast-text { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+  .cast-text .who { font-family: var(--mono); font-size: 0.72rem; font-weight: 600; color: var(--cream); }
+  .cast-text .what { font-size: 0.86rem; line-height: 1.45; color: var(--slate); }
+
+  .purpose {
+    background: var(--ink-sunk); border-left: 2px solid var(--rule);
+    padding: 0.75rem 0.9rem; font-size: 0.88rem; line-height: 1.5; color: var(--cream-dim);
+  }
+  .purpose .pane-title { display: block; margin-bottom: 0.35rem; }
+</style>
