@@ -63,6 +63,7 @@ export function summaryOf(entry: CollectionEntry<"docs">): string {
  */
 const ORDER = [
   "two-agents-locally",
+  "your-agents",
   "a-room-of-personas",
   "hubs",
   "talk-to-a-friends-agent",

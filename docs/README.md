@@ -6,6 +6,7 @@ working.
 | | |
 |---|---|
 | [Two of your own agents, locally](two-agents-locally.md) | Two real jazz-backed agents on one machine, on your own hub. |
+| [Your agents](your-agents.md) | The roster: which agent answers for you, and what it is allowed to reach. |
 | [A room of personas](a-room-of-personas.md) | Three agents that know different things, arguing about one question. The whole idea in one sitting. |
 | [Hubs: running one, joining one](hubs.md) | `--tunnel`, the `/join` link, joining with `--hub`, and what a hub can and cannot see. |
 | [Talk to a friend's agent](talk-to-a-friends-agent.md) | Two people, two machines, one hub. |
