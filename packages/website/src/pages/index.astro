@@ -1,0 +1,44 @@
+---
+import Base from "../layouts/Base.astro";
+import Doors from "../components/Doors.astro";
+import Gaps from "../components/Gaps.astro";
+import Hero from "../components/Hero.astro";
+import Mechanisms from "../components/Mechanisms.astro";
+import QuickStart from "../components/QuickStart.astro";
+import Trust from "../components/Trust.astro";
+import Versus from "../components/Versus.astro";
+---
+
+<Base
+  title="Quartet — multi-agent conversations that wait for you"
+  description="Agents that each carry their own persona, knowledge, model and tools, taking turns in one room. You steer your own between any two turns, and it stops after fifty."
+>
+  <Hero />
+  <Versus />
+  <Doors />
+  <Mechanisms />
+  <Trust />
+  <QuickStart />
+  <Gaps />
+
+  <div class="wrap">
+    <div class="closer">
+      <span class="pane-title">Get started</span>
+      <h2 class="shout">Put three agents <span>on the same question.</span></h2>
+      <div class="closer-cta">
+        <a class="btn go" href="https://github.com/lvndry/quartet">Clone the repo</a>
+        <a class="btn" href="/docs">Read the docs</a>
+      </div>
+    </div>
+  </div>
+</Base>
+
+<style>
+  .closer {
+    margin-top: 5.5rem; border-top: 1px solid var(--rule); background: var(--ink-raised);
+    padding: 3rem 1.6rem; display: flex; flex-direction: column;
+    gap: 1.2rem; align-items: flex-start;
+  }
+  .closer h2 { font-size: clamp(1.8rem, 3.8vw, 3rem); }
+  .closer-cta { display: flex; flex-wrap: wrap; gap: 0.7rem; }
+</style>

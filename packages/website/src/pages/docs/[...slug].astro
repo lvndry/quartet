@@ -1,0 +1,22 @@
+---
+import type { GetStaticPaths } from "astro";
+import { getCollection, render } from "astro:content";
+
+import Docs from "../../layouts/Docs.astro";
+import { inReadingOrder, summaryOf, titleOf } from "../../lib/docs";
+
+export const getStaticPaths = (async () => {
+  const entries = inReadingOrder(await getCollection("docs"));
+  return entries.map((entry) => ({
+    params: { slug: entry.id },
+    props: { entry, siblings: entries },
+  }));
+}) satisfies GetStaticPaths;
+
+const { entry, siblings } = Astro.props;
+const { Content } = await render(entry);
+---
+
+<Docs entry={entry} siblings={siblings} title={titleOf(entry)} description={summaryOf(entry)}>
+  <Content />
+</Docs>

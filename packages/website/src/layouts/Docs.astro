@@ -1,0 +1,144 @@
+---
+import type { CollectionEntry } from "astro:content";
+
+import { titleOf } from "../lib/docs";
+import Base from "./Base.astro";
+
+interface Props {
+  entry: CollectionEntry<"docs">;
+  siblings: CollectionEntry<"docs">[];
+  title: string;
+  description: string;
+}
+
+const { entry, siblings, title, description } = Astro.props;
+const at = siblings.findIndex((one) => one.id === entry.id);
+const previous = at > 0 ? siblings[at - 1] : undefined;
+const next = at >= 0 && at < siblings.length - 1 ? siblings[at + 1] : undefined;
+---
+
+<Base title={`${title} — Quartet`} description={description}>
+  <div class="wrap docs-shell">
+    <nav class="docs-nav" aria-label="Documentation">
+      <span class="pane-title">Guides</span>
+      <ul>
+        {siblings.map((one) => (
+          <li>
+            <a
+              href={`/docs/${one.id}`}
+              aria-current={one.id === entry.id ? "page" : undefined}
+            >
+              {titleOf(one)}
+            </a>
+          </li>
+        ))}
+      </ul>
+      <a class="raw" href={`/docs/${entry.id}.md`}>Read as markdown</a>
+    </nav>
+
+    <article class="prose">
+      <slot />
+
+      <div class="pager">
+        {previous ? (
+          <a href={`/docs/${previous.id}`}>
+            <span class="pane-title">Previous</span>
+            {titleOf(previous)}
+          </a>
+        ) : <span />}
+        {next && (
+          <a class="next" href={`/docs/${next.id}`}>
+            <span class="pane-title">Next</span>
+            {titleOf(next)}
+          </a>
+        )}
+      </div>
+    </article>
+  </div>
+</Base>
+
+<style>
+  .docs-shell {
+    display: grid; grid-template-columns: 15rem minmax(0, 1fr);
+    gap: 3rem; padding-top: 3rem; padding-bottom: 2rem; align-items: start;
+  }
+
+  .docs-nav { position: sticky; top: 4.5rem; display: flex; flex-direction: column; gap: 0.7rem; }
+  .docs-nav ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+  .docs-nav li { border-bottom: 1px solid var(--rule-soft); }
+  .docs-nav a {
+    display: block; padding: 0.5rem 0; font-size: 0.9rem;
+    color: var(--slate); text-decoration: none;
+  }
+  .docs-nav a:hover { color: var(--cream); }
+  .docs-nav a[aria-current="page"] { color: var(--vermilion); }
+  .raw {
+    font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--slate); text-decoration: none;
+  }
+  .raw:hover { color: var(--signal); }
+
+  .prose { min-width: 0; max-width: 46rem; }
+
+  /* Markdown output — the docs are written for GitHub first, so these have to be good. */
+  .prose :global(h1) {
+    font-family: var(--shout); text-transform: uppercase; letter-spacing: 0.01em;
+    font-size: clamp(2rem, 4.4vw, 3rem); line-height: 1; margin: 0 0 1.2rem;
+  }
+  .prose :global(h2) {
+    font-family: var(--shout); text-transform: uppercase; letter-spacing: 0.02em;
+    font-size: 1.5rem; line-height: 1.05; margin: 2.6rem 0 0.9rem;
+    padding-top: 1.4rem; border-top: 1px solid var(--rule-soft);
+  }
+  .prose :global(h3) { font-size: 1.05rem; font-weight: 600; margin: 1.8rem 0 0.6rem; }
+  .prose :global(p) { color: var(--cream-dim); margin: 0 0 1rem; }
+  .prose :global(a) { color: var(--signal); text-underline-offset: 2px; }
+  .prose :global(strong) { color: var(--cream); font-weight: 600; }
+  .prose :global(em) { color: var(--cream); }
+  .prose :global(ul), .prose :global(ol) { color: var(--cream-dim); padding-left: 1.2rem; margin: 0 0 1rem; }
+  .prose :global(li) { margin-bottom: 0.4rem; }
+  .prose :global(code) {
+    font-family: var(--mono); font-size: 0.86em; color: var(--signal);
+    background: var(--ink-sunk); padding: 0.1rem 0.3rem; border: 1px solid var(--rule-soft);
+  }
+  .prose :global(pre) {
+    background: var(--ink-sunk); border: 1px solid var(--rule);
+    padding: 0.9rem 1rem; overflow-x: auto; margin: 0 0 1.2rem;
+    font-family: var(--mono); font-size: 0.82rem; line-height: 1.7;
+  }
+  .prose :global(pre code) { background: none; border: none; padding: 0; color: var(--cream-dim); }
+  .prose :global(blockquote) {
+    margin: 0 0 1.2rem; padding: 0.2rem 0 0.2rem 1rem;
+    border-left: 2px solid var(--brass); color: var(--cream-dim);
+  }
+  .prose :global(table) {
+    width: 100%; border-collapse: collapse; margin: 0 0 1.2rem; font-size: 0.92rem;
+    display: block; overflow-x: auto;
+  }
+  .prose :global(th) {
+    text-align: left; font-family: var(--mono); font-size: 0.62rem; font-weight: 600;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--slate);
+    border-bottom: 1px solid var(--rule); padding: 0.5rem 0.8rem 0.5rem 0;
+  }
+  .prose :global(td) {
+    border-bottom: 1px solid var(--rule-soft); padding: 0.6rem 0.8rem 0.6rem 0;
+    color: var(--cream-dim); vertical-align: top;
+  }
+  .prose :global(hr) { border: none; border-top: 1px solid var(--rule); margin: 2.2rem 0; }
+
+  .pager {
+    display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+    margin-top: 3rem; padding-top: 1.2rem; border-top: 1px solid var(--rule);
+  }
+  .pager a {
+    display: flex; flex-direction: column; gap: 0.2rem;
+    font-size: 0.95rem; color: var(--cream-dim); text-decoration: none;
+  }
+  .pager a:hover { color: var(--vermilion); }
+  .pager .next { text-align: right; margin-left: auto; }
+
+  @media (max-width: 900px) {
+    .docs-shell { grid-template-columns: 1fr; gap: 1.6rem; }
+    .docs-nav { position: static; }
+  }
+</style>

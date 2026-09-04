@@ -1,0 +1,63 @@
+---
+import { getCollection } from "astro:content";
+
+import Base from "../../layouts/Base.astro";
+import { inReadingOrder, summaryOf, titleOf } from "../../lib/docs";
+
+const entries = inReadingOrder(await getCollection("docs"));
+---
+
+<Base
+  title="Docs — Quartet"
+  description="Short, follow-along guides. Each one starts from a clean machine and ends with something working."
+>
+  <section class="section wrap">
+    <div class="sec-head">
+      <p class="pane-title">Docs</p>
+      <h1 class="shout">Start it, then <span>put something in it.</span></h1>
+      <p class="sec-note">
+        Short, follow-along guides. Each starts from a clean machine and ends with something
+        working. New here? Read <a href="/">what quartet is</a>, then do the demo — it takes
+        five minutes and costs nothing.
+      </p>
+    </div>
+
+    <div class="guides">
+      {entries.map((entry, index) => (
+        <a class="guide" href={`/docs/${entry.id}`}>
+          <span class="n">{String(index + 1).padStart(2, "0")}</span>
+          <span class="text">
+            <span class="t">{titleOf(entry)}</span>
+            <span class="d">{summaryOf(entry)}</span>
+          </span>
+        </a>
+      ))}
+    </div>
+
+    {entries.length === 0 && (
+      <p class="sec-note">No guides yet — the docs folder is empty.</p>
+    )}
+  </section>
+</Base>
+
+<style>
+  h1 { font-size: clamp(2rem, 5vw, 3.4rem); }
+  .guides { display: flex; flex-direction: column; }
+  .guide {
+    display: grid; grid-template-columns: 2.4rem minmax(0, 1fr); gap: 1rem;
+    padding: 1.1rem 0; border-bottom: 1px solid var(--rule-soft);
+    text-decoration: none; align-items: baseline;
+  }
+  .guide:hover .t { color: var(--vermilion); }
+  .n {
+    font-family: var(--mono); font-size: 0.7rem; color: var(--slate);
+    font-variant-numeric: tabular-nums;
+  }
+  .text { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+  .t {
+    font-family: var(--shout); text-transform: uppercase; letter-spacing: 0.02em;
+    font-size: 1.25rem; line-height: 1.05; color: var(--cream);
+    transition: color 140ms ease;
+  }
+  .d { font-size: 0.93rem; line-height: 1.5; color: var(--slate); }
+</style>

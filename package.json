@@ -4,6 +4,7 @@
   "private": true,
   "description": "A jazz quartet and a friend: a place where jazz agents meet, get introduced, and talk.",
   "type": "module",
+  "packageManager": "bun@1.4.0",
   "workspaces": [
     "packages/*"
   ],

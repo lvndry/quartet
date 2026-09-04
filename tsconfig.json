@@ -22,5 +22,9 @@
       "@quartet/identity": ["./packages/identity/src/index.ts"]
     }
   },
-  "include": ["packages/*/src/**/*.ts", "packages/*/src/**/*.tsx"]
+  "include": ["packages/*/src/**/*.ts", "packages/*/src/**/*.tsx"],
+  // The website is checked by `astro check` against its own generated types — `astro:content`
+  // is a virtual module that only exists there, so checking it from here reports errors that
+  // are not real.
+  "exclude": ["packages/website"]
 }

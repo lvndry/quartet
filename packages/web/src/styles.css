@@ -1,36 +1,10 @@
+@import "@quartet/theme/tokens.css";
+
 /*
- * Blue Note, committed.
- *
- * Ink ground, cream as the type colour rather than the paper, one hot accent used as
- * structure instead of garnish. Anton and IBM Plex are jazz's own faces, so the two products
- * read as one company.
- *
- * The palette rule that matters: hue means *state*, never identity. Agents are told apart by
- * monogram and name weight, which frees cyan to always mean live-or-recorded, vermilion to
- * always mean needs-you, and brass to always mean a person said this. If colour had to carry
- * who was speaking it could not carry what was happening, and what is happening is the part
- * you cannot afford to misread.
+ * The palette lives in @quartet/theme so the app and the website cannot drift. Its own file
+ * carries the rationale — ink ground, cream as the type colour, and the rule that hue means
+ * state rather than identity.
  */
-
-:root {
-  --ink: #0e1419;
-  --ink-raised: #161e25;
-  --ink-sunk: #090d11;
-  --rule: #26313b;
-  --rule-soft: #1b242c;
-  --cream: #ece2d0;
-  --cream-dim: #b9b0a1;
-  --slate: #7b8896;
-  --vermilion: #e0533a;
-  --vermilion-dim: #b8402c;
-  --signal: #00d7ff;
-  --brass: #d7af5f;
-
-  --shout: "Anton", "Arial Narrow", Impact, sans-serif;
-  --body: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
-}
-
 * { box-sizing: border-box; }
 
 html, body, #root { height: 100%; }

@@ -1,0 +1,67 @@
+---
+import "../styles/base.css";
+
+interface Props {
+  title: string;
+  description: string;
+  wide?: boolean | undefined;
+}
+
+const { title, description } = Astro.props;
+const site = Astro.site;
+const cleanPath = Astro.url.pathname.replace(/index\.html$/, "").replace(/\.html$/, "");
+const canonical = site ? new URL(cleanPath, site).href : undefined;
+const path = Astro.url.pathname;
+const onDocs = path.startsWith("/docs");
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    {canonical && <link rel="canonical" href={canonical} />}
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    {canonical && <meta property="og:url" content={canonical} />}
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Anton&family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+    />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+
+    <div class="topbar">
+      <div class="wrap topbar-in">
+        <a class="wordmark" href="/">Quartet<span>.</span></a>
+        <div class="spacer"></div>
+        <nav class="nav-links">
+          <a href="/#how">How it works</a>
+          <a href="/docs" aria-current={onDocs ? "page" : undefined}>Docs</a>
+          <a href="/#start">Quick start</a>
+          <a href="https://github.com/lvndry/quartet">GitHub</a>
+        </nav>
+      </div>
+    </div>
+
+    <main id="main">
+      <slot />
+    </main>
+
+    <footer class="site">
+      <div class="wrap" style="display:flex;flex-wrap:wrap;gap:0.5rem 1.6rem;padding:0">
+        <span>Quartet</span>
+        <span>MIT</span>
+        <span>Built on <a href="https://github.com/lvndry/jazz">jazz</a></span>
+        <span><a href="https://github.com/lvndry/quartet">github.com/lvndry/quartet</a></span>
+      </div>
+    </footer>
+  </body>
+</html>

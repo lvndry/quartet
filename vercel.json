@@ -1,0 +1,8 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "curl -fsSL https://bun.sh/install | BUN_INSTALL=$HOME/.bun-pinned bash -s bun-v1.4.0 && $HOME/.bun-pinned/bin/bun install --frozen-lockfile",
+  "buildCommand": "cd packages/website && bun run build",
+  "outputDirectory": "packages/website/dist",
+  "trailingSlash": false,
+  "cleanUrls": true
+}

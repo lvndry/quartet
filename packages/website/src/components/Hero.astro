@@ -1,0 +1,197 @@
+---
+/**
+ * Claim, then evidence, in one screen.
+ *
+ * The headline states what nobody else can claim; the room underneath is the proof, and it
+ * carries a pass and a steer because those two are the whole argument in miniature.
+ */
+---
+
+<header class="hero wrap">
+  <div class="status">
+    <span class="item live"><i class="pip"></i>Early — the loop works end to end</span>
+    <span class="item">Runs on your machine</span>
+    <span class="item">MIT</span>
+  </div>
+
+  <h1 class="shout">Multi-agent conversations <span>that wait for you.</span></h1>
+
+  <p class="deck">
+    Agents that each carry their own <strong>persona, knowledge, model and tools</strong>,
+    taking turns in one room. You steer your own between any two turns. After fifty it stops
+    and waits — <strong>which is the part nobody else does.</strong>
+  </p>
+
+  <div class="cta">
+    <a class="btn go" href="#start">Get started</a>
+    <a class="btn" href="https://github.com/lvndry/quartet">Read the source</a>
+    <span class="cta-note">bun run demo — two agents, no API key</span>
+  </div>
+
+  <div class="room">
+    <div class="room-bar">
+      <span class="grp">Room · 3 agents</span>
+      <span class="grp">
+        Turns left
+        <span class="budget-dots">
+          <i></i><i></i><i></i><i></i><i></i><i></i><i class="spent"></i><i class="spent"></i>
+        </span>
+        <b>46 / 50</b>
+      </span>
+      <span class="grp">Spent <b>$0.0117</b></span>
+    </div>
+
+    <div class="room-purpose">
+      <span class="pane-title">Purpose</span>
+      Decide whether the new auth flow ships Thursday. Disagree in specifics, not in
+      principle. Name the one thing that would change your mind.
+    </div>
+
+    <div class="turns">
+      <div class="msg">
+        <div class="monogram">KE</div>
+        <div class="msg-body">
+          <div class="msg-who">@kes</div>
+          <p class="msg-text">
+            The token lifetime is the whole argument. Thirty days on a refresh token with no
+            rotation means one leaked token is a month of quiet access, and we have no way to
+            notice.
+          </p>
+          <div class="msg-meta">3.1s · $0.0044</div>
+        </div>
+      </div>
+
+      <div class="msg">
+        <div class="monogram">RH</div>
+        <div class="msg-body">
+          <div class="msg-who">@rho</div>
+          <p class="msg-text">
+            Rotation isn't free. It's a round trip per refresh — about 40ms on p50 cold start,
+            from the numbers we took in March. I can live with that. I can't live with
+            rotation on every request.
+          </p>
+          <div class="msg-meta">2.4s · $0.0038</div>
+        </div>
+      </div>
+
+      <div class="msg passed">
+        <div class="monogram">VA</div>
+        <div class="msg-body">
+          <div class="msg-who">@vale</div>
+          <p class="msg-text">passed</p>
+          <div class="msg-meta">1.9s · $0.0009</div>
+        </div>
+      </div>
+
+      <div class="msg aside">
+        <div class="monogram human">YU</div>
+        <div class="msg-body">
+          <div class="msg-who">you → @kes</div>
+          <p class="msg-text">stop hedging. yes or no on thursday, and say the number you'd accept</p>
+          <div class="msg-meta">sealed — the hub relays this without reading it</div>
+        </div>
+      </div>
+
+      <div class="activity">
+        <span class="activity-who">@kes</span>
+        <span class="bars"><i></i><i></i><i></i><i></i></span>
+        <span class="elapsed">2.6s</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<style>
+  .hero { padding: 4.5rem 0 0; display: flex; flex-direction: column; gap: 1.6rem; }
+
+  .status {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem 1.4rem;
+    font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--slate);
+  }
+  .status .item { display: inline-flex; align-items: center; gap: 0.45rem; }
+  .status .pip { width: 7px; height: 7px; border-radius: 50%; background: var(--rule); }
+  .status .item.live .pip { background: var(--signal); }
+  .status .item.live { color: var(--cream-dim); }
+
+  h1 {
+    font-size: clamp(2.6rem, 7vw, 5.6rem);
+    line-height: 0.94;
+    letter-spacing: 0.005em;
+    max-width: 15em;
+  }
+
+  .deck {
+    font-size: clamp(1.05rem, 1.9vw, 1.32rem); line-height: 1.5;
+    max-width: 34em; margin: 0; color: var(--cream-dim);
+  }
+  .deck strong { color: var(--cream); font-weight: 500; }
+
+  .cta { display: flex; flex-wrap: wrap; gap: 0.7rem; align-items: center; }
+  .cta-note { font-family: var(--mono); font-size: 0.68rem; color: var(--slate); }
+
+  .room { border: 1px solid var(--rule); background: var(--ink); margin-top: 0.4rem; }
+
+  .room-bar {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+    gap: 0.5rem 1.4rem; padding: 0.65rem 1.1rem;
+    border-bottom: 1px solid var(--rule); background: var(--ink-raised);
+    font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--slate);
+  }
+  .room-bar .grp { display: inline-flex; align-items: center; gap: 0.5rem; }
+  .room-bar b { color: var(--cream-dim); font-weight: 400; font-variant-numeric: tabular-nums; }
+  .budget-dots { display: inline-flex; gap: 3px; }
+  .budget-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--signal); }
+  .budget-dots i.spent { background: var(--rule); }
+
+  .room-purpose {
+    padding: 0.9rem 1.1rem; border-bottom: 1px solid var(--rule-soft);
+    font-size: 0.95rem; line-height: 1.5; color: var(--cream);
+  }
+  .room-purpose .pane-title { display: block; margin-bottom: 0.35rem; }
+
+  .turns { display: flex; flex-direction: column; gap: 1.1rem; padding: 1.1rem; }
+
+  .msg { display: flex; gap: 0.7rem; align-items: flex-start; }
+  .msg-body { min-width: 0; display: flex; flex-direction: column; gap: 0.2rem; }
+  .msg-who {
+    font-family: var(--mono); font-size: 0.68rem; font-weight: 600;
+    letter-spacing: 0.05em; color: var(--cream);
+  }
+  .msg-text { font-size: 0.95rem; color: var(--cream-dim); max-width: 54ch; margin: 0; }
+  .msg-meta {
+    font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.06em;
+    color: var(--slate); font-variant-numeric: tabular-nums;
+  }
+
+  /* a pass is silence, so it is set as silence — no ink of its own */
+  .msg.passed .msg-who { color: var(--cream-dim); font-weight: 400; }
+  .msg.passed .msg-text { color: var(--slate); font-style: italic; }
+
+  /* brass: a person said this */
+  .msg.aside .msg-who { color: var(--brass); }
+  .msg.aside .msg-text { color: var(--cream); font-family: var(--mono); font-size: 0.85rem; }
+
+  .activity { display: flex; align-items: center; gap: 0.6rem; padding-left: 2.35rem; }
+  .activity-who { font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.06em; color: var(--slate); }
+  .bars { display: inline-flex; align-items: flex-end; gap: 3px; height: 13px; }
+  .bars i {
+    width: 3px; height: 100%; background: var(--signal);
+    transform-origin: bottom; animation: comp 900ms ease-in-out infinite;
+  }
+  .bars i:nth-child(2) { animation-delay: 110ms; }
+  .bars i:nth-child(3) { animation-delay: 220ms; }
+  .bars i:nth-child(4) { animation-delay: 330ms; }
+  @keyframes comp { 0%, 100% { transform: scaleY(0.28); } 50% { transform: scaleY(1); } }
+  @media (prefers-reduced-motion: reduce) { .bars i { transform: scaleY(0.6); } }
+  .elapsed {
+    font-family: var(--mono); font-size: 0.66rem; color: var(--slate);
+    font-variant-numeric: tabular-nums;
+  }
+
+  @media (max-width: 760px) {
+    .hero { padding-top: 3rem; }
+    .msg-text { max-width: none; }
+  }
+</style>
