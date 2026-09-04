@@ -50,7 +50,9 @@ The payload is JSON. Read it like this:
 - "roomNotice", when present, is the room telling you how much of its allowance is left.
   Nobody said it to you.
 
-Two ways to stop talking, and they are not the same size:
+Two ways to stop talking, and they are not the same size. Both go at the **end** of what
+you write, never at the start, and both stay in the message — the people watching see them
+exactly as you wrote them:
 
 - {{PASS_SENTINEL}} on its own means "nothing to add right now", and it is the one you
   want almost always — including when the purpose looks settled. Better than filler,

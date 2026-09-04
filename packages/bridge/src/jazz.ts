@@ -274,7 +274,8 @@ export async function answerParkedRun(
   return interpretAnswer(body);
 }
 
-function interpretAnswer(
+/** Exported for tests: what a daemon's answer means, with no HTTP in the way. */
+export function interpretAnswer(
   body: { answer?: string; costUSD?: number; costIncomplete?: boolean } | null,
 ): TurnResult {
   const answer = body?.answer?.trim() ?? "";
@@ -285,12 +286,21 @@ function interpretAnswer(
     incomplete: body?.costIncomplete === true || typeof body?.costUSD !== "number",
   };
   if (answer.length === 0) return { kind: "failed", reason: "jazz returned an empty answer" };
-  if (answer === PASS_SENTINEL || answer.startsWith(PASS_SENTINEL)) return { kind: "passed", cost };
 
-  const closing = answer.includes(CLOSE_SENTINEL);
-  const text = answer.split(CLOSE_SENTINEL).join("").trim();
-  if (text.length === 0) return { kind: "passed", cost };
-  return { kind: "said", text, cost, closing };
+  // Both sentinels live at the *end* of a message and stay in it. A pass is therefore only
+  // silence when it is the whole reply — a message that ends in one is a message, and
+  // discarding it would throw away the very thing an agent was told to post: the
+  // instructions ask an agent facing something hard to state the problem and then pass, so
+  // that the room can answer it.
+  //
+  // This used to treat anything *starting* with a pass as silence, which meant a model that
+  // led with the sentinel had the rest of its turn deleted with nothing to show it. Nothing
+  // reads them positionally now, so the worst a misplaced sentinel can do is look untidy.
+  if (answer === PASS_SENTINEL) return { kind: "passed", cost };
+
+  // Kept in the text rather than stripped, so a reader sees an agent yield or say goodbye
+  // the same way the agent wrote it. Only the closing *effect* is read out of it here.
+  return { kind: "said", text: answer, cost, closing: answer.includes(CLOSE_SENTINEL) };
 }
 
 /** Whether jazz's config actually lists this webhook, checked without running the agent. */
@@ -323,6 +333,24 @@ interface JazzWebhookEntry {
 
 export function jazzConfigPath(): string {
   return join(process.env["JAZZ_HOME"] ?? join(homedir(), ".jazz"), "config.json");
+}
+
+/**
+ * Which jazz agent a webhook wakes, according to jazz's own config.
+ *
+ * The answer to "which agent represents me" lives here rather than in quartet's config,
+ * because the webhook entry is the thing that actually decides it. Two copies would be one
+ * copy and a lie.
+ */
+export async function agentIdFor(webhookName: string): Promise<string | undefined> {
+  const file = Bun.file(jazzConfigPath());
+  if (!(await file.exists())) return undefined;
+  const config = (await file.json().catch(() => ({}))) as {
+    webhooks?: { name?: string; agentId?: string }[];
+  };
+  const entry = config.webhooks?.find((webhook) => webhook.name === webhookName);
+  const agentId = entry?.agentId;
+  return typeof agentId === "string" && agentId.length > 0 ? agentId : undefined;
 }
 
 /**

@@ -1,6 +1,7 @@
 import type React from "react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Conversation, Message } from "@quartet/protocol";
+import { Dashboard } from "./Dashboard";
 import {
   DEFAULT_TURN_BUDGET,
   MAX_ROOM_MEMBERS,
@@ -487,6 +488,7 @@ export default function App(): React.JSX.Element {
   const [selected, setSelected] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [navOpen, setNavOpen] = useState(false);
+  const [view, setView] = useState<"rooms" | "agents">("rooms");
 
   const conversation: Conversation | undefined = useMemo(
     () =>
@@ -529,11 +531,20 @@ export default function App(): React.JSX.Element {
             short={state.me.did !== undefined ? shortFp[state.me.did] ?? "unkeyed" : undefined}
           />
         )}
-        {state.myModel !== undefined && (
-          <span className="model-badge" title="What your agent is running, reported by jazz">
-            {state.myModel}
+        {/* The badge says what you are running, which makes it the right thing to click to
+            change it — but at ten pixels of slate it read as a status label, so what it does
+            only appears when you go near it. */}
+        <button
+          className={view === "agents" ? "model-badge open" : "model-badge"}
+          type="button"
+          aria-label={view === "agents" ? "Back to rooms" : "Your agents on this machine"}
+          onClick={() => setView(view === "agents" ? "rooms" : "agents")}
+        >
+          <span>{state.myModel ?? "model not recorded"}</span>
+          <span className="model-badge-more">
+            {view === "agents" ? "back to rooms" : "your agents"}
           </span>
-        )}
+        </button>
         <div className="spacer" />
         <span className={live && state.connectedToHub ? "status live" : "status"}>
           <span className="pip" />
@@ -547,6 +558,9 @@ export default function App(): React.JSX.Element {
         aria-hidden="true"
       />
 
+      {view === "agents" ? (
+        <Dashboard state={state} onClose={() => setView("rooms")} onAct={act} />
+      ) : (
       <div className="columns">
         <Sidebar
           state={state}
@@ -588,6 +602,7 @@ export default function App(): React.JSX.Element {
           }
         />
       </div>
+      )}
 
       {state.keyStoreProblem !== undefined && (
         <div className="key-alarm">{state.keyStoreProblem}</div>
@@ -647,9 +662,9 @@ function Sidebar({
                 <div className="row-title">@{invite.fromHandle} wants to talk</div>
                 <div className="msg-text">“{invite.purpose}”</div>
                 <div className="aside-note">
-                  Accepting starts @{invite.fromHandle}’s agent on this topic — not this
-                  sentence as their first line. They set the room to {describeLimit(invite.limit)}.
-                  You can change it after. They see what yours says, not what you type.
+                  Accepting starts @{invite.fromHandle}’s agent on this topic. They set the
+                  room to {describeLimit(invite.limit)}. You can change it after. They see
+                  what yours says, not what you type.
                 </div>
                 <div className="composer-row">
                   <button
@@ -687,7 +702,11 @@ function Sidebar({
                 <span className="row-main">
                   <span className="row-title">{conversation.purpose}</span>
                   <span className="row-sub">
-                    {nameThem(cast)} · {describeLimit(conversation.limit)}
+                    {conversation.state === "proposed"
+                      ? conversation.proposedBy === (state.me?.handle ?? "")
+                        ? `waiting for ${nameThem(cast)}`
+                        : "waiting for you"
+                      : `${nameThem(cast)} · ${describeLimit(conversation.limit)}`}
                   </span>
                 </span>
               </button>
@@ -1196,6 +1215,14 @@ function Chat({
             </div>
           )}
 
+          {conversation.state === "proposed" && (
+            <span className="line">
+              {conversation.proposedBy === meHandle
+                ? `Waiting for ${nameThem(cast)}. Nothing runs until they take it up.`
+                : `@${conversation.proposedBy} opened this. Nothing has run yet.`}
+            </span>
+          )}
+
           {conversation.state === "halted" &&
             activity?.state !== "thinking" &&
             !someoneThinking && (
@@ -1245,7 +1272,50 @@ function Chat({
         )}
       </div>
 
-      {conversation.state === "closed" ? (
+      {conversation.state === "proposed" ? (
+        <div className="composer">
+          {conversation.proposedBy === meHandle ? (
+            <span className="composer-note">
+              Waiting for {nameThem(cast)} to take this up. Nothing runs and nothing is spent
+              until they do — including your own agent, which has not been asked anything yet.
+            </span>
+          ) : (
+            <>
+              <div className="composer-row">
+                <button
+                  className="btn go"
+                  type="button"
+                  onClick={() =>
+                    void onAct("conversation/respond", {
+                      conversationId: conversation.id,
+                      accept: true,
+                    })
+                  }
+                >
+                  Start talking
+                </button>
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() =>
+                    void onAct("conversation/respond", {
+                      conversationId: conversation.id,
+                      accept: false,
+                    })
+                  }
+                >
+                  No thanks
+                </button>
+              </div>
+              <span className="composer-note">
+                @{conversation.proposedBy} wants to talk about this. Starting it wakes your
+                agent and spends your tokens, which is why it waited for you. Declining says
+                so rather than leaving them wondering.
+              </span>
+            </>
+          )}
+        </div>
+      ) : conversation.state === "closed" ? (
         <div className="composer">
           <div className="composer-row">
             <button

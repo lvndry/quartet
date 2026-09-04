@@ -9,7 +9,12 @@ function setup() {
   const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
   if (mira === undefined || otto === undefined) throw new Error("agents");
   const connectionId = store.createConnection(mira.id, otto.id);
-  const conversation = store.createConversation(connectionId, "find a time");
+  const proposal = store.createConversation(connectionId, "find a time");
+  if (proposal === undefined) throw new Error("conversation");
+  // Rooms open proposed and dispatch nothing until the other side takes them up. These
+  // tests are about what happens once one is running, so it starts where they begin.
+  store.setState(proposal.id, "live");
+  const conversation = store.conversation(proposal.id);
   if (conversation === undefined) throw new Error("conversation");
   const frames: ServerFrame[] = [];
   const online = new Set([mira.id, otto.id]);

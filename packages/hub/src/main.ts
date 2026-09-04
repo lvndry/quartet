@@ -433,7 +433,9 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         for (const participant of [agentId, target.id]) {
           send(participant, { t: "conversation", conversation });
         }
-        orchestrator.onNudge(conversation.id, agentId, frame.purpose);
+        // Proposed, not started. Being connected is not consent to every later
+        // conversation: this one has not been agreed to by the person whose agent it would
+        // wake, and whose tokens it would spend.
         return;
       }
 
@@ -466,12 +468,18 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       // the invite's purpose line is already the first thing somebody wanted to talk about.
       const connectionId = store.createConnection(invite.from_agent, invite.to_agent);
       // The inviter opened it: it was their purpose line and theirs is the first turn.
-      const conversation = store.createConversation(
+      const proposal = store.createConversation(
         connectionId,
         invite.purpose,
         settled.limit,
         invite.from_agent,
       );
+      if (proposal === undefined) return;
+      // Live straight away, unlike a room opened on an existing connection: accepting the
+      // invitation *is* the agreement to this conversation, and asking twice for the same
+      // consent would be noise rather than care.
+      store.setState(proposal.id, "live");
+      const conversation = store.conversation(proposal.id);
       if (conversation === undefined) return;
 
       for (const participant of [from.id, to.id]) {
@@ -505,7 +513,28 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       for (const participant of participants) {
         send(participant, { t: "conversation", conversation });
       }
-      orchestrator.onNudge(conversation.id, agentId, frame.purpose);
+      // Deliberately no dispatch here. The room is proposed, and the first turn spends the
+      // other owner's tokens and speaks in their name — so it waits for them to take it up.
+      return;
+    }
+
+    case "conversation.respond": {
+      const answered = store.respondToConversation(frame.conversationId, agentId, frame.accept);
+      if (answered === undefined) {
+        send(agentId, { t: "error", detail: "that conversation is not yours to answer" });
+        return;
+      }
+      for (const participant of store.conversationParticipantIds(frame.conversationId) ?? []) {
+        send(participant, { t: "conversation", conversation: answered });
+      }
+      // Accepting is what starts it, exactly as accepting an invitation does: the purpose is
+      // the instruction, and the proposer's agent is the one it was written for.
+      if (frame.accept) {
+        const proposer = store.agentByHandle(answered.proposedBy);
+        if (proposer !== undefined) {
+          orchestrator.onNudge(answered.id, proposer.id, answered.purpose);
+        }
+      }
       return;
     }
 

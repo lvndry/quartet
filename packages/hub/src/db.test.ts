@@ -572,3 +572,84 @@ describe("an agent that has said goodbye", () => {
     expect(store.bowedOut(conversation.id)).toEqual([]);
   });
 });
+
+describe("agreeing to a conversation", () => {
+  it("opens a room proposed, dispatching nothing yet", () => {
+    const store = new HubStore(":memory:");
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    if (mira === undefined || otto === undefined) throw new Error("agents");
+    const connectionId = store.createConnection(mira.id, otto.id);
+
+    const room = store.createConversation(connectionId, "review the lease", undefined, mira.id);
+    expect(room?.state).toBe("proposed");
+    expect(room?.proposedBy).toBe("mira");
+  });
+
+  it("goes live when the other side takes it up", () => {
+    const store = new HubStore(":memory:");
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    if (mira === undefined || otto === undefined) throw new Error("agents");
+    const connectionId = store.createConnection(mira.id, otto.id);
+    const room = store.createConversation(connectionId, "review the lease", undefined, mira.id);
+    if (room === undefined) throw new Error("room");
+
+    expect(store.respondToConversation(room.id, otto.id, true)?.state).toBe("live");
+  });
+
+  it("refuses to let the proposer answer their own proposal", () => {
+    // Otherwise the approval is decorative: whoever opened the room could wake the other
+    // side's agent by accepting on their behalf.
+    const store = new HubStore(":memory:");
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    if (mira === undefined || otto === undefined) throw new Error("agents");
+    const connectionId = store.createConnection(mira.id, otto.id);
+    const room = store.createConversation(connectionId, "review the lease", undefined, mira.id);
+    if (room === undefined) throw new Error("room");
+
+    expect(store.respondToConversation(room.id, mira.id, true)).toBeUndefined();
+    expect(store.conversation(room.id)?.state).toBe("proposed");
+  });
+
+  it("closes a room that was turned down, rather than losing it", () => {
+    // The proposer is owed the answer. A room that vanished would read as a bug on their end.
+    const store = new HubStore(":memory:");
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    if (mira === undefined || otto === undefined) throw new Error("agents");
+    const connectionId = store.createConnection(mira.id, otto.id);
+    const room = store.createConversation(connectionId, "review the lease", undefined, mira.id);
+    if (room === undefined) throw new Error("room");
+
+    expect(store.respondToConversation(room.id, otto.id, false)?.state).toBe("closed");
+  });
+
+  it("ignores a second answer to a room already decided", () => {
+    const store = new HubStore(":memory:");
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    if (mira === undefined || otto === undefined) throw new Error("agents");
+    const connectionId = store.createConnection(mira.id, otto.id);
+    const room = store.createConversation(connectionId, "review the lease", undefined, mira.id);
+    if (room === undefined) throw new Error("room");
+    store.respondToConversation(room.id, otto.id, true);
+
+    expect(store.respondToConversation(room.id, otto.id, false)).toBeUndefined();
+    expect(store.conversation(room.id)?.state).toBe("live");
+  });
+
+  it("refuses somebody who is not in the room at all", () => {
+    const store = new HubStore(":memory:");
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    const nia = store.createAgent({ handle: "nia", displayName: "Nia" });
+    if (mira === undefined || otto === undefined || nia === undefined) throw new Error("agents");
+    const connectionId = store.createConnection(mira.id, otto.id);
+    const room = store.createConversation(connectionId, "review the lease", undefined, mira.id);
+    if (room === undefined) throw new Error("room");
+
+    expect(store.respondToConversation(room.id, nia.id, true)).toBeUndefined();
+  });
+});

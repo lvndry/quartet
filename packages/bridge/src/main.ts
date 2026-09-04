@@ -13,15 +13,16 @@
 
 import { dirname, join } from "node:path";
 import { signClaim, tag, type Keypair } from "@quartet/identity";
+import { AgentAdmin } from "./agent-admin";
 import { Attestor } from "./attest";
 import { Bridge } from "./bridge";
 import { loadConfig, saveConfig, type QuartetConfig } from "./config";
 import { loadIdentity } from "./identity";
 import { getDataDirectory, identityPath, setDataDirectory } from "./paths";
 import {
+  agentIdFor,
   daemonReachable,
   ensureJazzWebhook,
-  jazzConfigPath,
   webhookConfigured,
   webhookTokenEnvVar,
 } from "./jazz";
@@ -228,8 +229,14 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
     // Whichever agent this webhook already names, unless a flag overrides it. A webhook
     // with no agent recorded is a broken setup rather than a default to fill in, so that
     // asks instead of writing a placeholder nothing can run.
-    const existing = argValue("agent") ?? (await agentIdFor(config.daemon.webhook));
-    const agentId = existing ?? (await chooseAgent(config.daemon.url));
+    const recorded = await agentIdFor(config.daemon.webhook);
+    // An `--agent` flag goes through the same check as one typed at setup: it names an agent
+    // this daemon has, or connect stops. Writing it unchecked pointed the webhook at nothing
+    // and only failed at the first turn, long after the command said it had succeeded.
+    const agentId =
+      argValue("agent") !== undefined || recorded === undefined
+        ? await chooseAgent(config.daemon.url)
+        : recorded;
     if (agentId === undefined) return undefined;
     const refreshed = await ensureJazzWebhook({
       webhookName: config.daemon.webhook,
@@ -318,43 +325,6 @@ async function resolveOrMintToken(webhookName: string): Promise<string | undefin
   return token;
 }
 
-/**
- * The agent a webhook already points at, so refreshing its prompt leaves that alone.
- *
- * `undefined` when there is nothing recorded, which the caller turns into a question. It
- * used to answer "default" — a persona name that matches no agent — so a webhook missing
- * its agent was quietly rewritten to point at one that does not exist.
- */
-async function agentIdFor(webhookName: string): Promise<string | undefined> {
-  const file = Bun.file(jazzConfigPath());
-  if (!(await file.exists())) return undefined;
-  const config = (await file.json().catch(() => ({}))) as {
-    webhooks?: { name?: string; agentId?: string }[];
-  };
-  const entry = config.webhooks?.find((webhook) => webhook.name === webhookName);
-  const agentId = entry?.agentId;
-  return typeof agentId === "string" && agentId.length > 0 ? agentId : undefined;
-}
-
-/**
- * What jazz says this webhook's agent is running, for the app header.
- *
- * Best-effort: an older jazz without `GET /agents`, a daemon that is not up yet, or a
- * webhook with no agent recorded on file all just mean the header omits the line rather
- * than the app failing to start over it.
- */
-async function currentModel(daemon: QuartetConfig["daemon"]): Promise<string | undefined> {
-  if (daemon === undefined) return undefined;
-  const agentId = await agentIdFor(daemon.webhook);
-  if (agentId === undefined) return undefined;
-  const listing = await fetchJazzAgents(daemon.url);
-  if (listing.kind !== "ok") return undefined;
-  const agent = listing.agents.find((candidate) => candidate.id === agentId);
-  if (agent === undefined || (agent.provider === undefined && agent.model === undefined)) {
-    return undefined;
-  }
-  return describeModel(agent);
-}
 
 /**
  * Whether the hub is answering right now.
@@ -378,6 +348,28 @@ async function hubReachable(hubUrl: string): Promise<boolean> {
     return body?.ok === true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Start the app server, or say which port is taken and stop.
+ *
+ * Only reached with `mayMoveUp` false, where the port was named on the command line: there
+ * is nowhere else to serve, and a bridge answering on a port its operator did not ask for
+ * is worse than one that did not start.
+ */
+function startLocalServerOrExit(
+  options: Parameters<typeof startLocalServer>[0],
+): ReturnType<typeof startLocalServer> {
+  try {
+    return startLocalServer(options);
+  } catch (error) {
+    if ((error as { code?: string }).code !== "EADDRINUSE") throw error;
+    const port = String(options.port);
+    console.error(`\n  ! something is already listening on port ${port}.`);
+    console.error(`    Most likely another quartet — check with \`lsof -i :${port}\`. Stop it, or`);
+    console.error("    pass a different --port.\n");
+    process.exit(1);
   }
 }
 
@@ -434,9 +426,12 @@ async function connect(): Promise<void> {
     );
   }
 
-  const myModel = await currentModel(daemon);
-  const bridge = new Bridge(hubUrl, daemon, new Attestor(keypair), undefined, myModel);
+  const bridge = new Bridge(hubUrl, daemon, new Attestor(keypair));
+  const agents = new AgentAdmin(daemon, (roster) => bridge.setJazzRoster(roster));
   await bridge.start();
+  // Not awaited: the roster is for the dashboard, and a daemon that is slow to answer should
+  // delay the agent list rather than the hub connection.
+  void agents.refresh();
 
   const localToken = config.localToken ?? crypto.randomUUID().replaceAll("-", "");
   if (config.localToken !== localToken) config = { ...config, localToken };
@@ -444,12 +439,21 @@ async function connect(): Promise<void> {
   const webRoot = join(dirname(Bun.fileURLToPath(import.meta.url)), "..", "..", "web", "dist");
   const built = await Bun.file(join(webRoot, "index.html")).exists();
 
-  const local = startLocalServer({
+  // A port that was asked for is the one to serve on. Stepping up to the next free one is
+  // for the port nobody named, where the alternative is a second agent on this host refusing
+  // to start until you find it a number.
+  const local = startLocalServerOrExit({
     port: preferredPort,
+    mayMoveUp: requestedPort === undefined,
     token: localToken,
     bridge,
+    agents,
     ...(built ? { webRoot } : {}),
   });
+
+  if (local.port !== preferredPort) {
+    console.log(`\n  port ${String(preferredPort)} was taken, so this agent took ${String(local.port)}.`);
+  }
 
   // Remember whichever port it settled on, so the next start comes back to the same URL
   // without a flag even when it had to move up from the preferred one.
@@ -484,7 +488,8 @@ function usage(): void {
       "",
       "  quartet connect            start the bridge and open the app",
       "    --hub <url>              which hub to join",
-      "    --port <n>               local port for the app (default 7777, next free one if taken)",
+      "    --port <n>               local port for the app — served or nothing (default 7777,",
+      "                             and only that default moves up when it is taken)",
       "    --data-dir <path>        this agent's config and record (overrides $QUARTET_HOME)",
       "    --agent <id>             which jazz agent represents you — also picks",
       "                             ~/.quartet/<id> as the data dir when --data-dir is not given",
