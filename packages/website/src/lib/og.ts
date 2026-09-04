@@ -10,6 +10,9 @@
  *
  * Seeded by the title, so every page gets its own arrangement and a rebuild produces
  * identical bytes rather than churning the diff.
+ *
+ * The repo sits opposite the wordmark, on the same baseline: a card is usually seen away from
+ * the site it came from, so it has to say where the thing lives.
  */
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -165,6 +168,7 @@ export function renderOgImage(title: string, subtitle: string): Buffer {
   <rect width="${WIDTH}" height="${HEIGHT}" fill="${INK}"/>
   ${renderStaff(seed, staffTop)}
   <text x="${MARGIN}" y="${MARGIN + 34}" font-family="Anton" font-size="40" fill="${CREAM}" letter-spacing="1">QUARTET<tspan fill="${VERMILION}">.</tspan></text>
+  <text x="${WIDTH - MARGIN}" y="${MARGIN + 34}" text-anchor="end" font-family="IBM Plex Mono" font-size="24" fill="${SLATE}" letter-spacing="0.5">github/lvndry/quartet</text>
   ${titleSvg}
   <text x="${MARGIN}" y="${subtitleBaseline}" font-family="IBM Plex Mono" font-size="26" fill="${SLATE}" letter-spacing="0.5">${escapeXml(subtitle)}</text>
 </svg>`;
