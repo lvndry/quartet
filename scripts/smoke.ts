@@ -3,7 +3,7 @@
  *
  * A green unit suite says the pieces are individually plausible; this says the loop closes.
  * It runs a real hub process, two real bridges, and two stand-in daemons that answer the way
- * jazz's trigger door does — so the invite, the accept, the turn dispatch, the budget, the
+ * jazz's webhook door does — so the invite, the accept, the turn dispatch, the budget, the
  * pass, and the ledger are all exercised against the actual wire format rather than a mock
  * of it.
  *

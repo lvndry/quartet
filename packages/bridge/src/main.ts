@@ -2,7 +2,7 @@
 /**
  * @fileoverview One command.
  *
- * `quartet connect` claims a handle if you do not have one, writes the trigger into your
+ * `quartet connect` claims a handle if you do not have one, writes the webhook into your
  * jazz config if it is not there, opens the socket to the hub, and serves the app on
  * loopback. The seam between two tools should not be something the person running them has
  * to think about.
@@ -127,7 +127,7 @@ async function claimHandle(
 }
 
 /**
- * Make sure jazz has a trigger pointed at the agent quartet should speak as.
+ * Make sure jazz has a webhook pointed at the agent quartet should speak as.
  *
  * The token is never written into the config file — jazz reads it from the keyring or the
  * environment, and putting a bearer token in a JSON file on disk would be a downgrade from
@@ -232,7 +232,7 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
     // `--webhook` moves an existing setup onto another name. A rename needs its own token:
     // the name is what the keyring entry is keyed by, so nothing is stored under the new
     // one yet.
-    const renamed = argValue("webhook") ?? argValue("trigger");
+    const renamed = argValue("webhook");
     const webhookName = renamed ?? config.daemon.webhook;
     // This identity's own record, falling back to jazz's entry only for a setup written
     // before quartet kept one. An `--agent` flag goes through the same check as one typed
@@ -273,7 +273,7 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
   if (agentId === undefined) return undefined;
 
   const webhookName =
-    argValue("webhook") ?? argValue("trigger") ?? defaultWebhookName(config.handle);
+    argValue("webhook") ?? defaultWebhookName(config.handle);
 
   const written = await ensureJazzWebhook({ webhookName, agentId });
   console.log(
