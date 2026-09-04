@@ -81,6 +81,21 @@ const CUT_MARKER = " […cut to fit]";
  */
 const MIN_KEPT_CHARS = 200;
 
+/**
+ * Cut to a length in code units without leaving half a character behind.
+ *
+ * A plain slice can land between the two halves of a surrogate pair, and the lone half that
+ * survives is not a character any more — it serialises as an escape nothing can render, so a
+ * message clipped mid-emoji ends in visible garbage. Only the tail can be affected, since
+ * this only ever cuts from the end.
+ */
+function sliceWholeCharacters(text: string, end: number): string {
+  const cut = text.slice(0, end);
+  const last = cut.charCodeAt(cut.length - 1);
+  const isUnpairedHighSurrogate = last >= 0xd800 && last <= 0xdbff;
+  return isUnpairedHighSurrogate ? cut.slice(0, -1) : cut;
+}
+
 function render(input: ComposeInput, lines: readonly TranscriptLine[], dropped: number): string {
   const earlier = input.earlier + dropped;
   const payload: TurnPayload = {
@@ -134,7 +149,7 @@ export function composeTurnPayload(input: ComposeInput, budgetBytes: number): Co
   if (only !== undefined) {
     let text = only.text;
     while (text.length > MIN_KEPT_CHARS) {
-      text = text.slice(0, Math.floor(text.length / 2));
+      text = sliceWholeCharacters(text, Math.floor(text.length / 2));
       const cut: TranscriptLine = { ...only, text: text + CUT_MARKER, truncated: true };
       payload = render(input, [cut], dropped);
       if (bytes(payload) <= budgetBytes) return { payload, dropped, truncated: 1 };

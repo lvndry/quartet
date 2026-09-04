@@ -92,6 +92,18 @@ describe("a turn payload", () => {
     expect(Buffer.byteLength(payload, "utf8")).toBeLessThanOrEqual(BUDGET);
   });
 
+  it("cuts a message full of emoji without leaving half a character behind", () => {
+    // A halving slice counts UTF-16 code units, so it can land between the two halves of a
+    // surrogate pair. The surviving half is not a character: it serialises as a lone escape
+    // and the cut message ends in something no reader can render.
+    // The leading character puts every pair on an odd offset, which is what makes a halving
+    // slice land inside one rather than neatly between two.
+    const { read } = compose({ transcript: [say(0, `x${"🎷".repeat(20_000)}`)] });
+
+    expect(read.transcript[0]?.truncated).toBe(true);
+    expect(read.transcript[0]?.text.isWellFormed()).toBe(true);
+  });
+
   it("stays inside the budget when the text is expensive to encode", () => {
     // Measured by serialising rather than estimated, because this is where an estimate is
     // wrong: every quote becomes two bytes and every emoji four.
