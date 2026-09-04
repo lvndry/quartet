@@ -52,6 +52,11 @@ import {
 } from "./ledger";
 import { logger } from "./log";
 import { composeTurnPayload } from "./prompt";
+import {
+  recordToolCall,
+  type DaemonProgressEvent,
+  type ToolCall,
+} from "./tool-log";
 
 /** What your own agent is doing right now, per conversation. Drives the UI's live states. */
 export type Activity =
@@ -104,6 +109,13 @@ export interface BridgeState {
   readonly atStart: Record<string, boolean>;
   readonly asides: Record<string, Aside[]>;
   readonly activity: Record<string, Activity>;
+  /**
+   * What your own agent's current turn has actually done, per conversation.
+   *
+   * Never leaves this machine: the hub is told a tool's name and nothing else. See
+   * `ToolCall`.
+   */
+  readonly toolCalls: Record<string, readonly ToolCall[]>;
   /** Everyone in each room but you. Empty until the hub says otherwise. */
   readonly presence: Record<string, PeerPresence[]>;
   readonly ledger: LedgerEntry[];
@@ -167,6 +179,7 @@ export class Bridge {
   private readonly atStart = new Map<string, boolean>();
   private readonly asides = new Map<string, Aside[]>();
   private readonly activity = new Map<string, Activity>();
+  private readonly toolCalls = new Map<string, readonly ToolCall[]>();
   private readonly presence = new Map<string, PeerPresence[]>();
   private ledger: LedgerEntry[] = [];
   private lastError: string | undefined;
@@ -272,6 +285,7 @@ export class Bridge {
       atStart: Object.fromEntries(this.atStart),
       asides: Object.fromEntries(this.asides),
       activity: Object.fromEntries(this.activity),
+      toolCalls: Object.fromEntries(this.toolCalls),
       presence: Object.fromEntries(this.presence),
       ledger: this.ledger,
       verdicts: Object.fromEntries(this.verdicts),
@@ -608,6 +622,7 @@ export class Bridge {
         this.messages.delete(frame.conversationId);
         this.presence.delete(frame.conversationId);
         this.activity.delete(frame.conversationId);
+        this.toolCalls.delete(frame.conversationId);
         this.atStart.delete(frame.conversationId);
         this.publish();
         return;
@@ -771,6 +786,8 @@ export class Bridge {
       steered: steer !== undefined ? "yes" : undefined,
     });
     this.activity.set(conversationId, { state: "thinking", since: startedAt });
+    // One turn, one log. What the last turn did is answered by the message it produced.
+    this.toolCalls.delete(conversationId);
     this.publish();
     this.startBeating(conversationId);
 
@@ -877,30 +894,42 @@ export class Bridge {
    * Returns whether the key was live, so the caller can refuse an unknown one rather than
    * accept anything that arrives on the port.
    */
-  onDaemonProgress(key: string, event: { kind?: string; toolName?: string }): boolean {
+  onDaemonProgress(key: string, event: DaemonProgressEvent): boolean {
     const conversationId = this.progressKeys.get(key);
     if (conversationId === undefined) return false;
 
-    const running = this.activity.get(conversationId);
-    if (running?.state !== "thinking") return true;
-
-    // The daemon just proved it is still alive — push the idle deadline back out.
+    // The daemon just proved it is still alive — push the idle deadline back out. Done
+    // before the activity check, because a run parked on an approval is still a live run.
     this.watchdogPokes.get(conversationId)?.();
 
     const tool = typeof event.toolName === "string" ? event.toolName : undefined;
+    if (tool === undefined) return true;
+    this.toolCalls.set(
+      conversationId,
+      recordToolCall(this.toolCalls.get(conversationId) ?? [], event),
+    );
+
+    const running = this.activity.get(conversationId);
+    if (running?.state !== "thinking") {
+      this.publish();
+      return true;
+    }
+
     const doing =
-      event.kind === "approval-required" && tool !== undefined
+      event.kind === "approval-required"
         ? `waiting for you to approve ${tool}`
-        : event.kind === "tool-started" && tool !== undefined
+        : event.kind === "tool-started"
           ? tool
           : undefined;
     // A finished tool leaves the note as it was rather than blanking it: the next thing is
-    // usually the model thinking again, and flicking to nothing reads as a stall.
-    if (doing === undefined) return true;
-
-    this.activity.set(conversationId, { ...running, doing });
+    // usually the model thinking again, and flicking to nothing reads as a stall. The log
+    // has the result either way, so holding the line loses nothing.
+    this.activity.set(conversationId, doing === undefined ? running : { ...running, doing });
     this.publish();
-    // The other side gets it too, on the heartbeat that already re-arms the deadline.
+    if (doing === undefined) return true;
+    // The other side gets the name, on the heartbeat that already re-arms the deadline.
+    // Only the name: `event.result` is output from this machine, and a room is not the
+    // place for it. See `ToolCall`.
     this.send({ t: "progress", conversationId, note: doing });
     return true;
   }

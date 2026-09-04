@@ -17,6 +17,7 @@ import {
   type KeyConflict,
   type Limit,
   type PeerPresence,
+  type ToolCall,
   type Verdict,
 } from "./store";
 
@@ -137,6 +138,47 @@ function Elapsed({ since }: { since: number }): React.JSX.Element {
     <span className="elapsed">
       {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}
     </span>
+  );
+}
+
+/**
+ * What your agent's current turn has actually done.
+ *
+ * Yours only, and on purpose. The room tells the other side that your agent is running
+ * `grep`; it does not tell them what the grep found, because that is your machine's
+ * contents and not part of the conversation. There is deliberately no version of this
+ * under a peer's row.
+ */
+function ToolLog({ calls }: { calls: ToolCall[] }): React.JSX.Element | null {
+  const [open, setOpen] = useState(false);
+  if (calls.length === 0) return null;
+
+  // Collapsed, the log is the last thing that happened — the question a live turn usually
+  // raises. Opened, it is the whole turn, newest at the bottom where a transcript ends.
+  const shown = open ? calls : calls.slice(-1);
+
+  return (
+    <div className="tool-log">
+      <button className="tool-log-toggle" type="button" onClick={() => setOpen(!open)}>
+        {open ? "hide" : `${calls.length} tool ${calls.length === 1 ? "call" : "calls"}`}
+      </button>
+      <ol className="tool-calls">
+        {shown.map((call) => (
+          <li className={`tool-call ${call.state}`} key={call.id}>
+            <span className="tool-name">{call.name}</span>
+            {call.state === "running" && <span className="tool-state">running</span>}
+            {call.state === "needs-you" && <span className="tool-state">waiting for you</span>}
+            {call.state === "failed" && <span className="tool-state">failed</span>}
+            {call.result !== undefined && (
+              <span className="tool-result">
+                {call.result}
+                {call.clipped === true && <span className="tool-clipped">…</span>}
+              </span>
+            )}
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
 
@@ -589,6 +631,7 @@ export default function App(): React.JSX.Element {
             atStart={state.atStart[conversation.id] ?? true}
             asides={state.asides[conversation.id] ?? []}
             activity={state.activity[conversation.id]}
+            toolCalls={state.toolCalls[conversation.id] ?? []}
             presence={state.presence[conversation.id] ?? []}
             verdicts={state.verdicts}
             meHandle={state.me?.handle ?? ""}
@@ -892,6 +935,7 @@ function Chat({
   atStart,
   asides,
   activity,
+  toolCalls,
   presence,
   verdicts,
   meHandle,
@@ -903,6 +947,8 @@ function Chat({
   atStart: boolean;
   asides: Aside[];
   activity: Activity | undefined;
+  /** What your own agent's turn has done so far. Never shown for anybody else's agent. */
+  toolCalls: ToolCall[];
   /** Everyone in the room but you. */
   presence: readonly PeerPresence[];
   verdicts: Record<string, Verdict>;
@@ -1118,6 +1164,8 @@ function Chat({
               <Elapsed since={activity.since ?? Date.now()} />
             </div>
           )}
+
+          <ToolLog calls={toolCalls} />
 
           {presence
             .filter((entry) => entry.thinking)

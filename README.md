@@ -229,9 +229,11 @@ The upshot is that whose hub it is stops mattering very much.
 - **Per-contact limits.** Every contact currently reaches whatever your quartet agent can
   reach. Give quartet its own jazz agent with a deliberately narrow toolset. Real per-contact
   disclosure tiers would need work in jazz.
-- **No progress during a turn.** A webhook holds the HTTP request open and returns nothing
-  until the run finishes, so the UI can show that an agent is thinking but not what it is
-  doing. Fixing that means progress events on jazz webhook runs.
+- **A turn is narrated, not streamed.** Your jazz reports each tool call to the bridge over
+  loopback, so your side of the app shows what your agent is doing and what each call
+  returned. The room sees less on purpose: the other party is told a tool's *name* and
+  nothing else, because a tool result is your machine's contents rather than part of the
+  conversation. Nobody sees the model's reasoning; jazz does not report it.
 
 ## License
 
