@@ -373,9 +373,75 @@ function startLocalServerOrExit(
   }
 }
 
+const JAZZ_INSTALL_COMMAND =
+  "curl -fsSL https://github.com/lvndry/jazz/releases/latest/download/install.sh | bash";
+
+/**
+ * Whether jazz can be run at all, before asking it anything.
+ *
+ * A daemon that will not answer and a `jazz` that does not exist look the same to
+ * `fetchJazzAgents` — both are "unreachable" — but they need different advice, and only this
+ * one is fixed by installing something rather than starting something already there.
+ *
+ * `--jazz` answers the question by itself: somebody who says where jazz is has told us it is
+ * there, and that command can be a whole shell invocation rather than a name on PATH, so
+ * there is nothing here to look up and nothing to install.
+ */
+function isJazzInstalled(): boolean {
+  if (argValue("jazz") !== undefined) return true;
+  return Bun.which("jazz") !== null;
+}
+
+/**
+ * Installs jazz if it is missing, with the person's say-so first.
+ *
+ * jazz is quartet's own sibling project, not a stranger's script, and this is the exact
+ * command its own README already tells somebody to run by hand — automating it is removing a
+ * copy-paste, not adding a new trust boundary. It still asks first and runs the installer
+ * with its own output visible, rather than downloading and executing anything unannounced:
+ * "nothing here touches your machine without saying so first" applies to installing jazz the
+ * same as it applies to rewriting its config.
+ */
+async function ensureJazzInstalled(): Promise<boolean> {
+  if (isJazzInstalled()) return true;
+
+  console.log("\n  ! jazz isn't installed.\n");
+  console.log(`    Install it now with:\n    ${JAZZ_INSTALL_COMMAND}\n`);
+
+  if (!hasFlag("yes")) {
+    const answer = await prompt("    Install it? [Y/n] ");
+    if (answer.trim().toLowerCase().startsWith("n")) {
+      console.log(`\n    Run that yourself when you're ready:\n    ${JAZZ_INSTALL_COMMAND}\n`);
+      return false;
+    }
+  }
+
+  console.log("\n  installing jazz…\n");
+  const install = Bun.spawn(["bash", "-c", JAZZ_INSTALL_COMMAND], {
+    stdout: "inherit",
+    stderr: "inherit",
+    stdin: "inherit",
+  });
+  const exitCode = await install.exited;
+
+  if (exitCode !== 0) {
+    console.error(`\n  ! that installer exited with code ${String(exitCode)}. Run it yourself to see why:`);
+    console.error(`    ${JAZZ_INSTALL_COMMAND}\n`);
+    return false;
+  }
+  if (!isJazzInstalled()) {
+    console.error("\n  ! jazz installed but is not on PATH yet — open a new shell and run this again.\n");
+    return false;
+  }
+  console.log("\n  ✓ jazz installed\n");
+  return true;
+}
+
 async function connect(): Promise<void> {
   const level = parseLogLevel(argValue("log-level"));
   if (level !== undefined) setLogLevel(level);
+
+  if (!(await ensureJazzInstalled())) process.exit(1);
 
   let config = await loadConfig();
   const requestedPort = argValue("port");
@@ -500,6 +566,7 @@ function usage(): void {
       "    --token <secret>         supply the webhook token instead of generating one",
       "    --jazz <command>         how to invoke jazz (default: jazz)",
       `    --log-level <level>      ${LOG_LEVELS.join(" | ")} (default: info, or $QUARTET_LOG)`,
+      "    --yes                    install jazz without asking, if it's missing",
       "",
       "  quartet info                what this identity actually is, right now",
       "    --agent <id>               check a specific jazz agent instead of the one on file",
