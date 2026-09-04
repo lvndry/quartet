@@ -58,6 +58,18 @@ export function identityPath(): string {
   return join(getDataDirectory(), "identity.json");
 }
 
+/**
+ * The keys this agent's words are sealed to, kept apart from `identity.json` on purpose.
+ *
+ * The identity key never changes and is never rewritten; a sealing key rotates, and every
+ * key it ever retires has to be kept, because the ciphertext sealed to it does not re-seal
+ * itself. Two lifetimes, two files. Losing this one loses the history rather than the handle:
+ * the hub holds only what nothing here can now open.
+ */
+export function sealingPath(): string {
+  return join(getDataDirectory(), "sealing.json");
+}
+
 /** Which key each handle is known by here. Not a secret — losing it costs a warning, not safety. */
 export function knownPath(): string {
   return join(getDataDirectory(), "known.json");

@@ -18,6 +18,8 @@ import { Attestor } from "./attest";
 import { Bridge } from "./bridge";
 import { loadConfig, saveConfig, type QuartetConfig } from "./config";
 import { loadIdentity } from "./identity";
+import { loadSealingKeys } from "./sealing-keys";
+import { Sealer } from "./sealer";
 import { getDataDirectory, identityPath, setDataDirectory } from "./paths";
 import {
   agentIdFor,
@@ -494,7 +496,13 @@ async function connect(): Promise<void> {
     );
   }
 
-  const bridge = new Bridge(hubUrl, daemon, new Attestor(keypair));
+  const sealingKeys = await loadSealingKeys();
+  if ("error" in sealingKeys) {
+    console.error(`\n${sealingKeys.error}`);
+    process.exit(1);
+  }
+
+  const bridge = new Bridge(hubUrl, daemon, new Attestor(keypair), new Sealer(sealingKeys));
   const agents = new AgentAdmin(daemon, (roster) => bridge.setJazzRoster(roster));
   await bridge.start();
   // Not awaited: the roster is for the dashboard, and a daemon that is slow to answer should

@@ -1,13 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import { Attestor } from "./attest";
 import { Bridge } from "./bridge";
-import { generateKeypair } from "@quartet/identity";
+import { Sealer } from "./sealer";
+import { generateKeypair, generateSealingKeypair } from "@quartet/identity";
 
 function bridge(): Bridge {
   return new Bridge(
     "http://127.0.0.1:1",
     { url: "http://127.0.0.1:1", webhook: "quartet", token: "t" },
     new Attestor(generateKeypair()),
+    new Sealer({ current: generateSealingKeypair(), retired: [] }),
   );
 }
 
