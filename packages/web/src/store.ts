@@ -8,178 +8,33 @@
  */
 
 import { useSyncExternalStore } from "react";
-import type { Agent, Connection, Conversation, DirectoryEntry, Invite, Message, PeerPresence } from "@quartet/protocol";
+import type { BridgeState } from "@quartet/protocol";
 export type { Limit, PeerPresence } from "@quartet/protocol";
 
-export interface Activity {
-  state: "idle" | "thinking" | "needs-you";
-  since?: number;
-  /** What the daemon last said the agent was doing. A tool name, not a thought. */
-  doing?: string;
-  runId?: string;
-  pending?:
-    | { kind: "approval"; message?: string }
-    | {
-        kind: "question";
-        question: {
-          question: string;
-          suggestions: { value: string; label?: string; description?: string }[];
-          allowCustom: boolean;
-          allowMultiple: boolean;
-        };
-      };
-}
-
 /**
- * One tool call your own agent's current turn made. Mirrors the bridge's `ToolCall`.
+ * Every shape in a snapshot, from the one place it is defined.
  *
- * Only ever your own: the other side of a conversation reports a tool's name through
- * `PeerPresence.doing` and nothing else, so there is no peer equivalent of this.
+ * These used to be re-declared here by hand, so a field renamed on one side only would have
+ * rendered `undefined` rather than failing to compile. `Conflict` keeps the app's own name
+ * for it, which reads better beside `keyConflicts`.
  */
-export interface ToolCall {
-  id: string;
-  name: string;
-  state: "running" | "ok" | "failed" | "needs-you";
-  /** What the call returned, already clipped by the bridge. */
-  result?: string;
-  /** Whether `result` is where the output was cut rather than where it ended. */
-  clipped?: boolean;
-  at: number;
-}
-
-export interface Aside {
-  at: string;
-  conversationId: string;
-  text: string;
-}
-
-/** What this machine concluded about one message's signature. Mirrors the bridge's verdict. */
-export type Verdict =
-  | { state: "signed" }
-  | { state: "unsigned" }
-  | { state: "broken"; why: string };
-
-/** A handle whose key changed since this machine first saw it. */
-export interface KeyConflict {
-  handle: string;
-  pinned: string;
-  offered: string;
-}
-
-export interface LedgerEntry {
-  id: string;
-  at: string;
-  conversationId: string;
-  to: string;
-  text: string;
-  steer?: string;
-}
-
-/** One of this machine's jazz agents, as the roster lists it. */
-export interface JazzAgent {
-  id: string;
-  name: string;
-  description?: string;
-  provider?: string;
-  model?: string;
-  persona?: string;
-  tools: string[];
-}
-
-export type JazzProblem = "unreachable" | "unauthorized" | "unsupported" | "failed";
-
-/** The fixed vocabularies the editor's menus are built from. */
-export interface JazzCatalog {
-  providers: string[];
-  webSearchProviders: string[];
-  reasoningEfforts: string[];
-  /** Jobs an agent can bind a companion for, each `"<action>:<modality>"`. */
-  companionRoles: string[];
-}
-
-/**
- * One model a provider serves, with the flags that decide which fields mean anything.
- *
- * A temperature input on a model that ignores temperature is a control that silently does
- * nothing — and every current Claude reasoning model reports `supportsTemperature: false`.
- */
-export interface JazzModel {
-  id: string;
-  displayName?: string;
-  supportsTools: boolean;
-  supportsTemperature: boolean;
-  isReasoningModel: boolean;
-  inputPricePerMillion?: number;
-  outputPricePerMillion?: number;
-}
-
-export interface JazzPersona {
-  id: string;
-  name: string;
-  description: string;
-  tone?: string;
-  style?: string;
-}
-
-/**
- * The tools an agent could be given.
- *
- * `defaultTools` is the load-bearing part: `config.tools` only ever *adds* to the built-in
- * bundle, so a checkbox beside a default tool would imply a permission it does not control.
- * Turning one of those off is `deniedTools`, a different field.
- */
-export interface JazzTools {
-  tools: string[];
-  categories: Record<string, string[]>;
-  defaultTools: string[];
-}
-
-/** One agent in full, for the editor. Api keys are never served, only which providers set one. */
-export interface JazzAgentDetail {
-  id: string;
-  name: string;
-  description?: string;
-  persona: string;
-  provider: string;
-  model: string;
-  tools: string[];
-  config: Record<string, unknown>;
-  apiKeyProviders: string[];
-}
-
-export interface BridgeState {
-  connectedToHub: boolean;
-  me?: Agent;
-  /** `provider/model` for the jazz agent answering on this machine. */
-  myModel?: string;
-  /** This machine's jazz agents. Not hub agents — those are `directory`. */
-  jazzAgents: JazzAgent[];
-  /** Which of them speaks for you here. */
-  myAgentId?: string;
-  jazzProblem?: JazzProblem;
-  /** The menus the agent editor is built from. Absent when this jazz cannot serve them. */
-  jazzCatalog?: JazzCatalog;
-  connections: Connection[];
-  conversations: Conversation[];
-  invites: Invite[];
-  directory: DirectoryEntry[];
-  messages: Record<string, Message[]>;
-  /** Whether the oldest message held for a room really is the room's first. */
-  atStart: Record<string, boolean>;
-  asides: Record<string, Aside[]>;
-  activity: Record<string, Activity>;
-  /** What your own agent's current turn has done, per conversation. Yours alone. */
-  toolCalls: Record<string, ToolCall[]>;
-  /** Everyone in each room but you. */
-  presence: Record<string, PeerPresence[]>;
-  ledger: LedgerEntry[];
-  verdicts: Record<string, Verdict>;
-  keyConflicts: KeyConflict[];
-  /** Readable short form of each key, by did. Derived by the bridge, never by the page. */
-  fingerprints: Record<string, string>;
-  keyStoreProblem?: string;
-  lastError?: string;
-}
+export type {
+  Activity,
+  Aside,
+  BridgeState,
+  HumanQuestion,
+  JazzAgent,
+  JazzAgentDetail,
+  JazzCatalog,
+  JazzModel,
+  JazzPersona,
+  JazzProblem,
+  JazzTools,
+  LedgerEntry,
+  ToolCall,
+  Verdict,
+} from "@quartet/protocol";
+export type { Conflict as KeyConflict } from "@quartet/protocol";
 
 const EMPTY: BridgeState = {
   connectedToHub: false,
@@ -327,11 +182,9 @@ export interface Refusal {
 /**
  * Ask the bridge for something and get the answer back.
  *
- * {@link call} is for actions and throws the body away on purpose, because the state snapshot
- * is how a result arrives. This is for the few reads that are deliberately *not* in the
- * snapshot — a provider's model list, the persona catalogue, one agent's whole config —
- * because pushing them to every browser on every change would cost far more than asking for
- * them when a form is actually open.
+ * {@link call} throws the body away, because the snapshot is how a result arrives. This is for
+ * the few reads deliberately kept out of the snapshot — model lists, catalogues, one agent's
+ * config — which are cheaper to fetch when a form is open than to push to every browser.
  */
 export async function read<T>(
   path: string,

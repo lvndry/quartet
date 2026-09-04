@@ -1,26 +1,17 @@
 /**
  * @fileoverview The jazz agents on this machine, so setup can offer a choice.
  *
- * Asked of the daemon over `GET /agents`, which is the only thing that actually knows. The
- * first version of this read `~/.jazz/agents/*.json` directly and worked out where they
- * lived from `storage.path` — coupling quartet to jazz's on-disk layout for a question jazz
- * is perfectly able to answer, and wrong the moment that layout changes.
+ * Asked of the daemon over `GET /agents`, which is the only thing that actually knows —
+ * reading `~/.jazz/agents/*.json` coupled quartet to jazz's on-disk layout for a question
+ * jazz can answer itself.
  *
- * This replaces a free-text prompt whose default was the string "default", which is a
- * *persona* name in jazz and matches no agent id or name on a normal machine. Pressing enter
- * therefore wrote a webhook pointing at an agent that does not exist, and nothing said so
- * until turns started failing — long after setup looked fine.
+ * It replaces a free-text prompt whose default, "default", is a *persona* name and matches no
+ * agent on a normal machine: pressing enter wrote a webhook pointing at nothing, and nothing
+ * said so until turns started failing.
  */
 
-export interface JazzAgent {
-  readonly id: string;
-  readonly name: string;
-  readonly description?: string;
-  readonly provider?: string;
-  readonly model?: string;
-  readonly persona?: string;
-  readonly tools: readonly string[];
-}
+import type { JazzAgent } from "@quartet/protocol";
+export type { JazzAgent };
 
 /**
  * Why the agent list could not be had, in terms the wizard can act on.

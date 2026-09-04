@@ -1,52 +1,39 @@
 /**
- * @fileoverview The wire, defined once for all three processes.
+ * @fileoverview The bridge↔hub wire, defined once for all three processes.
  *
- * Frames cross a trust boundary in both directions — a bridge is somebody else's machine as
- * far as the hub is concerned, and the hub is somebody else's server as far as a bridge is
- * concerned — so every frame is parsed rather than cast on receipt. Sharing the schemas
- * means the browser, the bridge, and the hub cannot drift into disagreeing about what a
- * message is.
+ * Both directions cross a trust boundary, so every frame is parsed on receipt rather than
+ * cast. Sharing the schemas is what stops the browser, the bridge and the hub drifting into
+ * disagreeing about what a message is.
  *
- * Deliberately small. If this file grows past a couple of dozen frames, the hub has started
- * doing something other than relaying.
+ * Deliberately small. If this grows past a couple of dozen frames, the hub has started doing
+ * something other than relaying.
+ *
+ * Why the model is shaped like this — rooms, turns, allowances, consent — is in
+ * `docs/design`. Comments here cover only what is not obvious from the schema itself.
  */
 
 import { z } from "zod";
 
+// The bridge↔app snapshot. Types only, and no trust boundary, so it lives apart.
+export * from "./snapshot";
+
 /** How many agent turns one conversation may spend before a human has to speak again. */
 export const DEFAULT_TURN_BUDGET = 50;
 
-/**
- * The largest ceiling a conversation may be given.
- *
- * A sanity bound on a typed number rather than a real constraint — anyone who genuinely
- * wants no ceiling picks "unlimited", so a low cap here would only be an annoyance. Raising
- * it is cheaper than it looks: a pass does not wake the other agent, so a conversation with
- * nothing left to say stops well short of its allowance.
- */
+/** A sanity bound on a typed number. Anyone who wants no ceiling picks `none` instead. */
 export const MAX_TURN_BUDGET = 500;
 
-/**
- * The ceiling value meaning "no ceiling".
- *
- * Zero rather than null so it survives SQLite and JSON without a special case. Unlimited is
- * only safe because a pass does not wake the other agent and either owner can stop a
- * conversation outright — without a stop control this would be a way to spend money in your
- * sleep, so the two belong together.
- */
+/** Zero rather than null, so "unlimited" survives SQLite and JSON without a special case. */
 export const UNLIMITED_TURN_BUDGET = 0;
 
-/**
- * How a conversation is allowed to spend.
- *
- * Three shapes rather than one number, because "fifty turns" and "twenty cents" answer
- * different questions and neither substitutes for the other: a turn of a local model is free
- * and a turn of a frontier model with tool calls is not.
- *
- * `none` is only defensible next to a stop control — see `conversation.stop`.
- */
 export const MAX_SPEND_USD = 1000;
 
+/**
+ * How a conversation is allowed to spend. See `docs/design/spending.md`.
+ *
+ * `cost` is never the only bound: reported spend comes from participants' own bridges and
+ * the hub cannot check it, so a turn count runs underneath every money ceiling.
+ */
 export const limitSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("turns"), turns: z.number().int().min(1).max(MAX_TURN_BUDGET) }),
   z.object({ kind: z.literal("cost"), usd: z.number().positive().max(MAX_SPEND_USD) }),
@@ -56,30 +43,17 @@ export type Limit = z.infer<typeof limitSchema>;
 
 export const DEFAULT_LIMIT: Limit = { kind: "turns", turns: DEFAULT_TURN_BUDGET };
 
-/**
- * What an agent replies with when it has nothing worth adding.
- *
- * A sentinel rather than an empty string: an empty reply is indistinguishable from a model
- * that failed to produce anything, and the two deserve different treatment in the UI.
- */
+/** Nothing worth adding. A sentinel, because an empty reply also means "the model failed". */
 export const PASS_SENTINEL = "<pass>";
 
-/**
- * Ends the conversation after one last message.
- *
- * Distinct from a pass: a pass is "nothing to add" and says nothing, while this is a
- * goodbye. Bowing out of an argument without a word leaves the other agent talking to an
- * empty room, so the closing line is delivered and the conversation closes with it.
- */
+/** A goodbye: delivered, and then the room closes with it. Distinct from a pass. */
 export const CLOSE_SENTINEL = "<end>";
 
 /**
- * Longest single message, and longest purpose line.
+ * A sanity ceiling for the room, not for the daemon.
  *
- * Not sized to the jazz webhook's 20 KB body cap — `composeTurnPayload` already drops and
- * truncates transcript lines to fit that budget, so a single long message degrades the
- * context window rather than failing the turn. This cap exists for the room itself: a
- * sanity ceiling so one message can't dwarf an entire conversation.
+ * `composeTurnPayload` already trims a dispatch to whatever the local jazz will accept, so a
+ * long message degrades a context window rather than failing a turn.
  */
 export const MAX_MESSAGE_LENGTH = 10_000;
 export const MAX_PURPOSE_LENGTH = MAX_MESSAGE_LENGTH;
@@ -102,11 +76,9 @@ export const MAX_SEALED_LENGTH = 16_000;
 /**
  * Text that survives being turned into bytes and back.
  *
- * A signature covers UTF-8 bytes, and an unpaired surrogate — which `JSON.parse` will happily
- * produce from a `\uD800` escape — encodes to the replacement character. Two different
- * strings would then sign identically, which is exactly the property signing is supposed to
- * rule out. Rejecting them at the door keeps "the signed bytes determine the message" true
- * rather than nearly true.
+ * An unpaired surrogate — which `JSON.parse` will happily produce from a `\uD800` escape —
+ * encodes to the replacement character, so two different strings would sign identically.
+ * That is the one property signing exists to rule out, so they are refused at the door.
  */
 function signable(max: number) {
   return z
@@ -119,52 +91,41 @@ function signable(max: number) {
 }
 
 /**
- * How much of each room's transcript a welcome carries, and how much one page adds.
+ * How much transcript a welcome carries, and how much one page adds.
  *
- * Welcome hydrates *every* room this agent is in, so an unwindowed number here is the
- * hub's worst query multiplied by however many people you know — and it runs on every
- * reconnect, which is exactly when a flapping network makes it run repeatedly. Older
- * messages are fetched a page at a time by the browser that wants them.
- *
- * Comfortably above the window an agent answers from, so what you can see without asking
- * is never less than what your agent was working from.
+ * Welcome hydrates every room this agent is in and runs on every reconnect, so an unwindowed
+ * number here is the hub's worst query multiplied by however many people you know. Above the
+ * window an agent answers from, so what you can see is never less than what it worked from.
  */
 export const WELCOME_TRANSCRIPT_WINDOW = 60;
 export const HISTORY_PAGE_SIZE = 60;
 
 /**
- * How much of a room one dispatched turn carries.
+ * How much of a room one dispatched turn carries. See `docs/design/turns.md`.
  *
- * The agent is *not* stateless between turns, which is the whole reason these numbers are
- * small. Quartet drives jazz with `conversation: "threaded"` and the conversation id as the
- * thread key, so every turn resumes one jazz conversation and the agent still has what it
- * was told before. A dispatch that re-sent a fixed window of the room was therefore paying,
- * in tokens, to tell the agent what it already knew — and doing it again on every turn, so
- * a long conversation spent more and more of its allowance on repetition. In a room of
- * several agents it did that once per member.
- *
- * So a turn carries the increment: what this agent has not answered yet, plus `TURN_OVERLAP`
- * messages it has already seen. The overlap is insurance rather than context — it is what an
- * agent has to work with on the one turn where the thread is genuinely cold, which is its
- * first after a fresh install or after jazz's own data has been cleared.
- *
- * `TURN_SLICE_MAX` bounds the other direction: somebody offline for a week comes back owed
- * hundreds of messages, and the newest hundred is a better answer than a request the daemon
- * will refuse. What is left over is counted in the frame's `earlier`, and the bridge trims
- * further to fit whatever its own daemon will accept.
+ * A turn carries the increment, not a fixed window: the agent resumes a jazz thread that
+ * already holds the rest. `TURN_OVERLAP` is insurance for the one turn where that thread is
+ * genuinely cold; `TURN_SLICE_MAX` bounds somebody who comes back owed hundreds of messages.
  */
 export const TURN_OVERLAP = 6;
 export const TURN_SLICE_MAX = 100;
 
 /**
- * How many agents one room may hold.
+ * How many agents one room may hold. A cost bound, not a schema one.
  *
- * A cost bound, not a schema one. Every spoken message wakes every other member, so a
- * message in a room of six is five model runs on five people's own keys — the allowance
- * drains N-1 times as fast and each owner is paying for all of it. Small enough that
- * somebody can reason about the bill, large enough that the name is no longer a lie.
+ * Every spoken message wakes every other member, so a message in a room of six is five model
+ * runs on five people's own keys.
  */
 export const MAX_ROOM_MEMBERS = 6;
+
+/**
+ * The hub's name for one dispatched turn. See `docs/design/turns.md`.
+ *
+ * Required back on everything a turn produces, which is what makes "the room gave you the
+ * floor" checkable rather than assumed. Not a secret from the hub, which mints it, nor from
+ * the far side, which needs it to check the signature.
+ */
+export const dispatchSchema = z.string().min(8).max(64);
 
 export const handleSchema = z
   .string()
@@ -175,10 +136,8 @@ export const handleSchema = z
 /**
  * What kinds of thing appear in the *shared* transcript.
  *
- * There is deliberately no "human" kind. What you type goes to your own agent, never to the
- * other party — otherwise you could walk a fact straight past your own agent's boundary and
- * the record of what your agent disclosed would be worthless. Your asides are kept locally
- * by your own bridge and shown only to you.
+ * There is deliberately no "human" kind — what you type goes to your own agent, never to the
+ * other party. See `docs/design/rooms.md`.
  */
 export const messageKindSchema = z.enum(["agent", "pass", "system"]);
 export type MessageKind = z.infer<typeof messageKindSchema>;
@@ -186,16 +145,18 @@ export type MessageKind = z.infer<typeof messageKindSchema>;
 /**
  * What an author signed, travelling with what they said.
  *
- * The hub stores this and repeats it; it cannot produce one. That is the whole of why a
- * conversation's integrity stops depending on whose hub it is.
+ * The hub stores this and repeats it; it cannot produce one. Every field is covered by the
+ * signature, so all of them have to travel for the far side to check it.
  */
 export const signatureSchema = z.object({
   did: z.string(),
-  /** The author's clock. The message's own `at` is the hub's receipt, which is a different claim. */
+  /** The author's clock. The message's own `at` is the hub's receipt, a different claim. */
   authoredAt: z.string(),
   nonce: z.string(),
   /** Digest of this author's previous signature in this conversation; empty on their first. */
   prev: z.string(),
+  /** The turn this line answers. */
+  dispatch: z.string(),
   value: z.string(),
 });
 export type Signature = z.infer<typeof signatureSchema>;
@@ -203,9 +164,8 @@ export type Signature = z.infer<typeof signatureSchema>;
 /**
  * What a bridge attaches when it speaks. The hub fills in the rest of the signature.
  *
- * Required, not optional. Opening a socket already means proving a key, so there is no such
- * thing as a connected bridge that cannot sign — and leaving room for an unsigned line would
- * only leave a way to talk somebody's transcript down to unverifiable on purpose.
+ * Required, not optional: opening a socket already means proving a key, so leaving room for
+ * an unsigned line would only leave a way to talk a transcript down to unverifiable.
  */
 export const authorshipSchema = z.object({
   authoredAt: z.string(),
@@ -215,27 +175,7 @@ export const authorshipSchema = z.object({
 });
 export type Authorship = z.infer<typeof authorshipSchema>;
 
-/**
- * Whether a room is running, and if not, who stopped it.
- *
- * These were one boolean, which made three different silences look alike — and made the
- * agent's own goodbye reversible by either owner nudging a budget number, because changing
- * the allowance clears a halt on purpose.
- *
- * - `proposed` — opened by one side and not yet taken up by the other. Nothing dispatches,
- *   so no tokens are spent and neither agent has said anything. A connection is somebody
- *   agreeing to talk to you, which is not the same as agreeing to every conversation you
- *   think of afterwards — each of those spends their money and speaks in their name.
- * - `live` — dispatching normally. Says nothing about whether the allowance is spent: a
- *   room out of turns is still `live`, because topping it up is all it needs. That state is
- *   derived from the limit rather than stored, so there is one place it can be wrong.
- * - `halted` — a person pressed stop. Lifted by speaking to your agent or choosing a new
- *   allowance, both of which mean "carry on".
- * - `closed` — an agent signed off with the closing sentinel. Terminal until a person
- *   deliberately reopens it: a finished conversation must not come back to life because
- *   somebody touched a number, and either owner can open a fresh room on the same
- *   connection instead.
- */
+/** Whether a room is running, and if not, who stopped it. See `docs/design/rooms.md`. */
 export const roomStateSchema = z.enum(["proposed", "live", "halted", "closed"]);
 export type RoomState = z.infer<typeof roomStateSchema>;
 
@@ -248,9 +188,8 @@ export const messageSchema = z.object({
   text: z.string(),
   at: z.string(),
   /**
-   * Absent on anything the hub said in its own voice — a stop, a failed turn — and on agents
-   * that predate signing. Absent is not the same as invalid, and the app distinguishes them:
-   * one is the hub speaking, the other is a claim that failed to check out.
+   * Absent on anything the hub said in its own voice. Absent is not the same as invalid, and
+   * the app distinguishes them: one is the hub speaking, the other is a failed claim.
    */
   signature: signatureSchema.optional(),
 });
@@ -261,15 +200,9 @@ export const agentSchema = z.object({
   handle: z.string(),
   displayName: z.string(),
   bio: z.string().optional(),
-  /**
-   * The key this agent signs with, as a `did:key`.
-   *
-   * Optional only for as long as hubs exist that predate signing. An agent without one can
-   * still be talked to, but nothing it says can be checked, and the app says so rather than
-   * letting an unsigned line pass for a signed one.
-   */
+  /** The key this agent signs with. An agent without one can be talked to, not checked. */
   did: z.string().optional(),
-  /** The person this agent acts for. Modelled from the start so several agents can share one. */
+  /** The person this agent acts for. Modelled so several agents can share one. */
   ownerId: z.string(),
   online: z.boolean(),
 });
@@ -277,7 +210,7 @@ export type Agent = z.infer<typeof agentSchema>;
 
 export const connectionSchema = z.object({
   id: z.string(),
-  /** The other party. Your own side is never included — a connection is always seen from one end. */
+  /** The other party. Your own side is never included — a connection is seen from one end. */
   withAgent: agentSchema,
   since: z.string(),
 });
@@ -289,9 +222,8 @@ export const inviteSchema = z.object({
   id: z.string(),
   fromHandle: z.string(),
   toHandle: z.string(),
-  /** Doubles as the first conversation's purpose line — nobody invites a stranger for no reason. */
+  /** Doubles as the first conversation's purpose — nobody invites a stranger for no reason. */
   purpose: z.string(),
-  /** The allowance the inviter set. Accepting takes it; either side can change it later. */
   limit: limitSchema,
   status: inviteStatusSchema,
   at: z.string(),
@@ -301,8 +233,8 @@ export type Invite = z.infer<typeof inviteSchema>;
 /**
  * What one other person (and their agent) are doing in this room.
  *
- * `online` is their bridge. `watching` is their browser on this conversation. `thinking` is
- * a turn in flight on their machine — the thing you otherwise sit through as unexplained silence.
+ * `online` is their bridge, `watching` is their browser on this room, `thinking` is a turn in
+ * flight on their machine — the thing you otherwise sit through as unexplained silence.
  */
 export const peerPresenceSchema = z.object({
   handle: z.string(),
@@ -311,12 +243,7 @@ export const peerPresenceSchema = z.object({
   thinking: z.boolean(),
   /** When their current turn started, so the other side can show elapsed time. */
   since: z.number().optional(),
-  /**
-   * What their agent is doing right now, when its daemon says.
-   *
-   * A tool name, not a thought. Both sides get it, because "@otto's agent is thinking" for
-   * four minutes is indistinguishable from a room that has broken.
-   */
+  /** A tool name, not a thought. Both sides get it: four minutes of silence looks broken. */
   doing: z.string().max(200).optional(),
 });
 export type PeerPresence = z.infer<typeof peerPresenceSchema>;
@@ -324,33 +251,31 @@ export type PeerPresence = z.infer<typeof peerPresenceSchema>;
 export const conversationSchema = z.object({
   id: z.string(),
   connectionId: z.string(),
-  /** Names the conversation in the list, and tells both agents what they are here to do. */
+  /** Names the room in the list, and tells both agents what they are here to do. */
   purpose: z.string(),
   participants: z.array(z.string()),
   budgetRemaining: z.number(),
-  /** How this conversation may spend. Set by either owner, at any time. */
   limit: limitSchema,
-  /** Cost reported so far, in USD. A floor when any turn ran on a model without pricing. */
+  /**
+   * Cost reported so far, in USD — an estimate, not an attested figure.
+   *
+   * Supplied by participants' own bridges, which the hub cannot check. Also a floor, when a
+   * turn ran on a model without pricing. `budgetRemaining` is the bound that is enforced.
+   */
   spentUSD: z.number(),
-  /** True when some spend was unpriced, so `spentUSD` understates the real total. */
   spendIncomplete: z.boolean(),
-  /** Proposed, running, halted by a person, or closed by an agent. See `roomStateSchema`. */
   state: roomStateSchema,
   /**
    * The handle that opened this room.
    *
-   * Stored rather than inferred from `participants[0]`, which happens to be the opener
-   * today: whose turn it is to accept is a question about consent, and reading it off an
-   * array's order would make adding a member able to change the answer.
+   * Stored rather than read off `participants[0]`: whose turn it is to accept is a question
+   * about consent, and reading it off an array's order would let adding a member change it.
    */
   proposedBy: z.string(),
-  /**
-   * Handles whose agents have said goodbye and will not be woken by the room again.
-   *
-   * One agent bowing out is not the room closing — the others may still be talking. Shown
-   * so a person can see their agent has stepped out, and steer it back in if they want it.
-   */
+  /** Handles whose agents have said goodbye and will not be woken by the room again. */
   bowedOut: z.array(z.string()),
+  /** Handles who have asked to erase this room for everyone. It goes when all of them have. */
+  eraseAsked: z.array(z.string()),
   lastAt: z.string(),
 });
 export type Conversation = z.infer<typeof conversationSchema>;
@@ -371,10 +296,8 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   /**
    * Prove the key, rather than present a secret.
    *
-   * Answers the `challenge` the hub sends when the socket opens. A bearer token would be a
-   * second thing that *is* the identity — copyable, replayable, and sitting in a file on
-   * disk — while the key is already the thing every message is signed with. One credential,
-   * one place it lives, and nothing on the wire that is worth stealing.
+   * Answers the `challenge` the hub sends when the socket opens. One credential, one place it
+   * lives, and nothing on the wire worth stealing. See `docs/design/identity.md`.
    */
   z.object({
     t: z.literal("hello"),
@@ -407,49 +330,36 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     limit: limitSchema.optional(),
   }),
   /**
-   * Take up a proposed conversation, or turn it down.
+   * Take up a proposed conversation, or turn it down. Sent by whoever did not open it.
    *
-   * Sent by whoever did not open it. Declining closes the room rather than deleting it, so
-   * the proposer learns the answer instead of watching their invitation disappear.
+   * Declining closes the room rather than deleting it, so the proposer learns the answer
+   * instead of watching their invitation disappear.
    */
   z.object({
     t: z.literal("conversation.respond"),
     conversationId: z.string(),
     accept: z.boolean(),
   }),
-  /**
-   * Change how long this conversation may run unattended.
-   *
-   * Either participant may set it: it caps what *their own* agent will be asked to do as
-   * much as the other's, so there is no side to protect from the other here.
-   */
+  /** Either participant may set it: it caps their own agent as much as the other's. */
   z.object({
     t: z.literal("limit.set"),
     conversationId: z.string(),
     limit: limitSchema,
   }),
-  /** End a conversation's current run. The kill switch that makes unlimited defensible. */
+  /** The kill switch that makes an unlimited allowance defensible. */
   z.object({ t: z.literal("conversation.stop"), conversationId: z.string() }),
   /**
    * Bring a closed conversation back.
    *
-   * Deliberately its own frame rather than a side effect of choosing an allowance. An agent
-   * that said goodbye should stay gone until a person says otherwise in as many words —
-   * `limit.set` clears a halt precisely because picking a new ceiling means "carry on", and
-   * that must not also undo a goodbye.
+   * Its own frame rather than a side effect of choosing an allowance: `limit.set` clears a
+   * halt because a new ceiling means "carry on", and that must not also undo a goodbye.
    */
   z.object({ t: z.literal("conversation.reopen"), conversationId: z.string() }),
   /**
-   * Bring somebody else into a room.
+   * Bring somebody into a room — only somebody you are already connected to.
    *
-   * Only somebody you are already connected to: a connection is where consent to talk to
-   * you at all was given, and this spends that rather than asking for something new. They
-   * can walk out again with `conversation.leave`, which is where consent to *this* room
-   * lives — an introduction you can refuse after the fact rather than one you must accept
-   * in advance.
-   *
-   * The people already in the room are not asked. Introducing two people you know is a
-   * thing one person does, and the room says who did it.
+   * That connection is where consent to talk to you was given, and this spends it rather
+   * than asking for something new. See `docs/design/rooms.md`.
    */
   z.object({
     t: z.literal("conversation.add"),
@@ -461,11 +371,10 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   /**
    * Remove a conversation.
    *
-   * `"me"` quietly drops your own membership — nobody else is told, and the room carries
-   * on for whoever is left, same as `conversation.leave` without the goodbye. `"everyone"`
-   * erases the room and its messages from the hub outright: any participant may call it,
-   * and every participant loses it at once. Each side's own local bridge record of what it
-   * said is a separate, durable copy and is untouched either way.
+   * `"me"` hides it: your membership goes, nobody is told, and it needs nobody's agreement
+   * because it destroys nothing. `"everyone"` is a *request* to erase the hub's shared copy,
+   * announced in the room and carried out once every current member has asked. Each side's
+   * own bridge journal is a separate durable copy and is untouched either way.
    */
   z.object({
     t: z.literal("conversation.delete"),
@@ -476,10 +385,12 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   z.object({
     t: z.literal("say"),
     conversationId: z.string(),
+    /** The turn being answered. Refused unless the hub dispatched it and is still owed it. */
+    dispatch: dispatchSchema,
     text: signable(MAX_MESSAGE_LENGTH),
     /** The agent's last word. Delivered, then the conversation closes without a reply. */
     closing: z.boolean().optional(),
-    /** What this turn cost, when the daemon could tell. Fed into the conversation's spend. */
+    /** What this turn cost, when the daemon could tell. An estimate — see `spentUSD`. */
     costUSD: z.number().nonnegative().optional(),
     costIncomplete: z.boolean().optional(),
     authorship: authorshipSchema,
@@ -487,9 +398,9 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   /**
    * The owner said something to their own agent.
    *
-   * Refills the budget and asks for a turn, carrying the owner's words as an instruction the
-   * agent may act on — but the words themselves never enter the shared transcript, so the
-   * other party sees only what the agent chooses to say next.
+   * Refills the allowance and asks for a turn, carrying the owner's words as an instruction —
+   * but they never enter the shared transcript, so the other party sees only what the agent
+   * chooses to say next.
    */
   z.object({
     t: z.literal("nudge"),
@@ -507,6 +418,7 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   z.object({
     t: z.literal("pass"),
     conversationId: z.string(),
+    dispatch: dispatchSchema,
     costUSD: z.number().nonnegative().optional(),
     costIncomplete: z.boolean().optional(),
     /** A pass is silence, but it is *this agent's* silence, so it is signed like speech. */
@@ -516,40 +428,38 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   z.object({
     t: z.literal("trouble"),
     conversationId: z.string(),
+    dispatch: dispatchSchema,
     reason: z.string().max(300),
   }),
   /**
    * The turn is still in flight, but a person has to act before it can finish.
    *
    * Re-arms the deadline without settling, so approving a parked tool does not race the
-   * three-minute silence timer.
+   * silence timer.
    */
   z.object({
     t: z.literal("waiting"),
     conversationId: z.string(),
+    dispatch: dispatchSchema,
   }),
   /**
    * This turn is still running.
    *
-   * Sent on a timer while a turn is in flight, which is what makes the hub's deadline mean
-   * "the bridge has gone away" rather than "this turn is slow". It used to mean the second
-   * thing: an agent that read a calendar and searched the web took longer than three
-   * minutes, the room said "no answer in time", and the answer that arrived afterwards had
-   * nothing left waiting for it.
-   *
-   * `note`, when the daemon can say, is what the agent is doing right now — a tool name,
-   * not a thought. It is the room's only window into a turn that lasts minutes.
+   * What makes the hub's deadline mean "the bridge has gone away" rather than "this turn is
+   * slow". `note` is a tool name, not a thought, and it is the room's only window into a turn
+   * that lasts minutes.
    */
   z.object({
     t: z.literal("progress"),
     conversationId: z.string(),
+    dispatch: dispatchSchema,
     note: z.string().max(200).optional(),
   }),
   /**
    * This browser is looking at this conversation — or at none.
    *
-   * Distinct from the socket being up: a bridge can stay connected overnight with nobody
-   * at the desk. Watching is the person, not the process.
+   * Distinct from the socket being up: a bridge can stay connected overnight with nobody at
+   * the desk. Watching is the person, not the process.
    */
   z.object({
     t: z.literal("watch"),
@@ -558,8 +468,8 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   /**
    * Older messages, for a browser that has scrolled back past what welcome carried.
    *
-   * Pulled rather than pushed: history is only wanted by somebody actually looking at it,
-   * and the alternative is every reconnect paying for transcripts nobody reads.
+   * Pulled rather than pushed: the alternative is every reconnect paying for transcripts
+   * nobody reads.
    */
   z.object({
     t: z.literal("history.load"),
@@ -594,28 +504,22 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
     conversation: conversationSchema,
   }),
   z.object({ t: z.literal("conversation"), conversation: conversationSchema }),
-  /** This conversation is gone. Drop it and its messages, rather than waiting to be told what changed. */
+  /** This conversation is gone. Drop it and its messages rather than diffing what changed. */
   z.object({ t: z.literal("conversation.removed"), conversationId: z.string() }),
   z.object({ t: z.literal("appended"), message: messageSchema }),
-  /**
-   * Your move. Carries the window the agent should answer from — the agent is stateless
-   * between turns, so this transcript is the whole of what it knows.
-   */
+  /** Your move. See `docs/design/turns.md` for what the slice is and why it is not the room. */
   z.object({
     t: z.literal("turn"),
     conversationId: z.string(),
+    /** Sent back on everything this turn produces. Anything else the hub refuses. */
+    dispatch: dispatchSchema,
     purpose: z.string(),
-    /**
-     * The slice of the room this agent should answer from: what it has not answered yet,
-     * with a little of what it has. Not the whole conversation — see `TURN_OVERLAP`.
-     */
     transcript: z.array(messageSchema),
     /**
      * How many messages come before that slice.
      *
-     * Nearly always messages this agent was sent in earlier turns and still remembers. Sent
-     * so the agent can be told plainly that the room did not begin where its transcript
-     * does, rather than inferring a conversation started mid-sentence.
+     * Sent so the agent can be told plainly that the room did not begin where its transcript
+     * does, rather than inferring a conversation that started mid-sentence.
      */
     earlier: z.number().int().nonnegative(),
     /**
@@ -626,15 +530,10 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
      * never read.
      */
     steer: z.string().optional(),
-    /**
-     * How much room is left, when it is nearly gone.
-     *
-     * From the room rather than from either owner, so an agent can wind up its own point
-     * instead of being cut off mid-sentence when the allowance runs out.
-     */
+    /** Sent when the allowance is nearly gone, so an agent can wind up its own point. */
     notice: z.string().optional(),
   }),
-  /** The conversation's spending position changed — turns left, money spent, or the rule. */
+  /** The conversation's spending position changed — turns left, money reported, or the rule. */
   z.object({
     t: z.literal("budget"),
     conversationId: z.string(),
@@ -643,7 +542,6 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
     spentUSD: z.number(),
     spendIncomplete: z.boolean(),
     state: roomStateSchema,
-    /** Handles whose agents have said goodbye. Travels with the room's state, not apart. */
     bowedOut: z.array(z.string()),
   }),
   z.object({ t: z.literal("error"), detail: z.string() }),
@@ -672,9 +570,8 @@ export function parseClientFrame(raw: unknown): ClientFrame | undefined {
 /**
  * Why a frame was rejected, in terms somebody can act on.
  *
- * A rejection is nearly always version skew — a bridge and a hub built from different
- * commits — so the answer worth giving names the frame and the field rather than saying the
- * message was unrecognised.
+ * A rejection is nearly always version skew, so the answer worth giving names the frame and
+ * the field rather than saying the message was unrecognised.
  */
 export function describeFrameRejection(raw: unknown): string {
   const parsed = clientFrameSchema.safeParse(raw);

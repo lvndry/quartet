@@ -309,10 +309,20 @@ describe("warning an agent the room is nearly out", () => {
 });
 
 describe("spending rules", () => {
-  it("counts money under a cost limit and ignores the turn count", () => {
-    const state = room({ limit: { kind: "cost", usd: 0.1 }, turnsLeft: 0, spentUSD: 0.05 });
+  it("counts money under a cost limit, and the turn count as well", () => {
+    const state = room({ limit: { kind: "cost", usd: 0.1 }, turnsLeft: 4, spentUSD: 0.05 });
     expect(canSpend(state)).toBe(true);
     expect(canSpend({ ...state, spentUSD: 0.1 })).toBe(false);
+  });
+
+  it("stops a cost room that has run out of turns, whatever it says it has spent", () => {
+    // The spend figure is the sum of what each participant's own bridge reported, and the
+    // hub cannot check one of them. A bridge reporting \$0 for every turn — through a bug or
+    // on purpose — would otherwise never reach a money ceiling, and a \"twenty cents\" room
+    // would run without bound on everybody else's keys. So the turn count binds too.
+    const lying = room({ limit: { kind: "cost", usd: 0.1 }, turnsLeft: 0, spentUSD: 0 });
+    expect(canSpend(lying)).toBe(false);
+    expect(canSpend({ ...lying, turnsLeft: 1 })).toBe(true);
   });
 
   it("falls back to the turn count when spend is unpriced", () => {

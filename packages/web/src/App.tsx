@@ -149,7 +149,7 @@ function Elapsed({ since }: { since: number }): React.JSX.Element {
  * contents and not part of the conversation. There is deliberately no version of this
  * under a peer's row.
  */
-function ToolLog({ calls }: { calls: ToolCall[] }): React.JSX.Element | null {
+function ToolLog({ calls }: { calls: readonly ToolCall[] }): React.JSX.Element | null {
   const [open, setOpen] = useState(false);
   if (calls.length === 0) return null;
 
@@ -186,8 +186,11 @@ function ToolLog({ calls }: { calls: ToolCall[] }): React.JSX.Element | null {
 function roomIsQuiet(conversation: Conversation): boolean {
   if (conversation.limit.kind === "turns") return conversation.budgetRemaining === 0;
   if (conversation.limit.kind === "cost") {
+    // Either ceiling. A cost room runs under a turn count as well, because the spend figure
+    // is reported by the participants' own bridges and the hub cannot check one.
+    if (conversation.budgetRemaining === 0) return true;
     return conversation.spendIncomplete
-      ? conversation.budgetRemaining === 0
+      ? false
       : conversation.spentUSD >= conversation.limit.usd;
   }
   return false;
@@ -206,7 +209,9 @@ function nearingLimit(conversation: Conversation): string | undefined {
     if (budgetRemaining === 0) return undefined;
     return budgetRemaining <= 1 ? "last turn" : undefined;
   }
-  if (limit.kind === "cost" && !spendIncomplete) {
+  if (limit.kind === "cost") {
+    if (budgetRemaining <= 1) return "last turn";
+    if (spendIncomplete) return undefined;
     const left = limit.usd - spentUSD;
     return left > 0 && left / limit.usd <= 0.2 ? "nearly spent" : undefined;
   }
@@ -267,10 +272,17 @@ function Budget({ conversation }: { conversation: Conversation }): React.JSX.Ele
         <span className="meter">
           <i style={{ width: `${String(Math.round(fraction * 100))}%` }} />
         </span>
-        <span className="budget-label">
-          {spendIncomplete ? "≥" : ""}
+        {/* "est." because every figure in it was reported by a participant's own bridge and
+            nobody can check one. The turn count beside it is the ceiling the hub enforces
+            itself, which is why it is shown rather than hidden behind the money. */}
+        <span
+          className="budget-label"
+          title="Estimated from what each agent's own machine reported. The turn count is the ceiling the hub enforces."
+        >
+          {spendIncomplete ? "≥" : "est. "}
           {money(spentUSD)} / {money(limit.usd)}
         </span>
+        <span className="budget-label">{String(budgetRemaining)} turns left</span>
         {warning !== undefined && <span className="budget-label warn">{warning}</span>}
       </span>
     );
@@ -279,8 +291,11 @@ function Budget({ conversation }: { conversation: Conversation }): React.JSX.Ele
   return (
     <span className="budget">
       <span className="budget-label warn">unlimited</span>
-      <span className="budget-label">
-        {spendIncomplete ? "≥" : ""}
+      <span
+        className="budget-label"
+        title="Estimated from what each agent's own machine reported."
+      >
+        {spendIncomplete ? "≥" : "est. "}
         {money(spentUSD)} spent
       </span>
     </span>
@@ -290,13 +305,9 @@ function Budget({ conversation }: { conversation: Conversation }): React.JSX.Ele
 /**
  * Choosing what a conversation may spend.
  *
- * A kind, then a number you type. Presets were a guess at what somebody would want, and the
- * right ceiling depends entirely on whose model is answering — a hundred turns of a local
- * model and five turns of a frontier model with tool calls cost about the same.
- *
- * The typed value commits on blur or Enter rather than per keystroke, because each commit is
- * a round trip both participants see: applying "1", then "12", then "125" while somebody
- * types would flap the other side's ceiling three times.
+ * A kind, then a number you type: the right ceiling depends on whose model is answering, so
+ * presets were a guess. Commits on blur or Enter rather than per keystroke, because each
+ * commit is a round trip both participants see.
  */
 function describeLimit(limit: Limit): string {
   if (limit.kind === "turns") return `${String(limit.turns)} turns`;
@@ -784,14 +795,16 @@ function Sidebar({
                       setMenuFor(undefined);
                       if (
                         window.confirm(
-                          "Delete this conversation for everyone? It erases the room and its messages for every participant, and cannot be undone.",
+                          "Ask to erase this conversation for everyone?\n\nThe room is erased from the hub once every participant has asked. Until then it carries on, and everyone can see that you asked. Cannot be undone once it happens.",
                         )
                       ) {
                         void onAct("delete", { conversationId: conversation.id, scope: "everyone" });
                       }
                     }}
                   >
-                    Delete for everyone
+                    {conversation.eraseAsked.includes(state.me?.handle ?? "")
+                      ? `Waiting on ${String(conversation.participants.length - conversation.eraseAsked.length)} to erase`
+                      : "Ask to erase for everyone"}
                   </button>
                 </div>
               )}
@@ -903,7 +916,7 @@ function KeyAlarm({
   fingerprints,
   onAct,
 }: {
-  conflicts: KeyConflict[];
+  conflicts: readonly KeyConflict[];
   fingerprints: Record<string, string>;
   onAct: (path: string, body: Record<string, unknown>) => Promise<void>;
 }): React.JSX.Element | null {
@@ -942,13 +955,13 @@ function Chat({
   onAct,
 }: {
   conversation: Conversation;
-  messages: Message[];
+  messages: readonly Message[];
   /** False when the room has messages older than the ones loaded. */
   atStart: boolean;
-  asides: Aside[];
+  asides: readonly Aside[];
   activity: Activity | undefined;
   /** What your own agent's turn has done so far. Never shown for anybody else's agent. */
-  toolCalls: ToolCall[];
+  toolCalls: readonly ToolCall[];
   /** Everyone in the room but you. */
   presence: readonly PeerPresence[];
   verdicts: Record<string, Verdict>;

@@ -1,17 +1,12 @@
 /**
  * @fileoverview Your agents, as a roster.
  *
- * Not a settings page: these are the players on this machine, and exactly one of them is on
- * stage — the agent that speaks for you in every room. The list marks that one the way the
- * rest of the app marks live things, because "which agent is answering" is the fact somebody
- * opens this screen to check.
+ * Not a settings page: exactly one of these is on stage, and "which agent is answering" is
+ * what somebody opens this screen to check.
  *
- * Every menu is served by jazz rather than typed out here. The provider list, the personas,
- * the models a provider really serves and the tools that exist are the same values jazz
- * validates against, so a picker structurally cannot offer something a save would reject —
- * and a hardcoded list would drift the day jazz adds a provider. The form does not
- * re-implement jazz's rules either: it posts, and a refusal comes back naming the field it
- * concerns, which is put on that input.
+ * Every menu is served by jazz rather than typed out here, so a picker structurally cannot
+ * offer something a save would reject. The form does not re-implement jazz's rules either: it
+ * posts, and a refusal comes back naming the field to mark.
  */
 
 import { useEffect, useState, type ReactElement } from "react";

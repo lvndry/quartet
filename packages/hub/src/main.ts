@@ -1,12 +1,9 @@
 /**
  * @fileoverview The hub: a socket router with a database, and nothing else.
  *
- * It holds no model keys and makes no model calls — every token spent in quartet is spent on
- * a participant's own machine with their own key. That is what makes a public instance
- * survivable: hosting cost is flat, and there is no free-inference abuse vector to defend.
- *
- * It also holds no ledgers. What an agent said is recorded by its own bridge, locally. The
- * hub stores conversations because both parties need them, and stops there.
+ * No model keys, no model calls, no ledgers. `docs/design/architecture.md` says why that is the
+ * architecture rather than a stage it is passing through, and §6 covers what this file
+ * defends against on a public instance.
  */
 
 import { Hono } from "hono";
@@ -26,13 +23,73 @@ import {
 } from "@quartet/protocol";
 import { isDid, newNonce, verifyChallenge, verifyClaim, verifyMessage } from "@quartet/identity";
 import { HubStore, type AgentRow } from "./db";
-import { Orchestrator } from "./orchestrator";
+import { Orchestrator, type Accepted } from "./orchestrator";
 import { RoomPresence } from "./presence";
 import { RateLimiter } from "./rate-limit";
 import { startTunnel } from "./tunnel";
 
 const PORT = Number(process.env["PORT"] ?? 8080);
 const DB_PATH = process.env["QUARTET_DB"] ?? "quartet.sqlite";
+
+/**
+ * Which interface to listen on. Loopback unless somebody says otherwise.
+ *
+ * The default used to be every interface, so `bun run hub` put an unencrypted socket carrying
+ * every conversation on the machine's whole network. `--tunnel` is the intended way to be
+ * reachable, and it terminates TLS in front.
+ */
+const HOST = process.env["QUARTET_HOST"] ?? "127.0.0.1";
+
+/**
+ * TLS, if this hub terminates it itself.
+ *
+ * Optional because a tunnel or a reverse proxy terminates it in front. What is not optional
+ * is that one of the three is true — see the refusal below.
+ */
+const TLS_CERT = process.env["QUARTET_TLS_CERT"];
+const TLS_KEY = process.env["QUARTET_TLS_KEY"];
+
+function isLoopback(host: string): boolean {
+  return host === "127.0.0.1" || host === "::1" || host === "localhost" || host === "[::1]";
+}
+
+/**
+ * Refuse to serve conversations in the clear to a network.
+ *
+ * Signatures mean a middlebox cannot *change* a line without being caught, and do nothing
+ * about reading it. A refusal rather than a warning, because a warning at boot is a warning
+ * nobody reads and the failure it precedes is silent.
+ */
+if (!isLoopback(HOST) && TLS_CERT === undefined && process.env["QUARTET_ALLOW_PLAINTEXT"] !== "1") {
+  console.error(
+    `\n  refusing to listen on ${HOST} without TLS.\n\n` +
+      "  Every frame would cross the network readable, conversations included.\n" +
+      "  Pick one:\n" +
+      "    • run `bun run hub -- --tunnel` and leave QUARTET_HOST alone (cloudflared\n" +
+      "      terminates TLS and reaches this hub over loopback)\n" +
+      "    • set QUARTET_TLS_CERT and QUARTET_TLS_KEY to serve https/wss here\n" +
+      "    • set QUARTET_ALLOW_PLAINTEXT=1 if a reverse proxy in front already\n" +
+      "      terminates TLS and only it can reach this port\n",
+  );
+  process.exit(1);
+}
+
+/**
+ * What a public socket may do, before anything it says is read. See `docs/design/hub-door.md`.
+ *
+ * `MAX_FRAME_BYTES` is sized against the largest legitimate frame: a `say` is capped at
+ * 10,000 characters, which JSON escaping can quadruple. The rate pair lets a reconnecting
+ * bridge flush its queue and then settle far above anything a turn produces.
+ */
+const MAX_FRAME_BYTES = 128 * 1024;
+const FRAME_BURST = 120;
+const FRAME_REFILL_MS = 250;
+// Overridable only so the hardening tests do not have to wait ten seconds to watch a socket
+// that never introduces itself get closed.
+const HELLO_GRACE_MS = Number(process.env["QUARTET_HELLO_GRACE_MS"] ?? 10_000);
+const MAX_SOCKETS = Number(process.env["QUARTET_MAX_SOCKETS"] ?? 512);
+const MAX_ANONYMOUS_PER_ADDRESS = 8;
+const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 /** A label for `/join`, so an invite link says what somebody is joining rather than just a URL. */
 const HUB_NAME = (() => {
   const index = process.argv.indexOf("--name");
@@ -45,18 +102,62 @@ const store = new HubStore(DB_PATH);
 /** Live bridges, by agent. Presence in quartet is exactly "your bridge is connected". */
 const sockets = new Map<string, ServerWebSocket<SocketData>>();
 
+/** Every open socket, authenticated or not, so the process-wide ceiling is countable. */
+const openSockets = new Set<ServerWebSocket<SocketData>>();
+
+/** Unauthenticated sockets per peer address — the ones that cost nothing to open. */
+const anonymous = new Map<string, number>();
+
+/** Keyed per socket, not per agent: an unauthenticated socket has no agent, and that is the
+ * one worth limiting. */
+const frameRate = new RateLimiter({ burst: FRAME_BURST, refillMs: FRAME_REFILL_MS });
+
 interface SocketData {
   agentId?: string;
   /** Issued when the socket opens; the only string a hello on this socket may answer. */
   challenge?: string;
+  /** This socket's own name, for the frame allowance. Not an identity. */
+  id: string;
+  /** The peer address, kept so the anonymous count can be given back on close. */
+  address: string;
+  /** Fires if the socket has not said who it is. Cleared by a successful hello. */
+  helloBy?: ReturnType<typeof setTimeout>;
+}
+
+function countAnonymous(address: string, delta: number): void {
+  const next = (anonymous.get(address) ?? 0) + delta;
+  if (next <= 0) anonymous.delete(address);
+  else anonymous.set(address, next);
+}
+
+/** A socket stops being anonymous exactly once, whether it authenticates or goes away. */
+function noLongerAnonymous(socket: ServerWebSocket<SocketData>): void {
+  if (socket.data.helloBy === undefined) return;
+  clearTimeout(socket.data.helloBy);
+  delete socket.data.helloBy;
+  countAnonymous(socket.data.address, -1);
 }
 
 function isOnline(agentId: string): boolean {
   return sockets.has(agentId);
 }
 
+/**
+ * Send one frame, or drop a socket that has stopped reading.
+ *
+ * A peer that has stopped draining is a queue the hub grows on its behalf. Closing it is
+ * survivable where running out of memory is not: a bridge reconnects, and `replayTurns` hands
+ * back what it was owed.
+ */
 function send(agentId: string, frame: ServerFrame): void {
-  sockets.get(agentId)?.send(JSON.stringify(frame));
+  const socket = sockets.get(agentId);
+  if (socket === undefined) return;
+  if (socket.getBufferedAmount() > MAX_BUFFERED_BYTES) {
+    console.warn(`dropping a socket that stopped reading: ${agentId}`);
+    socket.close(1013, "too far behind");
+    return;
+  }
+  socket.send(JSON.stringify(frame));
 }
 
 let presence!: RoomPresence;
@@ -73,15 +174,11 @@ function agentView(agentId: string): Agent | undefined {
 }
 
 /**
- * Who shows up in this agent's directory: everyone currently online on this hub, plus every
- * contact of theirs whether online or not.
+ * Everyone currently online here, plus every contact of theirs whether online or not.
  *
- * Used to list every agent ever registered here, online or not — fine for a handful of
- * friends, unusable once a hub has any real history, since it never shrinks. Scoping to
- * "online right now" keeps this bounded by who is actually around instead of by how long the
- * hub has existed, while still answering "who's here to talk to" the way an empty room with
- * nobody in it never can. A connection stays visible regardless, so stepping offline does not
- * make you disappear from somebody who already knows you.
+ * Bounded by who is around rather than by how long the hub has existed, which is what a list
+ * of every agent ever registered was not. A connection stays visible regardless, so stepping
+ * offline does not make you disappear from somebody who already knows you.
  */
 function directoryFor(agentId: string): DirectoryEntry[] {
   const connected = new Set(store.connectionsFor(agentId).map((connection) => connection.other));
@@ -121,12 +218,10 @@ function sendWelcome(agentId: string): void {
 }
 
 /**
- * Tell everyone who can see this agent that its presence changed.
+ * Tell everyone who can see this agent that its presence changed — currently everyone.
  *
- * That is currently everyone, because the directory lists every agent — which is the whole
- * point at this size, where the problem is finding anyone at all rather than filtering. It
- * is O(online²) per connect and will need scoping to connections plus a search endpoint long
- * before the directory becomes worth scrolling.
+ * O(online²) per connect. Needs scoping to connections plus a search endpoint long before the
+ * directory is worth scrolling.
  */
 function broadcastPresence(): void {
   for (const [agentId] of sockets) {
@@ -137,19 +232,11 @@ function broadcastPresence(): void {
 /**
  * How many identities one address may claim: a roomful at once, then one every twenty minutes.
  *
- * The burst is `MAX_ROOM_MEMBERS` because that is the largest number of agents somebody has
- * a legitimate reason to stand up in one go — a full room on one machine, for a demo or a
- * test. It was three, which is a number with nothing behind it, and it turned out to block
- * exactly that case. What actually stops a namespace being taken is the refill rate, not
- * the burst.
+ * The burst is `MAX_ROOM_MEMBERS` because a full room on one machine is a legitimate thing to
+ * stand up in one go. What stops a namespace being taken is the refill rate, not the burst.
  *
- * A stopgap either way: a claim proves nothing about who is making it, and only agent
- * identity fixes that. This stops the cheapest version of the attack.
- *
- * `QUARTET_REGISTRATION_BURST` raises it for `bun run smoke`, which mints a cast of agents
- * against a throwaway hub and also makes a run of deliberately refused claims — every one of
- * which costs a token — before exercising this ceiling on purpose. A roomful does not cover
- * that, and the harness should not have to fit inside a rule aimed at the public internet.
+ * `QUARTET_REGISTRATION_BURST` raises it for the test harnesses, which mint a cast of agents
+ * against a throwaway hub and should not have to fit inside a rule aimed at the internet.
  */
 const registrations = new RateLimiter({
   burst: Number(process.env["QUARTET_REGISTRATION_BURST"] ?? MAX_ROOM_MEMBERS),
@@ -170,11 +257,9 @@ function escapeHtml(text: string): string {
 /**
  * A page for a link, not a URL for a CLI flag.
  *
- * The tunnel URL itself is unmemorable and means nothing pasted bare — this gives whoever
- * clicks it the one command to run, with this hub's own origin already filled in, so sharing
- * an invite is a link rather than a sentence explaining what to do with one. No resolver, no
- * shortening: the origin is read off the request that arrived, so this works identically
- * whether it is reached through a tunnel URL or on localhost.
+ * A tunnel URL means nothing pasted bare, so this gives whoever clicks it the one command to
+ * run with the origin filled in. Read off the request, so it works through a tunnel and on
+ * localhost identically.
  */
 app.get("/join", (context) => {
   const origin = new URL(context.req.url).origin;
@@ -196,12 +281,10 @@ app.get("/join", (context) => {
 });
 
 /**
- * How far out of step with the hub a claiming machine's clock may be.
+ * How far out of step a claiming machine's clock may be.
  *
- * The window exists so a claim overheard on the wire cannot be replayed at leisure against a
- * hub that has since forgotten the handle. Ten minutes rather than seconds because the cost
- * of being strict falls entirely on the honest user with a drifting laptop clock, and a
- * replay window measured in minutes is not the weak point in any attack worth worrying about.
+ * Stops a claim overheard on the wire being replayed at leisure. Minutes rather than seconds
+ * because the cost of strictness falls on the honest user with a drifting laptop clock.
  */
 const CLAIM_WINDOW_MS = 10 * 60 * 1000;
 
@@ -211,16 +294,10 @@ function withinClaimWindow(at: string): boolean {
 }
 
 /**
- * Claim a handle.
+ * Claim a handle. See `docs/design/identity.md`.
  *
- * A claim carries a `did:key` and a signature over the handle, so a name is handed only to
- * somebody who demonstrably holds the key that will be signing under it. The hub still cannot
- * say a key belongs to a particular *person* — fingerprints compared out of band are what
- * settle that — but from here one key means one handle, and nobody, the hub included, can
- * quietly put a different key behind a name that somebody already knows.
- *
- * Nothing secret comes back. The key is the credential, and it never left the machine that
- * made it, so there is no token here to leak, to lose, or to have to rotate.
+ * Nothing secret comes back: the key is the credential and it never left the machine that
+ * made it, so there is no token here to leak, lose or rotate.
  */
 app.post("/agents", async (context) => {
   // Charged before the body is even read, so a flood of malformed requests costs the same
@@ -279,18 +356,14 @@ app.post("/agents", async (context) => {
 /**
  * Check a signature the hub is about to store and repeat, and turn it into what gets stored.
  *
- * The hub cannot forge one of these and does not need to trust one — the far side checks it
- * again on arrival, which is the check that counts. This pass exists so that a broken
- * signature is refused at the door with something a person can read, rather than travelling
- * to somebody else's screen to be reported there as a correspondent who cannot be trusted.
- * A hub is the wrong place to *establish* authorship and the right place to notice skew.
- *
- * Undefined means refuse.
+ * The far side checks it again on arrival, which is the check that counts. This exists so a
+ * broken signature is refused at the door rather than travelling to somebody else's screen to
+ * be reported as an untrustworthy correspondent. Undefined means refuse.
  */
 function signatureFor(
   author: AgentRow,
   authorship: Authorship,
-  covered: { conversationId: string; kind: MessageKind; text: string },
+  covered: { conversationId: string; kind: MessageKind; dispatch: string; text: string },
 ): Signature | undefined {
   // An agent that never presented a key cannot start signing mid-life: its did is what the
   // other side pinned, and accepting a fresh one here would be the hub swapping somebody's
@@ -303,6 +376,7 @@ function signatureFor(
     authoredAt: authorship.authoredAt,
     nonce: authorship.nonce,
     prev: authorship.prev,
+    dispatch: covered.dispatch,
     value: authorship.signature,
   };
 
@@ -314,6 +388,7 @@ function signatureFor(
       authoredAt: authorship.authoredAt,
       nonce: authorship.nonce,
       prev: authorship.prev,
+      dispatch: covered.dispatch,
       text: covered.text,
     },
     authorship.signature,
@@ -324,9 +399,8 @@ function signatureFor(
 /**
  * Check what an agent signed, or refuse the frame and say why.
  *
- * There is no third answer. Opening a socket means proving a key, so every connected bridge
- * can sign — a line that arrives without a good signature is version skew or somebody
- * trying something, and neither should be quietly relayed as merely unverifiable.
+ * No third answer: every connected bridge can sign, so a line without a good signature is
+ * skew or an attempt, and neither should be relayed as merely unverifiable.
  */
 function signedOrRefused(
   author: AgentRow | undefined,
@@ -340,6 +414,60 @@ function signedOrRefused(
     return undefined;
   }
   return signature;
+}
+
+/** Everyone in a room this agent is actually in, or nothing and a refusal. */
+function roomFor(agentId: string, conversationId: string): string[] | undefined {
+  const participants = store.conversationParticipantIds(conversationId);
+  if (participants === undefined || !participants.includes(agentId)) {
+    send(agentId, { t: "error", detail: "you are not in that conversation" });
+    return undefined;
+  }
+  return participants;
+}
+
+/**
+ * Whether this agent currently holds the floor in this room, under this dispatch.
+ *
+ * The check membership and a signature together cannot make: both establish *who* is talking,
+ * neither establishes that the room ever asked. See `docs/design/turns.md`.
+ */
+function holdsTheFloor(agentId: string, conversationId: string, dispatch: string): boolean {
+  switch (store.dispatchState(conversationId, agentId, dispatch)) {
+    case "open":
+      return true;
+    case "settled":
+      send(agentId, { t: "error", detail: "that turn has already been answered" });
+      return false;
+    default:
+      send(agentId, {
+        t: "error",
+        detail:
+          "the hub is not holding that turn for you — an agent speaks when it is dispatched a " +
+          "turn, and only once per dispatch",
+      });
+      return false;
+  }
+}
+
+/**
+ * Whether this author has already used this nonce in this room.
+ *
+ * The unique index in the database is the enforcement; this is here so the answer is a
+ * sentence rather than a crash.
+ */
+function usedBefore(agentId: string, conversationId: string, signature: Signature): boolean {
+  if (!store.nonceUsed(conversationId, signature.did, signature.nonce)) return false;
+  send(agentId, {
+    t: "error",
+    detail: "that line has already been recorded — a nonce is used once, and this one is spent",
+  });
+  return true;
+}
+
+/** Pass on whatever the orchestrator refused, so a bridge is never left guessing. */
+function report(agentId: string, accepted: Accepted): void {
+  if (!accepted.ok) send(agentId, { t: "error", detail: accepted.detail });
 }
 
 function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
@@ -378,6 +506,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     }
     // Spent. Without this a socket could be re-introduced as somebody else after the fact.
     delete socket.data.challenge;
+    noLongerAnonymous(socket);
     // Register the new socket first so the outgoing close is stale and does not
     // look like the agent going offline.
     const previous = sockets.get(row.id);
@@ -541,46 +670,36 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     }
 
     case "say": {
-      const participants = store.conversationParticipantIds(frame.conversationId);
-      if (participants === undefined || !participants.includes(agentId)) {
-        send(agentId, { t: "error", detail: "you are not in that conversation" });
-        return;
-      }
+      if (roomFor(agentId, frame.conversationId) === undefined) return;
+      if (!holdsTheFloor(agentId, frame.conversationId, frame.dispatch)) return;
       const author = store.agentById(agentId);
       const said = signedOrRefused(author, frame.authorship, agentId, (row, authorship) =>
         signatureFor(row, authorship, {
           conversationId: frame.conversationId,
           kind: "agent",
+          dispatch: frame.dispatch,
           text: frame.text,
         }),
       );
       if (said === undefined) return;
-      const message = store.appendMessage({
-        conversationId: frame.conversationId,
-        authorAgentId: agentId,
-        kind: "agent",
-        text: frame.text,
-        signature: said,
-      });
-      if (message === undefined) return;
-      orchestrator.onSpend(frame.conversationId, frame.costUSD, frame.costIncomplete === true);
-      if (frame.closing === true) {
-        // Delivered and closed in one step: fanning out first would dispatch a reply, and
-        // the goodbye would be answered.
-        orchestrator.closeWith(frame.conversationId, agentId, message);
-        return;
-      }
-      orchestrator.onTurnSettled(frame.conversationId, agentId, "spoke");
-      orchestrator.onMessage(frame.conversationId, agentId, message);
+      if (usedBefore(agentId, frame.conversationId, said)) return;
+      report(
+        agentId,
+        orchestrator.said(frame.conversationId, agentId, {
+          kind: "agent",
+          text: frame.text,
+          signature: said,
+          dispatch: frame.dispatch,
+          ...(frame.costUSD !== undefined ? { costUSD: frame.costUSD } : {}),
+          costIncomplete: frame.costIncomplete === true,
+          closing: frame.closing === true,
+        }),
+      );
       return;
     }
 
     case "limit.set": {
-      const participants = store.conversationParticipantIds(frame.conversationId);
-      if (participants === undefined || !participants.includes(agentId)) {
-        send(agentId, { t: "error", detail: "you are not in that conversation" });
-        return;
-      }
+      if (roomFor(agentId, frame.conversationId) === undefined) return;
       // Either participant may set it. The rule caps what their own agent is asked to do as
       // much as the other's, so there is no side here to protect from the other.
       orchestrator.setLimit(frame.conversationId, frame.limit);
@@ -588,11 +707,8 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     }
 
     case "conversation.stop": {
-      const participants = store.conversationParticipantIds(frame.conversationId);
-      if (participants === undefined || !participants.includes(agentId)) {
-        send(agentId, { t: "error", detail: "you are not in that conversation" });
-        return;
-      }
+      const participants = roomFor(agentId, frame.conversationId);
+      if (participants === undefined) return;
       orchestrator.stop(frame.conversationId);
       const stopped = store.appendMessage({
         conversationId: frame.conversationId,
@@ -607,11 +723,8 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     }
 
     case "conversation.add": {
-      const participants = store.conversationParticipantIds(frame.conversationId);
-      if (participants === undefined || !participants.includes(agentId)) {
-        send(agentId, { t: "error", detail: "you are not in that conversation" });
-        return;
-      }
+      const participants = roomFor(agentId, frame.conversationId);
+      if (participants === undefined) return;
       if (participants.length >= MAX_ROOM_MEMBERS) {
         send(agentId, {
           t: "error",
@@ -662,11 +775,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     }
 
     case "conversation.leave": {
-      const participants = store.conversationParticipantIds(frame.conversationId);
-      if (participants === undefined || !participants.includes(agentId)) {
-        send(agentId, { t: "error", detail: "you are not in that conversation" });
-        return;
-      }
+      if (roomFor(agentId, frame.conversationId) === undefined) return;
       const leaving = store.agentById(agentId);
       store.removeMember(frame.conversationId, agentId);
       const note = store.appendMessage({
@@ -689,17 +798,39 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     }
 
     case "conversation.delete": {
-      const participants = store.conversationParticipantIds(frame.conversationId);
-      if (participants === undefined || !participants.includes(agentId)) {
-        send(agentId, { t: "error", detail: "you are not in that conversation" });
-        return;
-      }
+      const participants = roomFor(agentId, frame.conversationId);
+      if (participants === undefined) return;
 
       if (frame.scope === "everyone") {
-        orchestrator.discard(frame.conversationId, participants);
-        store.deleteConversation(frame.conversationId);
+        // A request, not an act: erasure needs every current member, and is said out loud in
+        // the room while it waits. `scope: "me"` is the one that needs nobody. §3.
+        const asked = store.askErase(frame.conversationId, agentId);
+        if (store.everyoneAskedErase(frame.conversationId)) {
+          orchestrator.discard(frame.conversationId, participants);
+          store.deleteConversation(frame.conversationId);
+          for (const participant of participants) {
+            send(participant, { t: "conversation.removed", conversationId: frame.conversationId });
+          }
+          return;
+        }
+        // Repeating the ask is not a stronger ask, and must not say the same thing twice.
+        if (!asked) return;
+        const asker = store.agentById(agentId);
+        const marked = store.conversation(frame.conversationId);
+        const waiting = participants.length - (marked?.eraseAsked.length ?? 0);
+        const note = store.appendMessage({
+          conversationId: frame.conversationId,
+          authorAgentId: agentId,
+          kind: "system",
+          text:
+            `@${asker?.handle ?? "someone"} asked to erase this room for everyone — it goes ` +
+            `once everybody has asked (${String(waiting)} still to agree)`,
+        });
+        // Re-read, because appending the note moved the room's `lastAt`.
+        const announced = store.conversation(frame.conversationId);
         for (const participant of participants) {
-          send(participant, { t: "conversation.removed", conversationId: frame.conversationId });
+          if (announced !== undefined) send(participant, { t: "conversation", conversation: announced });
+          if (note !== undefined) send(participant, { t: "appended", message: note });
         }
         return;
       }
@@ -721,11 +852,8 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     }
 
     case "conversation.reopen": {
-      const participants = store.conversationParticipantIds(frame.conversationId);
-      if (participants === undefined || !participants.includes(agentId)) {
-        send(agentId, { t: "error", detail: "you are not in that conversation" });
-        return;
-      }
+      const participants = roomFor(agentId, frame.conversationId);
+      if (participants === undefined) return;
       orchestrator.reopen(frame.conversationId);
       const reopened = store.appendMessage({
         conversationId: frame.conversationId,
@@ -742,11 +870,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     }
 
     case "history.load": {
-      const participants = store.conversationParticipantIds(frame.conversationId);
-      if (participants === undefined || !participants.includes(agentId)) {
-        send(agentId, { t: "error", detail: "you are not in that conversation" });
-        return;
-      }
+      if (roomFor(agentId, frame.conversationId) === undefined) return;
       // Answered only to the asker: this is somebody scrolling, not an event in the room.
       const page = store.historyBefore(frame.conversationId, frame.beforeId, HISTORY_PAGE_SIZE);
       send(agentId, {
@@ -759,95 +883,70 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     }
 
     case "nudge": {
-      const participants = store.conversationParticipantIds(frame.conversationId);
-      if (participants === undefined || !participants.includes(agentId)) {
-        send(agentId, { t: "error", detail: "you are not in that conversation" });
-        return;
-      }
+      if (roomFor(agentId, frame.conversationId) === undefined) return;
       orchestrator.onNudge(frame.conversationId, agentId, frame.steer);
       return;
     }
 
     case "pass": {
-      const participants = store.conversationParticipantIds(frame.conversationId);
-      if (participants === undefined || !participants.includes(agentId)) {
-        send(agentId, { t: "error", detail: "you are not in that conversation" });
-        return;
-      }
+      if (roomFor(agentId, frame.conversationId) === undefined) return;
+      if (!holdsTheFloor(agentId, frame.conversationId, frame.dispatch)) return;
       const passer = store.agentById(agentId);
       const silence = signedOrRefused(passer, frame.authorship, agentId, (row, authorship) =>
         signatureFor(row, authorship, {
           conversationId: frame.conversationId,
           kind: "pass",
+          dispatch: frame.dispatch,
           text: "",
         }),
       );
       if (silence === undefined) return;
-      const message = store.appendMessage({
-        conversationId: frame.conversationId,
-        authorAgentId: agentId,
-        kind: "pass",
-        text: "",
-        signature: silence,
-      });
+      if (usedBefore(agentId, frame.conversationId, silence)) return;
       // A pass ran a model, so it cost something and is charged like any other turn.
-      orchestrator.onSpend(frame.conversationId, frame.costUSD, frame.costIncomplete === true);
-      orchestrator.onTurnSettled(frame.conversationId, agentId, "passed");
-      if (message === undefined) return;
-      // A pass is recorded and shown, but it deliberately does not wake the other agent:
-      // silence is not something to reply to.
-      for (const participant of participants) send(participant, { t: "appended", message });
+      report(
+        agentId,
+        orchestrator.said(frame.conversationId, agentId, {
+          kind: "pass",
+          text: "",
+          signature: silence,
+          dispatch: frame.dispatch,
+          ...(frame.costUSD !== undefined ? { costUSD: frame.costUSD } : {}),
+          costIncomplete: frame.costIncomplete === true,
+          closing: false,
+        }),
+      );
       return;
     }
 
     case "watch": {
-      if (frame.conversationId !== undefined) {
-        const participants = store.conversationParticipantIds(frame.conversationId);
-        if (participants === undefined || !participants.includes(agentId)) {
-          send(agentId, { t: "error", detail: "you are not in that conversation" });
-          return;
-        }
+      if (frame.conversationId !== undefined && roomFor(agentId, frame.conversationId) === undefined) {
+        return;
       }
       presence.watch(agentId, frame.conversationId);
       return;
     }
 
     case "progress": {
-      const participants = store.conversationParticipantIds(frame.conversationId);
-      if (participants === undefined || !participants.includes(agentId)) {
-        send(agentId, { t: "error", detail: "you are not in that conversation" });
-        return;
-      }
+      if (roomFor(agentId, frame.conversationId) === undefined) return;
+      // Held to the same rule as a message: "my agent is reading your calendar" is a line in
+      // somebody else's room, and an agent with no turn has no business putting one there.
+      if (!holdsTheFloor(agentId, frame.conversationId, frame.dispatch)) return;
       orchestrator.onProgress(frame.conversationId, agentId);
       presence.note(frame.conversationId, agentId, frame.note);
       return;
     }
 
     case "waiting": {
-      const participants = store.conversationParticipantIds(frame.conversationId);
-      if (participants === undefined || !participants.includes(agentId)) {
-        send(agentId, { t: "error", detail: "you are not in that conversation" });
-        return;
-      }
+      if (roomFor(agentId, frame.conversationId) === undefined) return;
+      if (!holdsTheFloor(agentId, frame.conversationId, frame.dispatch)) return;
       orchestrator.onWaiting(frame.conversationId, agentId);
       return;
     }
 
     case "trouble": {
-      const participants = store.conversationParticipantIds(frame.conversationId);
-      if (participants === undefined || !participants.includes(agentId)) {
-        send(agentId, { t: "error", detail: "you are not in that conversation" });
-        return;
-      }
-      const message = store.appendMessage({
-        conversationId: frame.conversationId,
-        authorAgentId: agentId,
-        kind: "system",
-        text: frame.reason,
-      });
-      orchestrator.onTurnSettled(frame.conversationId, agentId, "failed");
-      if (message === undefined) return;
-      for (const participant of participants) send(participant, { t: "appended", message });
+      if (roomFor(agentId, frame.conversationId) === undefined) return;
+      if (!holdsTheFloor(agentId, frame.conversationId, frame.dispatch)) return;
+      report(agentId, orchestrator.troubled(frame.conversationId, agentId, frame.dispatch, frame.reason));
       return;
     }
 
@@ -858,19 +957,46 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
 
 const server = Bun.serve<SocketData, never>({
   port: PORT,
+  hostname: HOST,
+  ...(TLS_CERT !== undefined && TLS_KEY !== undefined
+    ? { tls: { cert: Bun.file(TLS_CERT), key: Bun.file(TLS_KEY) } }
+    : {}),
   fetch(request, bunServer) {
-    if (new URL(request.url).pathname === "/socket") {
-      return bunServer.upgrade(request, { data: {} })
-        ? undefined
-        : new Response("expected a websocket upgrade", { status: 426 });
-    }
     // The socket's own peer address, not a forwarded header: a header is whatever the
     // caller wrote unless there is a proxy in front that is trusted to overwrite it, and a
     // hub anybody can run has no way to know whether there is.
-    return app.fetch(request, { ip: bunServer.requestIP(request)?.address ?? "unknown" });
+    const address = bunServer.requestIP(request)?.address ?? "unknown";
+    if (new URL(request.url).pathname === "/socket") {
+      // Both ceilings are checked before the upgrade, so a flood costs a refused handshake
+      // rather than a socket the hub then has to reason about.
+      if (openSockets.size >= MAX_SOCKETS) {
+        return new Response("this hub is full", { status: 503, headers: { "retry-after": "30" } });
+      }
+      if ((anonymous.get(address) ?? 0) >= MAX_ANONYMOUS_PER_ADDRESS) {
+        return new Response("too many unauthenticated sockets from here", {
+          status: 429,
+          headers: { "retry-after": "10" },
+        });
+      }
+      const id = newNonce();
+      return bunServer.upgrade(request, { data: { id, address } })
+        ? undefined
+        : new Response("expected a websocket upgrade", { status: 426 });
+    }
+    return app.fetch(request, { ip: address });
   },
   websocket: {
+    // Bun closes anything larger itself rather than buffering it, which is the point: the
+    // limit has to bind before the frame is in memory to be worth having.
+    maxPayloadLength: MAX_FRAME_BYTES,
     open(socket) {
+      openSockets.add(socket);
+      countAnonymous(socket.data.address, 1);
+      // A socket that never says who it is holds a slot, a challenge and a buffer for
+      // nothing. It has one frame to send, and ten seconds to send it.
+      socket.data.helloBy = setTimeout(() => {
+        socket.close(1008, "say hello first");
+      }, HELLO_GRACE_MS);
       // Per socket, not per agent: a challenge reused across connections is a recording
       // somebody can replay, which is most of what a bearer token already was.
       const nonce = newNonce();
@@ -878,6 +1004,15 @@ const server = Bun.serve<SocketData, never>({
       socket.send(JSON.stringify({ t: "challenge", nonce } satisfies ServerFrame));
     },
     message(socket, raw) {
+      // Charged before the frame is parsed, so a flood of malformed frames costs a sender
+      // exactly what a flood of valid ones does.
+      if (!frameRate.take(socket.data.id).allowed) {
+        socket.send(
+          JSON.stringify({ t: "error", detail: "too many frames — slow down" } satisfies ServerFrame),
+        );
+        socket.close(1008, "too many frames");
+        return;
+      }
       let parsed: unknown;
       try {
         parsed = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw));
@@ -888,6 +1023,8 @@ const server = Bun.serve<SocketData, never>({
       handleFrame(socket, parsed);
     },
     close(socket) {
+      openSockets.delete(socket);
+      noLongerAnonymous(socket);
       const agentId = socket.data.agentId;
       if (agentId === undefined) return;
       // A replaced socket must not look like the agent leaving.
@@ -904,7 +1041,8 @@ const server = Bun.serve<SocketData, never>({
 // already expired fires on the next tick and appends to the room it belonged to.
 orchestrator.recover();
 
-console.log(`quartet hub listening on http://localhost:${String(server.port)}`);
+const scheme = TLS_CERT !== undefined ? "https" : "http";
+console.log(`quartet hub listening on ${scheme}://${HOST}:${String(server.port)}`);
 
 // A friend's bridge dials out to this hub, same as yours does — it never needs to reach your
 // machine directly. What it needs is a URL that reaches *this* one, which `--tunnel` gets via

@@ -1,17 +1,15 @@
 /**
  * @fileoverview How far each conversation has got, kept across restarts.
  *
- * The chain that makes a deleted line visible is only as good as the memory of where it had
- * reached. Held in RAM alone it fails twice over, and both failures are worse than not having
- * it: a bridge that restarts signs its next line as if it were the first, so the *other* side
- * reports a gap that never happened — and a bridge that restarts having forgotten what it had
- * seen will accept a hub quietly dropping everything up to that point.
+ * The chain that makes a deleted line visible is only as good as the memory of where it
+ * reached. In RAM alone it fails both ways: a restarted bridge signs as if from scratch, so
+ * the *other* side reports a gap that never happened, and one that forgot what it had seen
+ * accepts a hub dropping everything up to that point.
  *
- * A false alarm here is the more expensive of the two. The whole value of the warning is that
- * it is rare enough to be worth reading, and an alarm that fires every time somebody reboots
- * is one people learn to click past — at which point the real one goes past too.
+ * The false alarm is the more expensive of the two — an alarm that fires on every reboot is
+ * one people learn to click past, and then the real one goes past too.
  *
- * None of this is secret. Every link is a digest of a signature the hub already holds.
+ * Not secret: every link is a digest of a signature the hub already holds.
  */
 
 import { readFile } from "node:fs/promises";

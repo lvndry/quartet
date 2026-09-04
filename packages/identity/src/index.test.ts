@@ -28,6 +28,7 @@ function aMessage(overrides: Partial<SignedMessage> = {}): SignedMessage {
     authoredAt: "2026-09-02T18:08:03.000Z",
     nonce: "n0",
     prev: "",
+    dispatch: "dsp_6aa49acb",
     text: "I can do Thursday afternoon.",
     ...overrides,
   };

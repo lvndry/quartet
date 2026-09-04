@@ -1,12 +1,10 @@
 /**
  * @fileoverview A public URL for this hub, for the "run it for a friend" case.
  *
- * Built on the `cloudflared` npm package rather than assuming the binary is already on the
- * machine: Cloudflare has no pure-JS tunnel client, only the Go binary, so "no install step"
- * means downloading that binary ourselves the first time it's needed rather than asking
- * somebody to `brew install` it first. Quick tunnels specifically — not ngrok — because they
- * need no account and no authtoken, and they proxy WebSocket traffic without the browser
- * interstitial ngrok's free tier shows, both of which matter for the hub's `/socket` upgrade.
+ * The `cloudflared` npm package rather than an assumed binary: Cloudflare has no pure-JS
+ * client, so "no install step" means fetching the Go binary ourselves. Quick tunnels rather
+ * than ngrok because they need no account and proxy WebSockets without an interstitial, both
+ * of which matter for `/socket`.
  */
 
 import { bin, install, Tunnel } from "cloudflared";
@@ -24,11 +22,9 @@ type Attempt = TunnelResult | { readonly kind: "missing-binary" };
 /**
  * Starts a quick tunnel to `http://localhost:<port>` and waits for its public URL.
  *
- * Tries to run first rather than checking the filesystem beforehand — the OS already tells
- * us precisely when a binary is missing, on the same spawn we needed to make anyway. Only on
- * that failure does this fetch the binary — a one-time cost of a few dozen megabytes, the
- * same download `brew install cloudflared` would make, just triggered by us instead of asked
- * of the person running the hub — and try once more.
+ * Tries to run first rather than probing the filesystem: the OS says precisely when a binary
+ * is missing, on the spawn we had to make anyway. Only then does it fetch the binary and
+ * retry once.
  */
 export async function startTunnel(port: number, readyTimeoutMs = READY_TIMEOUT_MS): Promise<TunnelResult> {
   const first = await attempt(port, readyTimeoutMs);

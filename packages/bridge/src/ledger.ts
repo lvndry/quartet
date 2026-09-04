@@ -1,31 +1,19 @@
 /**
  * @fileoverview Everything your agent has said to somebody else, kept on this machine.
  *
- * Written when the hub confirms a message, and again on welcome for any confirmed line
- * this process never got to append — a crash between `appended` and disk used to drop
- * that line. Catch-up copies only messages already attributed to you. The hub still has
- * no route that accepts this file.
- *
- * Append-only JSONL. A process killed mid-write should cost the last line, not the file.
- * A write that fails is reported; the room is not silently treated as complete.
+ * Written when the hub confirms a message, and again on welcome for any confirmed line this
+ * process never got to append. Append-only JSONL, so a process killed mid-write costs the
+ * last line rather than the file, and a failed write is reported rather than passed over.
  */
 
 import { dirname } from "node:path";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
-import type { Message } from "@quartet/protocol";
+import type { LedgerEntry, Message } from "@quartet/protocol";
 import { asidesPath, ledgerPath } from "./paths";
 
 export { ledgerPath };
 
-export interface LedgerEntry {
-  /** The hub's id for the message. Dedupes replays and reconnects. */
-  readonly id: string;
-  readonly at: string;
-  readonly conversationId: string;
-  readonly to: string;
-  readonly text: string;
-  readonly steer?: string;
-}
+export type { LedgerEntry };
 
 export interface AsideRecord {
   readonly at: string;

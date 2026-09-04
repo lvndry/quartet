@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { ServerFrame } from "@quartet/protocol";
+import type { ServerFrame, Signature } from "@quartet/protocol";
 import { HubStore } from "./db";
 import { Orchestrator } from "./orchestrator";
 
@@ -28,18 +28,75 @@ function setup() {
   return { store, mira, otto, conversation, frames, orchestrator, online };
 }
 
+/** The turn the hub is currently holding for this agent — what its bridge would answer under. */
+function heldDispatch(store: HubStore, conversationId: string, agentId: string): string {
+  const entry = store
+    .allInFlight()
+    .find((row) => row.conversationId === conversationId && row.agentId === agentId);
+  if (entry === undefined) throw new Error("no turn is in flight for that agent");
+  return entry.entry.dispatch;
+}
+
+let nonces = 0;
+
+/**
+ * A signature the orchestrator will store but never check.
+ *
+ * Verification is the hub's door, not this layer's — see `signatureFor` in `main.ts`. What
+ * matters here is that each one carries a fresh nonce, because the database refuses a second
+ * message under a nonce a room has already seen.
+ */
+function stubSignature(dispatch: string): Signature {
+  nonces += 1;
+  return {
+    did: "did:key:zTest",
+    authoredAt: new Date().toISOString(),
+    nonce: `nonce-${String(nonces)}`,
+    prev: "",
+    dispatch,
+    value: "not-verified-at-this-layer",
+  };
+}
+
+/** What the hub does when a bridge answers a turn. */
+function answer(
+  store: HubStore,
+  orchestrator: Orchestrator,
+  conversationId: string,
+  agentId: string,
+  options: {
+    text?: string;
+    kind?: "agent" | "pass";
+    closing?: boolean;
+    costUSD?: number;
+    dispatch?: string;
+  } = {},
+) {
+  const dispatch = options.dispatch ?? heldDispatch(store, conversationId, agentId);
+  return orchestrator.said(conversationId, agentId, {
+    kind: options.kind ?? "agent",
+    text: options.text ?? "something",
+    signature: stubSignature(dispatch),
+    dispatch,
+    ...(options.costUSD !== undefined ? { costUSD: options.costUSD } : {}),
+    costIncomplete: false,
+    closing: options.closing ?? false,
+  });
+}
+
 describe("orchestrator write path", () => {
   it("persists spend so a cost cap can bind", () => {
     const { store, mira, conversation, orchestrator } = setup();
     orchestrator.setLimit(conversation.id, { kind: "cost", usd: 0.05 });
-    orchestrator.onSpend(conversation.id, 0.04, false);
-
-    expect(store.spend(conversation.id).usd).toBeCloseTo(0.04);
-    const again = store.conversation(conversation.id);
-    expect(again?.spentUSD).toBeCloseTo(0.04);
 
     orchestrator.onNudge(conversation.id, mira.id, "say something");
-    orchestrator.onSpend(conversation.id, 0.02, false);
+    answer(store, orchestrator, conversation.id, mira.id, { costUSD: 0.04 });
+
+    expect(store.spend(conversation.id).usd).toBeCloseTo(0.04);
+    expect(store.conversation(conversation.id)?.spentUSD).toBeCloseTo(0.04);
+
+    orchestrator.onNudge(conversation.id, mira.id, "and again");
+    answer(store, orchestrator, conversation.id, mira.id, { costUSD: 0.02 });
     expect(store.spend(conversation.id).usd).toBeCloseTo(0.06);
   });
 
@@ -56,6 +113,70 @@ describe("orchestrator write path", () => {
     const turns = frames.filter((frame) => frame.t === "turn");
     expect(turns).toHaveLength(2);
     expect(turns[1]).toMatchObject({ t: "turn", conversationId: conversation.id, steer: "start on this" });
+    // The same turn, under the same name — a fresh one would strand whatever the bridge is
+    // already holding, and the hub would then refuse the answer to it.
+    expect(turns[0]).toMatchObject({ dispatch: heldDispatch(store, conversation.id, mira.id) });
+    expect(turns[1]).toMatchObject({ dispatch: heldDispatch(store, conversation.id, mira.id) });
+  });
+});
+
+describe("a turn nobody was given", () => {
+  it("refuses an answer that names no dispatch the hub handed out", () => {
+    const { store, mira, conversation, frames, orchestrator } = setup();
+    // No nudge, so no turn. A bridge speaking here is speaking of its own accord — every
+    // line validly signed, and every line waking somebody else's paid agent.
+    const refused = answer(store, orchestrator, conversation.id, mira.id, {
+      dispatch: "a-turn-nobody-gave",
+    });
+
+    expect(refused.ok).toBe(false);
+    expect(store.transcript(conversation.id, 20)).toHaveLength(0);
+    expect(frames.filter((frame) => frame.t === "turn")).toHaveLength(0);
+  });
+
+  it("refuses a second answer to the same dispatch", () => {
+    const { store, mira, otto, conversation, orchestrator } = setup();
+    orchestrator.onNudge(conversation.id, mira.id, "go");
+    const dispatch = heldDispatch(store, conversation.id, mira.id);
+
+    expect(answer(store, orchestrator, conversation.id, mira.id, { dispatch }).ok).toBe(true);
+    const budgetAfterFirst = store.budget(conversation.id);
+
+    // What a captured frame replayed off the wire looks like from here: the turn is spent, so
+    // it buys neither another message nor another round of paid turns for @otto.
+    const replayed = answer(store, orchestrator, conversation.id, mira.id, { dispatch });
+    expect(replayed.ok).toBe(false);
+    expect(store.transcript(conversation.id, 20)).toHaveLength(1);
+    expect(store.budget(conversation.id)).toBe(budgetAfterFirst);
+    void otto;
+  });
+
+  it("keeps nothing when an answer is rolled back", () => {
+    const { store, mira, conversation, orchestrator } = setup();
+    orchestrator.onNudge(conversation.id, mira.id, "go");
+    const dispatch = heldDispatch(store, conversation.id, mira.id);
+    answer(store, orchestrator, conversation.id, mira.id, { dispatch, text: "the first" });
+    const spendAfterFirst = store.spend(conversation.id).usd;
+
+    answer(store, orchestrator, conversation.id, mira.id, {
+      dispatch,
+      text: "the replay",
+      costUSD: 5,
+    });
+
+    // The refused answer must leave nothing behind: not the message, not the charge.
+    expect(store.transcript(conversation.id, 20).map((message) => message.text)).toEqual(["the first"]);
+    expect(store.spend(conversation.id).usd).toBeCloseTo(spendAfterFirst);
+  });
+
+  it("refuses a turn result for somebody else's dispatch", () => {
+    const { store, mira, otto, conversation, orchestrator } = setup();
+    orchestrator.onNudge(conversation.id, mira.id, "go");
+    const mirasTurn = heldDispatch(store, conversation.id, mira.id);
+
+    const stolen = answer(store, orchestrator, conversation.id, otto.id, { dispatch: mirasTurn });
+    expect(stolen.ok).toBe(false);
+    expect(store.transcript(conversation.id, 20)).toHaveLength(0);
   });
 });
 
@@ -95,6 +216,19 @@ describe("a hub that restarts mid-turn", () => {
     expect(turns[0]).toMatchObject({ steer: "start on this" });
   });
 
+  it("still accepts the answer to a turn dispatched before the restart", () => {
+    const { store, mira, conversation, orchestrator } = setup();
+    orchestrator.onNudge(conversation.id, mira.id, "start on this");
+    const dispatch = heldDispatch(store, conversation.id, mira.id);
+
+    const revived = restart(store);
+    revived.orchestrator.recover();
+
+    // The dispatch ledger is on disk for exactly this: the bridge is holding a turn it was
+    // charged for, and a restart must not turn its answer into a refusal.
+    expect(answer(store, revived.orchestrator, conversation.id, mira.id, { dispatch }).ok).toBe(true);
+  });
+
   it("says so in the room when a recovered turn is already past its deadline", async () => {
     const { store, mira, conversation, orchestrator } = setup();
     orchestrator.onNudge(conversation.id, mira.id, "start on this");
@@ -113,7 +247,7 @@ describe("a hub that restarts mid-turn", () => {
   it("forgets a turn that settled before the restart", () => {
     const { store, mira, conversation, orchestrator } = setup();
     orchestrator.onNudge(conversation.id, mira.id, "start on this");
-    orchestrator.onTurnSettled(conversation.id, mira.id, "spoke");
+    answer(store, orchestrator, conversation.id, mira.id);
 
     const revived = restart(store);
     revived.orchestrator.recover();
@@ -126,19 +260,16 @@ describe("a hub that restarts mid-turn", () => {
   it("carries a room's state across, so a goodbye stays a goodbye", () => {
     const { store, mira, otto, conversation, orchestrator } = setup();
     orchestrator.onNudge(conversation.id, mira.id, "wrap this up");
-    const closing = store.appendMessage({
-      conversationId: conversation.id,
-      authorAgentId: mira.id,
-      kind: "agent",
+    answer(store, orchestrator, conversation.id, mira.id, {
       text: "settled, then. bye",
+      closing: true,
     });
-    if (closing === undefined) throw new Error("message");
-    orchestrator.closeWith(conversation.id, mira.id, closing);
     // One goodbye takes @mira out; the room is still @otto's to speak in.
     expect(store.bowedOut(conversation.id)).toEqual([mira.id]);
     expect(store.roomState(conversation.id)).toBe("live");
 
-    orchestrator.onTurnSettled(conversation.id, otto.id, "closed");
+    orchestrator.onNudge(conversation.id, otto.id, "anything to add?");
+    answer(store, orchestrator, conversation.id, otto.id, { text: "nope, bye", closing: true });
     expect(store.roomState(conversation.id)).toBe("closed");
 
     const revived = restart(store);
@@ -160,15 +291,12 @@ describe("an agent whose bridge was down", () => {
     const { store, mira, otto, conversation, frames, orchestrator, online } = setup();
     online.delete(otto.id);
 
-    const said = store.appendMessage({
-      conversationId: conversation.id,
-      authorAgentId: mira.id,
-      kind: "agent",
+    orchestrator.onNudge(conversation.id, mira.id, "go");
+    frames.length = 0;
+    const before = store.budget(conversation.id);
+    answer(store, orchestrator, conversation.id, mira.id, {
       text: "free will is compatible with determinism",
     });
-    if (said === undefined) throw new Error("message");
-    const before = store.budget(conversation.id);
-    orchestrator.onMessage(conversation.id, mira.id, said);
 
     // Nothing was dispatched and nothing was charged: there was no socket to dispatch to.
     expect(frames.filter((frame) => frame.t === "turn")).toHaveLength(0);
@@ -187,16 +315,11 @@ describe("an agent whose bridge was down", () => {
   it("does not ask twice when it reconnects again", () => {
     const { store, mira, otto, conversation, frames, orchestrator, online } = setup();
     online.delete(otto.id);
-    const said = store.appendMessage({
-      conversationId: conversation.id,
-      authorAgentId: mira.id,
-      kind: "agent",
-      text: "a claim",
-    });
-    if (said === undefined) throw new Error("message");
-    orchestrator.onMessage(conversation.id, mira.id, said);
+    orchestrator.onNudge(conversation.id, mira.id, "go");
+    answer(store, orchestrator, conversation.id, mira.id, { text: "a claim" });
 
     online.add(otto.id);
+    frames.length = 0;
     orchestrator.onArrived(otto.id);
     const charged = store.budget(conversation.id);
 
@@ -216,19 +339,16 @@ describe("an agent whose bridge was down", () => {
 
   it("leaves a closed room closed when somebody comes back to it", () => {
     const { store, mira, otto, conversation, frames, orchestrator, online } = setup();
-    online.delete(otto.id);
-    const said = store.appendMessage({
-      conversationId: conversation.id,
-      authorAgentId: mira.id,
-      kind: "agent",
+    orchestrator.onNudge(conversation.id, mira.id, "wrap up");
+    answer(store, orchestrator, conversation.id, mira.id, {
       text: "settled, then. bye",
+      closing: true,
     });
-    if (said === undefined) throw new Error("message");
-    orchestrator.onMessage(conversation.id, mira.id, said);
-    orchestrator.closeWith(conversation.id, mira.id, said);
-    // Both gone, so the room really is closed rather than merely quiet on one side.
-    orchestrator.onTurnSettled(conversation.id, otto.id, "closed");
+    orchestrator.onNudge(conversation.id, otto.id, "you too?");
+    answer(store, orchestrator, conversation.id, otto.id, { text: "bye", closing: true });
 
+    online.delete(otto.id);
+    frames.length = 0;
     online.add(otto.id);
     orchestrator.onArrived(otto.id);
 
@@ -252,16 +372,13 @@ describe("a room somebody was brought into", () => {
   it("wakes both of the others when one agent speaks", () => {
     const { store, mira, conversation, frames, orchestrator, nia } = trio();
     store.addMember(conversation.id, nia.id);
+    orchestrator.onNudge(conversation.id, mira.id, "go");
+    frames.length = 0;
     const before = store.budget(conversation.id);
 
-    const said = store.appendMessage({
-      conversationId: conversation.id,
-      authorAgentId: mira.id,
-      kind: "agent",
+    answer(store, orchestrator, conversation.id, mira.id, {
       text: "free will is compatible with determinism",
     });
-    if (said === undefined) throw new Error("message");
-    orchestrator.onMessage(conversation.id, mira.id, said);
 
     expect(dispatchedTo(frames)).toBe(2);
     expect(store.budget(conversation.id)).toBe(before - 2);
@@ -269,14 +386,8 @@ describe("a room somebody was brought into", () => {
 
   it("asks the newcomer for a turn, since they have heard none of it", () => {
     const { store, mira, conversation, frames, orchestrator, nia } = trio();
-    const said = store.appendMessage({
-      conversationId: conversation.id,
-      authorAgentId: mira.id,
-      kind: "agent",
-      text: "a claim",
-    });
-    if (said === undefined) throw new Error("message");
-    orchestrator.onMessage(conversation.id, mira.id, said);
+    orchestrator.onNudge(conversation.id, mira.id, "go");
+    answer(store, orchestrator, conversation.id, mira.id, { text: "a claim" });
     const dispatchedBefore = dispatchedTo(frames);
 
     store.addMember(conversation.id, nia.id);
@@ -310,15 +421,9 @@ describe("a room somebody was brought into", () => {
     store.removeMember(conversation.id, otto.id);
     orchestrator.onLeft(conversation.id, otto.id);
 
-    const said = store.appendMessage({
-      conversationId: conversation.id,
-      authorAgentId: mira.id,
-      kind: "agent",
-      text: "still here?",
-    });
-    if (said === undefined) throw new Error("message");
+    orchestrator.onNudge(conversation.id, mira.id, "go");
     frames.length = 0;
-    orchestrator.onMessage(conversation.id, mira.id, said);
+    answer(store, orchestrator, conversation.id, mira.id, { text: "still here?" });
 
     expect(dispatchedTo(frames)).toBe(1);
   });
@@ -367,8 +472,9 @@ describe("a turn that takes minutes", () => {
   });
 
   it("still delivers an answer that arrives after the room gave up", async () => {
-    const { store, mira, otto, conversation, orchestrator } = setup();
+    const { store, mira, conversation, orchestrator } = setup();
     orchestrator.onNudge(conversation.id, mira.id, "go");
+    const dispatch = heldDispatch(store, conversation.id, mira.id);
 
     // Let the deadline actually fire, the way it does when a bridge goes quiet.
     const revived = restart(store);
@@ -377,24 +483,19 @@ describe("a turn that takes minutes", () => {
     expect(revived.orchestrator.hasTurn(conversation.id, mira.id)).toBe(false);
 
     // Then the daemon finishes anyway. The words crossed, so they belong in the room, and
-    // @otto is still owed a reply to them.
-    const late = store.appendMessage({
-      conversationId: conversation.id,
-      authorAgentId: mira.id,
-      kind: "agent",
+    // @otto is still owed a reply to them. The dispatch outlives its deadline for precisely
+    // this: the turn was charged for, so it stays answerable.
+    const late = answer(store, revived.orchestrator, conversation.id, mira.id, {
+      dispatch,
       text: "sorry, that took a while",
     });
-    if (late === undefined) throw new Error("message");
-    revived.orchestrator.onTurnSettled(conversation.id, mira.id, "spoke");
-    revived.orchestrator.onMessage(conversation.id, mira.id, late);
+    expect(late.ok).toBe(true);
 
     const delivered = revived.frames.some(
       (frame) => frame.t === "appended" && frame.message.text === "sorry, that took a while",
     );
     expect(delivered).toBe(true);
     // And it wakes @otto, because a late answer is still an answer he has not heard.
-    const woken = revived.frames.some((frame) => frame.t === "turn");
-    expect(woken).toBe(true);
-    void otto;
+    expect(revived.frames.some((frame) => frame.t === "turn")).toBe(true);
   });
 });

@@ -16,7 +16,7 @@ import { signClaim, tag, type Keypair } from "@quartet/identity";
 import { AgentAdmin } from "./agent-admin";
 import { Attestor } from "./attest";
 import { Bridge } from "./bridge";
-import { loadConfig, saveConfig, type QuartetConfig } from "./config";
+import { hardenSecretFiles, loadConfig, saveConfig, type QuartetConfig } from "./config";
 import { loadIdentity } from "./identity";
 import { loadSealingKeys } from "./sealing-keys";
 import { Sealer } from "./sealer";
@@ -44,15 +44,11 @@ const DEFAULT_LOCAL_PORT = 7777;
 const DEFAULT_DAEMON_URL = "http://localhost:4747";
 
 /**
- * A flag's value, straight off argv — and refuses to hand back another flag's name as if it
- * were one.
+ * A flag's value, straight off argv, refusing to hand back another flag's name as one.
  *
- * `--data-dir --hub https://…` is a real command somebody will type, from putting the wrong
- * flag first or dropping a value by mistake, and every flag here happens to be the kind of
- * thing that never legitimately starts with `--` — a handle, a URL, a path, a port. Handing
- * back `"--hub"` as `--data-dir`'s value used to mean silently working from the wrong
- * directory with no error at all; the mistake surfaced only much later, as a stale identity
- * a fresh hub had never heard of.
+ * No flag here legitimately takes a value starting with `--`, and `--data-dir --hub https://…`
+ * is a real thing to mistype. It used to mean silently working from the wrong data directory,
+ * surfacing much later as a stale identity a fresh hub had never heard of.
  */
 function argValue(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -95,17 +91,20 @@ async function claimHandle(
   if (fromFlag === undefined) {
     console.log("\nYou do not have a quartet identity on this hub yet.\n");
   }
-  const handle = fromFlag ?? (await prompt("Pick a handle (lowercase, e.g. mira): "));
-  if (handle.trim().length < 2) {
+  const handle = (fromFlag ?? (await prompt("Pick a handle (lowercase, e.g. mira): "))).trim();
+  if (handle.length < 2) {
     console.error("\nA handle needs at least two characters.");
     return undefined;
   }
-  const nameAnswer = argValue("name") ?? (await prompt("Display name: "));
-  const displayName = nameAnswer.trim().length > 0 ? nameAnswer.trim() : handle.trim();
+  // Shows the handle it falls back to, the way the daemon question shows its default. An
+  // empty answer here is the common case, and a bare "Display name:" gave no clue whether
+  // that meant "no display name" or "the handle".
+  const nameAnswer = argValue("name") ?? (await prompt(`Display name: [${handle}] `));
+  const displayName = nameAnswer.trim().length > 0 ? nameAnswer.trim() : handle;
 
   // The claim is signed here rather than by the hub, which is the whole point: the hub is
   // being shown a key it cannot mint, so the name it hands back is bound to this machine.
-  const claim = { did: keypair.did, handle: handle.trim(), at: new Date().toISOString() };
+  const claim = { did: keypair.did, handle, at: new Date().toISOString() };
   const response = await fetch(new URL("/agents", hubUrl), {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -125,7 +124,7 @@ async function claimHandle(
     console.error(`\n${body?.error ?? "the hub refused that handle"}`);
     return undefined;
   }
-  return { handle: handle.trim() };
+  return { handle };
 }
 
 /**
@@ -138,12 +137,9 @@ async function claimHandle(
 /**
  * Choose which of this machine's jazz agents speaks for its owner in quartet.
  *
- * Shown rather than typed from memory. The agent decides what quartet can actually do — a
- * model with no calendar tool cannot answer a question about your week however well it is
- * prompted — so provider, model and tools belong in front of somebody making this choice.
- *
- * Returns the agent's id. `undefined` means give up, and the caller stops rather than
- * writing a webhook pointing at nothing.
+ * Shown rather than typed from memory, with provider, model and tools, because the agent
+ * decides what quartet can actually do. `undefined` means give up, and the caller stops
+ * rather than writing a webhook pointing at nothing.
  */
 async function chooseAgent(daemonUrl: string): Promise<string | undefined> {
   const listing = await fetchJazzAgents(daemonUrl);
@@ -333,16 +329,11 @@ async function resolveOrMintToken(webhookName: string): Promise<string | undefin
 /**
  * Whether the hub is answering right now.
  *
- * Checked once, up front, rather than left to the bridge's own reconnect loop: that loop
- * treats every disconnect the same — a hub restarting and a URL that will never resolve both
- * just retry forever with the same generic log line. A typo survives that indefinitely with
- * no signal beyond a warning easy to miss; failing here instead means it is caught before
- * anything else about this run even starts.
+ * Checked up front rather than left to the reconnect loop, which treats a hub restarting and
+ * a URL that will never resolve identically — so a typo used to survive indefinitely.
  *
- * A 200 alone is not enough: a mistyped domain can resolve to a parked-domain page that
- * answers every path with a 200 of its own HTML, which would otherwise pass this check while
- * being nothing like a hub. Requiring the exact body this hub's own `/health` returns is what
- * tells the two apart.
+ * A 200 alone is not enough: a mistyped domain can land on a parked page that answers every
+ * path with its own HTML. The exact `/health` body is what tells the two apart.
  */
 async function hubReachable(hubUrl: string): Promise<boolean> {
   try {
@@ -383,13 +374,9 @@ const JAZZ_INSTALL_COMMAND =
 /**
  * Whether jazz can be run at all, before asking it anything.
  *
- * A daemon that will not answer and a `jazz` that does not exist look the same to
- * `fetchJazzAgents` — both are "unreachable" — but they need different advice, and only this
- * one is fixed by installing something rather than starting something already there.
- *
- * `--jazz` answers the question by itself: somebody who says where jazz is has told us it is
- * there, and that command can be a whole shell invocation rather than a name on PATH, so
- * there is nothing here to look up and nothing to install.
+ * A daemon that will not answer and a missing `jazz` are both "unreachable" to
+ * `fetchJazzAgents`, and only one of them is fixed by installing something. `--jazz` answers
+ * the question by itself, and can be a whole shell invocation rather than a name on PATH.
  */
 function isJazzInstalled(): boolean {
   if (argValue("jazz") !== undefined) return true;
@@ -399,12 +386,9 @@ function isJazzInstalled(): boolean {
 /**
  * Installs jazz if it is missing, with the person's say-so first.
  *
- * jazz is quartet's own sibling project, not a stranger's script, and this is the exact
- * command its own README already tells somebody to run by hand — automating it is removing a
- * copy-paste, not adding a new trust boundary. It still asks first and runs the installer
- * with its own output visible, rather than downloading and executing anything unannounced:
- * "nothing here touches your machine without saying so first" applies to installing jazz the
- * same as it applies to rewriting its config.
+ * The exact command jazz's own README tells somebody to run by hand, so automating it removes
+ * a copy-paste rather than adding a trust boundary. It still asks first and runs the installer
+ * with its output visible.
  */
 async function ensureJazzInstalled(): Promise<boolean> {
   if (isJazzInstalled()) return true;
@@ -663,6 +647,13 @@ if (dataDir !== undefined) {
   if (agentFlag !== undefined && /^[\w.-]+$/.test(agentFlag)) {
     setDataDirectory(`~/.quartet/${agentFlag}`);
   }
+}
+
+// Once the data directory is settled and before anything is read out of it. A config
+// written by an older build sits at whatever the umask allowed, and it holds two bearer
+// tokens — so the mode is repaired at every start rather than only on the next write.
+for (const problem of await hardenSecretFiles()) {
+  console.warn(`could not restrict permissions on a file holding secrets — ${problem}`);
 }
 
 const command = process.argv[2] ?? "connect";

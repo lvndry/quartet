@@ -1,8 +1,4 @@
 import { describe, expect, it } from "bun:test";
-import { Database } from "bun:sqlite";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
   HISTORY_PAGE_SIZE,
   TURN_OVERLAP,
@@ -122,6 +118,7 @@ describe("turns the hub is waiting on", () => {
   it("round-trips one, and forgets it when cleared", () => {
     const { store, mira, conversation } = setup(0);
     store.saveInFlight(conversation.id, mira.id, {
+      dispatch: "dsp_one",
       pending: true,
       steered: true,
       queuedSteer: "and mention the deposit",
@@ -134,6 +131,7 @@ describe("turns the hub is waiting on", () => {
       conversationId: conversation.id,
       agentId: mira.id,
       entry: {
+        dispatch: "dsp_one",
         pending: true,
         steered: true,
         queuedSteer: "and mention the deposit",
@@ -148,11 +146,11 @@ describe("turns the hub is waiting on", () => {
 
   it("keeps the original dispatch time when a follow-up is queued behind it", async () => {
     const { store, mira, conversation } = setup(0);
-    store.saveInFlight(conversation.id, mira.id, { pending: false, steered: false });
+    store.saveInFlight(conversation.id, mira.id, { dispatch: "dsp_one", pending: false, steered: false });
     const first = store.allInFlight()[0]?.dispatchedAt;
 
     await Bun.sleep(5);
-    store.saveInFlight(conversation.id, mira.id, { pending: true, steered: false });
+    store.saveInFlight(conversation.id, mira.id, { dispatch: "dsp_one", pending: true, steered: false });
 
     // The deadline a recovered turn gets is measured from when the money was spent, so an
     // update must not quietly restart that clock.
@@ -162,60 +160,9 @@ describe("turns the hub is waiting on", () => {
 
   it("leaves no queued steer behind when there was none", () => {
     const { store, mira, conversation } = setup(0);
-    store.saveInFlight(conversation.id, mira.id, { pending: false, steered: false });
+    store.saveInFlight(conversation.id, mira.id, { dispatch: "dsp_one", pending: false, steered: false });
 
-    expect(store.allInFlight()[0]?.entry).toEqual({ pending: false, steered: false });
-  });
-});
-
-describe("opening a database written by an older build", () => {
-  it("reads a stopped room as halted, which is the reading a person can undo", async () => {
-    const workDir = await mkdtemp(join(tmpdir(), "quartet-migrate-"));
-    const path = join(workDir, "old.sqlite");
-
-    // The shape a hub wrote before rooms had three states: one boolean that cannot say
-    // whether a person pressed stop or an agent said goodbye.
-    const old = new Database(path, { create: true });
-    old.exec(`
-      CREATE TABLE owners (id TEXT PRIMARY KEY, created_at TEXT NOT NULL);
-      CREATE TABLE agents (
-        id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, handle TEXT NOT NULL UNIQUE,
-        display_name TEXT NOT NULL, bio TEXT, token TEXT NOT NULL UNIQUE,
-        created_at TEXT NOT NULL
-      );
-      CREATE TABLE connections (
-        id TEXT PRIMARY KEY, a_agent TEXT NOT NULL, b_agent TEXT NOT NULL,
-        created_at TEXT NOT NULL, UNIQUE (a_agent, b_agent)
-      );
-      CREATE TABLE invites (
-        id TEXT PRIMARY KEY, from_agent TEXT NOT NULL, to_agent TEXT NOT NULL,
-        purpose TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL
-      );
-      CREATE TABLE conversations (
-        id TEXT PRIMARY KEY, connection_id TEXT NOT NULL, purpose TEXT NOT NULL,
-        budget INTEGER NOT NULL, stopped INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL, last_at TEXT NOT NULL
-      );
-      CREATE TABLE messages (
-        id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, author_agent TEXT NOT NULL,
-        kind TEXT NOT NULL, text TEXT NOT NULL, at TEXT NOT NULL
-      );
-      INSERT INTO owners VALUES ('own_1', '2026-01-01T00:00:00.000Z');
-      INSERT INTO agents VALUES ('agt_1', 'own_1', 'mira', 'Mira', NULL, 'tok', '2026-01-01T00:00:00.000Z');
-      INSERT INTO connections VALUES ('con_1', 'agt_1', 'agt_1', '2026-01-01T00:00:00.000Z');
-      INSERT INTO conversations VALUES ('cnv_stopped', 'con_1', 'p', 5, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
-      INSERT INTO conversations VALUES ('cnv_running', 'con_1', 'p', 5, 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
-    `);
-    old.close();
-
-    const store = new HubStore(path);
-    const halted = store.conversation("cnv_stopped");
-    const live = store.conversation("cnv_running");
-
-    expect(halted?.state).toBe("halted");
-    expect(live?.state).toBe("live");
-
-    await rm(workDir, { recursive: true, force: true });
+    expect(store.allInFlight()[0]?.entry).toEqual({ dispatch: "dsp_one", pending: false, steered: false });
   });
 });
 
@@ -345,7 +292,7 @@ describe("who is in a room", () => {
 
   it("gives up a turn owed to somebody who has left", () => {
     const { store, otto, conversation } = trio();
-    store.saveInFlight(conversation.id, otto.id, { pending: false, steered: false });
+    store.saveInFlight(conversation.id, otto.id, { dispatch: "dsp_otto", pending: false, steered: false });
 
     store.removeMember(conversation.id, otto.id);
 
@@ -385,7 +332,7 @@ describe("deleting a room", () => {
   it("erases the room, its members and everything said in it", () => {
     const { store, mira, otto, conversation } = trio();
     store.appendMessage({ conversationId: conversation.id, authorAgentId: mira.id, kind: "agent", text: "hi" });
-    store.saveInFlight(conversation.id, otto.id, { pending: false, steered: false });
+    store.saveInFlight(conversation.id, otto.id, { dispatch: "dsp_otto", pending: false, steered: false });
 
     store.deleteConversation(conversation.id);
 
@@ -651,5 +598,222 @@ describe("agreeing to a conversation", () => {
     if (room === undefined) throw new Error("room");
 
     expect(store.respondToConversation(room.id, nia.id, true)).toBeUndefined();
+  });
+});
+
+describe("the dispatch ledger", () => {
+  function room() {
+    const store = new HubStore(":memory:");
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    if (mira === undefined || otto === undefined) throw new Error("agents");
+    const connectionId = store.createConnection(mira.id, otto.id);
+    const conversation = store.createConversation(connectionId, "find a time");
+    if (conversation === undefined) throw new Error("conversation");
+    return { store, mira, otto, conversation };
+  }
+
+  it("knows nothing about a turn it never handed out", () => {
+    const { store, mira, conversation } = room();
+
+    expect(store.dispatchState(conversation.id, mira.id, "invented")).toBe("unknown");
+  });
+
+  it("lets a dispatch be spent exactly once", () => {
+    const { store, mira, conversation } = room();
+    store.recordDispatch(conversation.id, mira.id, "dsp_one");
+
+    expect(store.dispatchState(conversation.id, mira.id, "dsp_one")).toBe("open");
+    expect(store.settleDispatch(conversation.id, mira.id, "dsp_one")).toBe(true);
+    expect(store.dispatchState(conversation.id, mira.id, "dsp_one")).toBe("settled");
+    expect(store.settleDispatch(conversation.id, mira.id, "dsp_one")).toBe(false);
+  });
+
+  it("will not let one member of a room spend another member's turn", () => {
+    const { store, mira, otto, conversation } = room();
+    store.recordDispatch(conversation.id, mira.id, "dsp_one");
+
+    // The id is not a secret from @otto — it travels in the signature, because the far side
+    // needs it to check one. So the check cannot be \"whoever quotes this id\".
+    expect(store.dispatchState(conversation.id, otto.id, "dsp_one")).toBe("unknown");
+    expect(store.settleDispatch(conversation.id, otto.id, "dsp_one")).toBe(false);
+    expect(store.dispatchState(conversation.id, mira.id, "dsp_one")).toBe("open");
+  });
+
+  it("goes with the room it belonged to", () => {
+    const { store, mira, conversation } = room();
+    store.recordDispatch(conversation.id, mira.id, "dsp_one");
+    store.deleteConversation(conversation.id);
+
+    expect(store.dispatchState(conversation.id, mira.id, "dsp_one")).toBe("unknown");
+  });
+});
+
+describe("a nonce that has already been used", () => {
+  function room() {
+    const store = new HubStore(":memory:");
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    if (mira === undefined || otto === undefined) throw new Error("agents");
+    const connectionId = store.createConnection(mira.id, otto.id);
+    const conversation = store.createConversation(connectionId, "find a time");
+    if (conversation === undefined) throw new Error("conversation");
+    const signature = (nonce: string, dispatch = "dsp_one") => ({
+      did: "did:key:zMira",
+      authoredAt: "2026-09-04T10:00:00.000Z",
+      nonce,
+      prev: "",
+      dispatch,
+      value: "sig",
+    });
+    return { store, mira, otto, conversation, signature };
+  }
+
+  it("is reported before anything is written", () => {
+    const { store, mira, conversation, signature } = room();
+    store.appendMessage({
+      conversationId: conversation.id,
+      authorAgentId: mira.id,
+      kind: "agent",
+      text: "the original",
+      signature: signature("n1"),
+    });
+
+    expect(store.nonceUsed(conversation.id, "did:key:zMira", "n1")).toBe(true);
+    expect(store.nonceUsed(conversation.id, "did:key:zMira", "n2")).toBe(false);
+  });
+
+  it("cannot be appended a second time even if the check is skipped", () => {
+    const { store, mira, conversation, signature } = room();
+    store.appendMessage({
+      conversationId: conversation.id,
+      authorAgentId: mira.id,
+      kind: "agent",
+      text: "the original",
+      signature: signature("n1"),
+    });
+
+    // The database is the enforcement, not the lookup above: a check some future caller
+    // forgets to make is not a defence against a replayed frame.
+    expect(() =>
+      store.appendMessage({
+        conversationId: conversation.id,
+        authorAgentId: mira.id,
+        kind: "agent",
+        text: "the original",
+        signature: signature("n1"),
+      }),
+    ).toThrow();
+    expect(store.transcript(conversation.id, 20)).toHaveLength(1);
+  });
+
+  it("is only spent within its own room, and only for its own author", () => {
+    const { store, mira, otto, conversation, signature } = room();
+    store.appendMessage({
+      conversationId: conversation.id,
+      authorAgentId: mira.id,
+      kind: "agent",
+      text: "the original",
+      signature: signature("n1"),
+    });
+
+    // Two authors can pick the same nonce without either of them replaying anything, and so
+    // can the same author in a different room. Only the triple is a repeat.
+    expect(() =>
+      store.appendMessage({
+        conversationId: conversation.id,
+        authorAgentId: otto.id,
+        kind: "agent",
+        text: "mine, coincidentally",
+        signature: { ...signature("n1"), did: "did:key:zOtto" },
+      }),
+    ).not.toThrow();
+    expect(store.transcript(conversation.id, 20)).toHaveLength(2);
+  });
+});
+
+describe("erasing a room for everyone", () => {
+  function trio() {
+    const store = new HubStore(":memory:");
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    const nia = store.createAgent({ handle: "nia", displayName: "Nia" });
+    if (mira === undefined || otto === undefined || nia === undefined) throw new Error("agents");
+    const connectionId = store.createConnection(mira.id, otto.id);
+    const conversation = store.createConversation(connectionId, "find a time");
+    if (conversation === undefined) throw new Error("conversation");
+    return { store, mira, otto, nia, conversation };
+  }
+
+  it("needs every current member, not the first one to ask", () => {
+    const { store, mira, otto, conversation } = trio();
+
+    expect(store.askErase(conversation.id, mira.id)).toBe(true);
+    expect(store.everyoneAskedErase(conversation.id)).toBe(false);
+    expect(store.conversation(conversation.id)?.eraseAsked).toEqual(["mira"]);
+
+    expect(store.askErase(conversation.id, otto.id)).toBe(true);
+    expect(store.everyoneAskedErase(conversation.id)).toBe(true);
+  });
+
+  it("does not count a repeated ask as a second vote", () => {
+    const { store, mira, conversation } = trio();
+    expect(store.askErase(conversation.id, mira.id)).toBe(true);
+    expect(store.askErase(conversation.id, mira.id)).toBe(false);
+
+    expect(store.everyoneAskedErase(conversation.id)).toBe(false);
+    expect(store.conversation(conversation.id)?.eraseAsked).toEqual(["mira"]);
+  });
+
+  it("takes a newcomer's agreement too, since they are now in the room", () => {
+    const { store, mira, otto, nia, conversation } = trio();
+    store.askErase(conversation.id, mira.id);
+    store.askErase(conversation.id, otto.id);
+    expect(store.everyoneAskedErase(conversation.id)).toBe(true);
+
+    store.addMember(conversation.id, nia.id);
+    expect(store.everyoneAskedErase(conversation.id)).toBe(false);
+  });
+
+  it("stops waiting on somebody who has left", () => {
+    const { store, mira, otto, conversation } = trio();
+    store.askErase(conversation.id, mira.id);
+    expect(store.everyoneAskedErase(conversation.id)).toBe(false);
+
+    // Leaving reduces who is left to agree, which is what keeps this reachable rather than
+    // a room frozen forever by one member who never comes back.
+    store.removeMember(conversation.id, otto.id);
+    expect(store.everyoneAskedErase(conversation.id)).toBe(true);
+  });
+});
+
+describe("writing several things as one", () => {
+  it("keeps none of them when the work throws", () => {
+    const store = new HubStore(":memory:");
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    if (mira === undefined || otto === undefined) throw new Error("agents");
+    const connectionId = store.createConnection(mira.id, otto.id);
+    const conversation = store.createConversation(connectionId, "find a time");
+    if (conversation === undefined) throw new Error("conversation");
+
+    // The shape of the turn transition: a message and the charge for it are one fact, and a
+    // process that died between them left a room with a message whose turn was still in
+    // flight — charged, unanswerable, and invisible.
+    expect(() =>
+      store.transaction(() => {
+        store.appendMessage({
+          conversationId: conversation.id,
+          authorAgentId: mira.id,
+          kind: "agent",
+          text: "half a turn",
+        });
+        store.setSpend(conversation.id, 0.25, false);
+        throw new Error("the process died here");
+      }),
+    ).toThrow("the process died here");
+
+    expect(store.transcript(conversation.id, 20)).toHaveLength(0);
+    expect(store.spend(conversation.id).usd).toBe(0);
   });
 });

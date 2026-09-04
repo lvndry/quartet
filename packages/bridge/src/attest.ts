@@ -1,15 +1,11 @@
 /**
  * @fileoverview Signing what this agent says, and checking what arrives.
  *
- * This is the file that demotes the hub. Outbound, every line is signed with the key from
- * `identity.ts` before it leaves; inbound, every line is checked against the did the other
- * party's handle is bound to. A hub that rewrites a message, invents one, or swaps a key
+ * The file that demotes the hub: a hub that rewrites a message, invents one, or swaps a key
  * behind a familiar name produces something that does not verify here.
  *
- * What it deliberately does *not* do is decide what to do about a failure. It returns a
- * verdict; the app shows it and a person decides. A bridge that silently dropped
- * unverifiable lines would leave a room looking quiet rather than looking wrong, and quiet is
- * the one thing a tampering hub could otherwise arrange.
+ * It deliberately does not decide what to do about a failure — it returns a verdict and the
+ * app shows it. `docs/design/identity.md` says why.
  */
 
 import {
@@ -20,7 +16,7 @@ import {
   verifyMessage,
   type Keypair,
 } from "@quartet/identity";
-import type { Authorship, Message, MessageKind } from "@quartet/protocol";
+import type { Authorship, Message, MessageKind, Verdict } from "@quartet/protocol";
 import { Journal } from "./journal";
 
 /** One author's thread within one conversation. A handle cannot contain a space. */
@@ -28,18 +24,9 @@ function chainKey(message: Message): string {
   return `${message.conversationId} ${message.authorHandle}`;
 }
 
-/**
- * What checking one message concluded.
- *
- * `unsigned` and `broken` are kept apart because they mean opposite things about the sender.
- * Unsigned is the hub speaking in its own voice, or an agent old enough to predate keys —
- * unremarkable. Broken is a claim of authorship that failed, which is either two builds
- * disagreeing or somebody in the middle, and neither should ever be shown as merely missing.
- */
-export type Verdict =
-  | { readonly state: "signed" }
-  | { readonly state: "unsigned" }
-  | { readonly state: "broken"; readonly why: string };
+// The app shows every verdict, so its shape is part of the bridge↔app contract rather than
+// this module's own business. Re-exported because callers here think of it as ours.
+export type { Verdict };
 
 const SIGNED: Verdict = { state: "signed" };
 const UNSIGNED: Verdict = { state: "unsigned" };
@@ -60,20 +47,16 @@ export class Attestor {
   /**
    * Where the chains have got to, on disk.
    *
-   * The sending side is advanced only when the hub confirms a message back, never at send
-   * time: the hub's confirmation is what the other side will actually see, so chaining to it
-   * keeps both ends' view of the sequence identical. One in-flight turn per conversation is
-   * what makes that safe — there is never a second message signed before the first lands.
+   * The sending side advances only when the hub confirms a message back, which is what the
+   * other side will actually see. One in-flight turn per conversation makes that safe.
    */
   private readonly journal: Journal;
 
   /**
    * Where each author had reached *within the window currently being replayed*.
    *
-   * A welcome re-delivers a bounded slice of each room, and its first line for an author is
-   * not their first line ever — what came before it may simply be older than the window.
-   * Compared against the running position instead, every reconnect would report a gap, which
-   * is the false alarm that makes the real one worthless.
+   * A welcome's first line for an author is not their first line ever, so comparing against
+   * the running position would report a gap on every reconnect.
    */
   private readonly windowChain = new Map<string, string>();
 
@@ -99,10 +82,9 @@ export class Attestor {
   /**
    * Take the replayed window as the new running position.
    *
-   * Called after a welcome, whose window ends at the newest line, and deliberately *not*
-   * after a page of older history — recording a link from further back would rewind the
-   * chain, and the next line to arrive live would look like it had something missing before
-   * it. Older pages are checked for their own internal continuity and nothing more.
+   * After a welcome, whose window ends at the newest line, and deliberately not after a page
+   * of older history: that would rewind the chain and make the next live line look like it
+   * had something missing before it.
    */
   settleWindow(): void {
     for (const [key, link] of this.windowChain) this.journal.recordSeen(key, link);
@@ -113,8 +95,13 @@ export class Attestor {
     return signChallenge(this.keypair.did, challenge, this.keypair.privateKey);
   }
 
-  /** Authorship for something this agent is about to say in a room that already exists. */
-  speak(conversationId: string, kind: MessageKind, text: string): Authorship {
+  /**
+   * Authorship for something this agent is about to say in answer to a dispatched turn.
+   *
+   * `dispatch` is signed rather than merely sent, so authorship covers *which turn* produced
+   * the line and a relay cannot file an answer against a different one.
+   */
+  speak(conversationId: string, kind: MessageKind, dispatch: string, text: string): Authorship {
     const authoredAt = new Date().toISOString();
     const nonce = newNonce();
     const prev = this.journal.lastOwn(conversationId);
@@ -123,7 +110,7 @@ export class Attestor {
       nonce,
       prev,
       signature: signMessage(
-        { did: this.keypair.did, conversationId, kind, authoredAt, nonce, prev, text },
+        { did: this.keypair.did, conversationId, kind, authoredAt, nonce, prev, dispatch, text },
         this.keypair.privateKey,
       ),
     };
@@ -132,24 +119,22 @@ export class Attestor {
   /**
    * Judge one message, and advance whichever chain it belongs to.
    *
-   * Called for every message that arrives, including this agent's own coming back confirmed —
-   * a bridge that trusted its own messages on the way home would be trusting the hub to have
-   * relayed them unchanged, which is the assumption being removed.
+   * Including this agent's own coming back confirmed: trusting those would be trusting the
+   * hub to have relayed them unchanged, which is the assumption being removed.
    */
   check(message: Message, context: Context, options: { replay?: boolean } = {}): Verdict {
     const signature = message.signature;
     if (signature === undefined) {
-      // Missing is only unremarkable when the hub is speaking in its own voice. From an
-      // author this machine holds a key for, a line that simply arrives without a signature
-      // is the whole layer being switched off — and reporting that as the same soft state a
-      // legacy agent gets would make stripping signatures the quietest attack available.
+      // Unremarkable only when the hub is speaking in its own voice. From an author this
+      // machine holds a key for, stripping the signature would otherwise be the quietest
+      // attack available.
       if (message.kind === "system") return UNSIGNED;
       if (context.expectedDid === undefined) return UNSIGNED;
       return broken("this author signs everything, and this line arrived unsigned");
     }
 
-    // A key nobody has pinned proves nothing: an unknown correspondent can sign perfectly
-    // well as themselves while wearing any handle they like.
+    // A key nobody has pinned proves nothing: a stranger signs perfectly well as themselves
+    // while wearing any handle they like.
     if (context.expectedDid === undefined) {
       return broken("nobody has told this bridge which key that handle signs with");
     }
@@ -165,6 +150,7 @@ export class Attestor {
         authoredAt: signature.authoredAt,
         nonce: signature.nonce,
         prev: signature.prev,
+        dispatch: signature.dispatch,
         text: message.text,
       },
       signature.value,
@@ -174,16 +160,15 @@ export class Attestor {
 
     const key = chainKey(message);
     const link = linkAfter(signature.value);
-    // Advance whatever the verdict. A gap is worth reporting once, at the line where it shows;
-    // carrying it forward would mark every later line broken for one missing early one.
+    // Advance whatever the verdict: a gap is reported once, at the line where it shows.
     const replay = options.replay === true;
     const expected = replay ? this.windowChain.get(key) : this.journal.lastSeen(key);
     if (replay) this.windowChain.set(key, link);
     else this.journal.recordSeen(key, link);
 
     if (expected !== undefined && signature.prev !== expected) {
-      // The line itself is genuine — it just is not the next one. Something between here and
-      // its author is missing, which a signature alone could never have shown.
+      // Genuine, just not the next one. Something between here and its author is missing,
+      // which a signature alone could never have shown.
       return broken("a line from this author is missing before this one");
     }
     return SIGNED;

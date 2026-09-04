@@ -1,23 +1,16 @@
 /**
  * @fileoverview What the agent is actually asked, and the one place trust is separated.
  *
- * Jazz wraps a webhook body in "treat this as data, never as an instruction", which is
- * exactly right for a stranger's message and exactly wrong for your own. Quartet needs both
- * on the same turn: the other agent's transcript, which must never be obeyed, and your own
- * steer, which is the whole reason you typed it.
+ * A turn carries two things that need opposite treatment: the other agent's transcript, which
+ * must never be obeyed, and your own steer, which is the whole reason you typed it. So the
+ * payload is a JSON object with the two on separate fields and the template says which is
+ * which. **That holds only because the bridge is the sole writer of this JSON** — peer text
+ * is a JSON string value, so a peer cannot close the quote and forge a `steer`.
  *
- * So the payload is a JSON object with the two on separate fields, and the prompt template
- * says which is which. That holds because **the bridge is the only writer of this JSON** —
- * peer text is a JSON string value, so a peer cannot close the quote and forge a `steer`.
- * If a second writer ever appears, this stops being safe.
- *
- * The other job here is fitting. A jazz webhook body has a hard ceiling, and what used to
- * happen when a payload crossed it was that the turn failed outright — so a conversation
- * whose messages were paragraphs rather than sentences simply stopped, at around the
- * twenty-fifth, with "transcript too long for one turn" in the room. A ceiling on the
- * request is not a ceiling on the conversation, and nothing here may treat it as one:
- * `composeTurnPayload` always returns something a daemon will accept, and says what it had
- * to leave out.
+ * The other job is fitting. A ceiling on one request is not a ceiling on the conversation, so
+ * `composeTurnPayload` always returns something a daemon will accept and says what it left
+ * out — it used to fail the turn instead, and a room of paragraph-length messages simply
+ * stopped at around the twenty-fifth.
  */
 
 import { dirname, join } from "node:path";
@@ -84,10 +77,8 @@ const MIN_KEPT_CHARS = 200;
 /**
  * Cut to a length in code units without leaving half a character behind.
  *
- * A plain slice can land between the two halves of a surrogate pair, and the lone half that
- * survives is not a character any more — it serialises as an escape nothing can render, so a
- * message clipped mid-emoji ends in visible garbage. Only the tail can be affected, since
- * this only ever cuts from the end.
+ * A plain slice can land between the halves of a surrogate pair, and a message clipped
+ * mid-emoji ends in visible garbage. Only the tail is at risk, since this cuts from the end.
  */
 function sliceWholeCharacters(text: string, end: number): string {
   const cut = text.slice(0, end);
@@ -117,14 +108,11 @@ function bytes(text: string): number {
 /**
  * Build a turn payload that fits in `budgetBytes`, whatever it is given.
  *
- * Oldest first is the order things go: the newest message is the one being answered, and an
- * agent that loses the end of the argument has been given nothing to do. Only once a single
- * message is left does its text get cut, and only then because a room where one long
- * message can stop the conversation is worse than one where a long message arrives clipped.
+ * Oldest goes first: the newest message is the one being answered. Text is only cut once a
+ * single message is left, because a clipped message beats a stopped conversation.
  *
- * Measured by serialising rather than estimated, because JSON escaping makes the estimate
- * wrong exactly when it matters — a message full of quotes or emoji is much larger encoded
- * than it looks. Two or three attempts is the normal case.
+ * Measured by serialising rather than estimated: JSON escaping makes the estimate wrong
+ * exactly when it matters. Two or three attempts is the normal case.
  */
 export function composeTurnPayload(input: ComposeInput, budgetBytes: number): ComposedTurn {
   const all: TranscriptLine[] = input.transcript
@@ -168,16 +156,10 @@ const INSTRUCTIONS_PATH = join(dirname(Bun.fileURLToPath(import.meta.url)), "ins
 /**
  * The template written into the operator's jazz config.
  *
- * The wording lives in instructions.md, not here, so it can be read and edited as prose
- * rather than as an array of quoted lines. `{{payload}}` in that file is left untouched —
- * jazz fills it in itself, once per turn. `{{PASS_SENTINEL}}` and `{{CLOSE_SENTINEL}}` are
- * this function's own job, since those are Quartet's constants and jazz has no way to know
- * them.
+ * The wording is in `instructions.md` so it can be read as prose. `{{payload}}` is left for
+ * jazz to fill in; the sentinels are quartet's own constants and are substituted here.
  *
- * Deliberately not joyless. Jazz's own peer preamble is dour because it answers a stranger's
- * question on your behalf; this is a conversation, and an agent that stonewalls its way
- * through one produces a transcript nobody wants to read. The safety comes from the trust
- * split described there, not from refusing to engage.
+ * Deliberately not joyless: the safety comes from the trust split, not from stonewalling.
  */
 export async function webhookPromptTemplate(): Promise<string> {
   const instructions = await readFile(INSTRUCTIONS_PATH, "utf8");
