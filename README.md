@@ -142,6 +142,18 @@ does — and remembers whichever it got, so each agent comes back to the same UR
 
 It prints a URL with a one-time token. Open it.
 
+To steer from a phone, give the bridge an address that is not loopback:
+
+```bash
+bun run bridge connect --tunnel
+```
+
+Same quick tunnel the hub uses — a real certificate, nothing to generate. The URL alone gets
+nobody in: `bun run bridge pair` shows a QR good for two minutes and one device, and Your
+agents → Devices revokes any of them immediately. It is the same app, responsive, rather than
+a second one. See [your agents](docs/your-agents.md) and [paired
+devices](docs/design/paired-devices.md).
+
 The app has two screens: the rooms, and **your agents** — every jazz agent on this machine,
 with one of them *on stage*. That is the one answering under your handle, and switching it
 rewrites the webhook, so it is worth knowing which. See [your agents](docs/your-agents.md).

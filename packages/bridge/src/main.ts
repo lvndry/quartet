@@ -39,9 +39,25 @@ import {
 } from "./jazz-agents";
 import { currentLogLevel, LOG_LEVELS, logger, parseLogLevel, setLogLevel } from "./log";
 import { startLocalServer } from "./local";
+import { DeviceRegistry, type StoredDevice } from "./devices";
+import { startTunnel } from "@quartet/tunnel";
+import QRCode from "qrcode";
 
 const DEFAULT_LOCAL_PORT = 7777;
 const DEFAULT_DAEMON_URL = "http://localhost:4747";
+
+/**
+ * Interface the app binds to.
+ *
+ * Loopback, and `--tunnel` is the intended way to be reachable from anywhere else —
+ * cloudflared terminates TLS and reaches this over loopback, so the bind never has to widen.
+ * Anything else needs TLS in front of it; see the refusal in `connect`.
+ */
+const APP_HOST = process.env["QUARTET_APP_HOST"] ?? "127.0.0.1";
+
+function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "::1" || host === "localhost" || host === "[::1]";
+}
 
 /**
  * A flag's value, straight off argv, refusing to hand back another flag's name as one.
@@ -448,6 +464,24 @@ async function connect(): Promise<void> {
     process.exit(1);
   }
 
+  // Refuse to put the app on a network in the clear, in the same shape and for the same
+  // reason as the hub: a warning at boot is a warning nobody reads, and the failure it
+  // precedes is silent. What crosses here is every conversation on this machine plus the
+  // steers you type, which are the one thing quartet otherwise seals end to end.
+  if (!isLoopbackHost(APP_HOST) && process.env["QUARTET_ALLOW_PLAINTEXT"] !== "1") {
+    console.error(
+      `\n  refusing to serve the app on ${APP_HOST} without TLS.\n\n` +
+        "  Every request would cross the network readable — your conversations, and the\n" +
+        "  steers you type to your own agent.\n" +
+        "  Pick one:\n" +
+        "    • run `bun run bridge connect --tunnel` and leave QUARTET_APP_HOST alone\n" +
+        "      (cloudflared terminates TLS and reaches this over loopback)\n" +
+        "    • set QUARTET_ALLOW_PLAINTEXT=1 if a reverse proxy in front already\n" +
+        "      terminates TLS and only it can reach this port\n",
+    );
+    process.exit(1);
+  }
+
   if (config.handle === undefined) {
     const claimed = await claimHandle(hubUrl, keypair);
     if (claimed === undefined) process.exit(1);
@@ -495,6 +529,14 @@ async function connect(): Promise<void> {
 
   const localToken = config.localToken ?? crypto.randomUUID().replaceAll("-", "");
   if (config.localToken !== localToken) config = { ...config, localToken };
+
+  // A device list that outlives the process, so a paired phone stays paired across restarts
+  // and a revoked one stays revoked. Writing through `config` rather than a file of its own
+  // keeps one thing to harden and one thing to back up.
+  const devices = new DeviceRegistry(config.devices ?? [], async (updated: readonly StoredDevice[]) => {
+    config = { ...config, devices: updated };
+    await saveConfig(config);
+  });
   const preferredPort = Number(requestedPort ?? config.localPort ?? DEFAULT_LOCAL_PORT);
   const webRoot = join(dirname(Bun.fileURLToPath(import.meta.url)), "..", "..", "web", "dist");
   const built = await Bun.file(join(webRoot, "index.html")).exists();
@@ -508,6 +550,8 @@ async function connect(): Promise<void> {
     token: localToken,
     bridge,
     agents,
+    devices,
+    hostname: APP_HOST,
     ...(built ? { webRoot } : {}),
   });
 
@@ -522,6 +566,25 @@ async function connect(): Promise<void> {
 
   const appUrl = `http://localhost:${String(local.port)}/?token=${localToken}`;
   console.log(`\n  quartet is running\n\n    ${appUrl}\n`);
+
+  // The tunnel comes up after the server, because a quick tunnel needs a port that is already
+  // listening. Failing to get one is a warning rather than an exit: the app on this machine
+  // works either way, and losing it because a phone could not be reached would be the wrong
+  // trade.
+  let stopTunnel: (() => void) | undefined;
+  if (hasFlag("tunnel")) {
+    console.log("  reaching this app from a phone — starting a cloudflare quick tunnel…");
+    const tunnel = await startTunnel(local.port);
+    if (tunnel.kind === "ok") {
+      local.setPublicOrigin(tunnel.url);
+      stopTunnel = tunnel.stop;
+      console.log(`\n  ✓ also reachable at ${tunnel.url}`);
+      console.log("    Nothing can get in with that URL alone. To let a device in, run");
+      console.log("    `bun run bridge pair` and scan the code.\n");
+    } else {
+      console.warn(`\n  ! no tunnel (${tunnel.kind}) — the app is still on ${appUrl}\n`);
+    }
+  }
   logger("bridge").info("watching", {
     agent: `@${config.handle ?? "?"}`,
     webhook: daemon.webhook,
@@ -535,10 +598,60 @@ async function connect(): Promise<void> {
   const shutdown = (): void => {
     bridge.stop();
     local.stop();
+    stopTunnel?.();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+}
+
+/**
+ * Offer a pairing code, from the terminal, for a device to scan.
+ *
+ * A second process talking to the running one over loopback rather than doing the pairing
+ * itself: the offer has to live in the bridge that will honour it, and that bridge is
+ * already up. Reaching it needs the port and token this identity's config remembers, which
+ * is also what makes this refuse to pair against somebody else's agent.
+ */
+async function pairDevice(): Promise<void> {
+  const config = await loadConfig();
+  if (config.localPort === undefined || config.localToken === undefined) {
+    console.error("\n  ! no app on file for this identity yet. Run `quartet connect` first.\n");
+    process.exit(1);
+  }
+
+  const response = await fetch(`http://localhost:${String(config.localPort)}/api/devices/offer`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${config.localToken}`,
+    },
+    body: "{}",
+  }).catch(() => undefined);
+
+  if (response === undefined || !response.ok) {
+    console.error(`\n  ! quartet is not running on port ${String(config.localPort)}.`);
+    console.error("    Start it with `quartet connect --tunnel`, then run this again.\n");
+    process.exit(1);
+  }
+
+  const body = (await response.json()) as { value: { code: string; url: string; expiresAt: number } };
+  const { code, url } = body.value;
+  const seconds = Math.max(0, Math.round((body.value.expiresAt - Date.now()) / 1000));
+
+  const isTunnelled = !url.startsWith("http://localhost");
+  console.log(`\n${await QRCode.toString(url, { type: "terminal", small: true })}`);
+  console.log(`  scan that, or open   ${url}`);
+  console.log(`  the code is          ${code}`);
+  console.log(`\n  Good for ${String(seconds)} seconds, and for one device.`);
+  if (!isTunnelled) {
+    console.warn(
+      "\n  ! this address only works on this machine. For a phone, restart the bridge" +
+        "\n    with `--tunnel` so there is an address it can reach.\n",
+    );
+  } else {
+    console.log("  Revoke it any time from Your agents → Devices.\n");
+  }
 }
 
 function usage(): void {
@@ -548,6 +661,8 @@ function usage(): void {
       "",
       "  quartet connect            start the bridge and open the app",
       "    --hub <url>              which hub to join",
+      "    --tunnel                 also serve the app on a public https URL, so a paired",
+      "                             phone can reach it. Pairing is what lets anything in.",
       "    --port <n>               local port for the app — served or nothing (default 7777,",
       "                             and only that default moves up when it is taken)",
       "    --data-dir <path>        this agent's config and record (overrides $QUARTET_HOME)",
@@ -563,6 +678,8 @@ function usage(): void {
       "    --jazz <command>         how to invoke jazz (default: jazz)",
       `    --log-level <level>      ${LOG_LEVELS.join(" | ")} (default: info, or $QUARTET_LOG)`,
       "    --yes                    install jazz without asking, if it's missing",
+      "",
+      "  quartet pair                offer a code for a phone or tablet to scan",
       "",
       "  quartet info                what this identity actually is, right now",
       "    --agent <id>               check a specific jazz agent instead of the one on file",
@@ -663,6 +780,8 @@ if (hasFlag("help") || command === "help") {
   await info();
 } else if (command === "connect") {
   await connect();
+} else if (command === "pair") {
+  await pairDevice();
 } else {
   usage();
   process.exit(1);

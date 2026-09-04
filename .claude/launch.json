@@ -4,8 +4,22 @@
     {
       "name": "website",
       "runtimeExecutable": "bun",
-      "runtimeArgs": ["run", "--cwd", "packages/website", "dev"],
+      "runtimeArgs": [
+        "run",
+        "--cwd",
+        "packages/website",
+        "dev"
+      ],
       "port": 4321
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": [
+        "run",
+        "web:dev"
+      ],
+      "port": 5173
     }
   ]
 }

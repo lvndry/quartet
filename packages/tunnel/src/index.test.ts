@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { use } from "cloudflared";
-import { startTunnel } from "./tunnel";
+import { startTunnel } from "./index";
 
 /**
  * A stand-in `cloudflared` binary, pointed to via the library's own `use()` override — the
