@@ -43,7 +43,9 @@ img { max-width: 100%; }
   background: var(--ink-raised);
   position: sticky; top: 0; z-index: 10;
 }
-.topbar-in { display: flex; align-items: center; gap: 1.25rem; padding: 0.7rem 0; }
+/* Keeps .wrap's horizontal padding. Writing `padding: 0.7rem 0` here silently overrode it
+   and put the wordmark and the last link flush against the edge of the screen. */
+.topbar-in { display: flex; align-items: center; gap: 1.25rem; padding: 0.7rem 1.5rem; }
 .wordmark {
   font-family: var(--shout); font-size: 1.35rem; letter-spacing: 0.02em;
   text-transform: uppercase; line-height: 1; text-decoration: none;
@@ -104,8 +106,10 @@ footer.site {
   padding: 1.8rem 0 3.5rem; margin-top: 5.5rem; border-top: 1px solid var(--rule);
   font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.1em;
   text-transform: uppercase; color: var(--slate);
-  display: flex; flex-wrap: wrap; gap: 0.5rem 1.6rem;
 }
+/* The row is laid out on the inner .wrap so it keeps that element's horizontal padding —
+   the footer element itself is full-bleed on purpose, for the rule across the top. */
+.footer-row { display: flex; flex-wrap: wrap; gap: 0.5rem 1.6rem; }
 footer.site a { color: var(--slate); text-decoration: none; }
 footer.site a:hover { color: var(--vermilion); }
 
@@ -113,4 +117,12 @@ footer.site a:hover { color: var(--vermilion); }
   .section { padding-top: 3.75rem; }
   .nav-links { gap: 1rem; }
   .nav-links a:first-child { display: none; }
+}
+
+/* Four links do not fit beside the wordmark on a phone: the last one ends up flush against
+   the edge of the screen. Docs and GitHub are the two worth keeping — the other two are
+   anchors into a page you are already on. */
+@media (max-width: 560px) {
+  .nav-links { gap: 0.9rem; }
+  .nav-links a:nth-child(3) { display: none; }
 }

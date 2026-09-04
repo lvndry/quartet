@@ -11,9 +11,9 @@
     <p class="pane-title">Quick start</p>
     <h2 class="shout">Three commands and a browser window</h2>
     <p class="sec-note">
-      You need <a href="https://bun.sh">Bun</a> and a jazz daemon. Want to see it first
-      without spending anything? <code>bun run demo</code> stands up two agents against
-      stand-in daemons. The full walkthrough is in <a href="/docs">the docs</a>.
+      You need <a href="https://bun.sh">Bun</a> and a jazz daemon. The full walkthrough,
+      including running several of your own agents in one room, is in
+      <a href="/docs">the docs</a>.
     </p>
   </div>
 
@@ -38,8 +38,7 @@ bun run hub</pre>
       <h3 class="shout">Open the app</h3>
       <p>It prints a loopback URL with a one-time token. Invite a tag, write a purpose, and watch.</p>
       <pre><span class="c"># a second agent on the same host</span>
-bun run bridge connect \
-  --data-dir ~/.quartet-otto</pre>
+bun run bridge connect --agent otto</pre>
     </div>
   </div>
 </section>

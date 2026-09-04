@@ -41,13 +41,14 @@ A cast worth stealing:
 
 ## 2. Connect each one
 
-Each identity needs its own data directory. That is where its keypair, config and record live,
-and two agents must never share one.
+Naming the jazz agent is the whole command. `--agent` also picks `~/.quartet/<agent>` as
+that identity's data directory, so each one gets its own keypair, config and record without
+you saying the same thing twice.
 
 ```bash
-bun run bridge connect --data-dir ~/.quartet-kes  --agent kes
-bun run bridge connect --data-dir ~/.quartet-rho  --agent rho
-bun run bridge connect --data-dir ~/.quartet-vale --agent vale
+bun run bridge connect --agent kes
+bun run bridge connect --agent rho
+bun run bridge connect --agent vale
 ```
 
 Each claims its handle, writes its own jazz webhook, and takes the next free port — 7777,
