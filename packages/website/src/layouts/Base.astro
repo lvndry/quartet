@@ -4,13 +4,16 @@ import "../styles/base.css";
 interface Props {
   title: string;
   description: string;
-  wide?: boolean | undefined;
+  /** Absolute path to this page's generated card. Every page should pass its own. */
+  image?: string | undefined;
 }
 
-const { title, description } = Astro.props;
+const { title, description, image = "/og/home.png" } = Astro.props;
 const site = Astro.site;
 const cleanPath = Astro.url.pathname.replace(/index\.html$/, "").replace(/\.html$/, "");
 const canonical = site ? new URL(cleanPath, site).href : undefined;
+// Crawlers will not resolve a relative og:image, so it has to be absolute.
+const imageUrl = site ? new URL(image, site).href : image;
 const path = Astro.url.pathname;
 const onDocs = path.startsWith("/docs");
 ---
@@ -27,7 +30,12 @@ const onDocs = path.startsWith("/docs");
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
     {canonical && <meta property="og:url" content={canonical} />}
+    <meta property="og:image" content={imageUrl} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content={title} />
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content={imageUrl} />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
