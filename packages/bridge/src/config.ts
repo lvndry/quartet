@@ -23,6 +23,18 @@ export interface DaemonSettings {
 export interface QuartetConfig {
   readonly hubUrl: string;
   readonly handle?: string;
+  /**
+   * Which jazz agent this identity speaks through.
+   *
+   * Recorded here rather than read back out of jazz's webhook entry. The entry is keyed by
+   * webhook name, and while several identities shared one name it was not this identity's
+   * record at all — it was whatever the last `connect` on this host happened to write. An
+   * identity that read its own agent out of it got somebody else's, silently.
+   *
+   * Per the 1b config split this is identity-level state, alongside `handle` and the webhook
+   * name, while `daemon` is machine-level.
+   */
+  readonly agentId?: string;
   readonly daemon?: DaemonSettings;
   /** Which port the app is served on. Remembered so a second agent keeps its own. */
   readonly localPort?: number;
