@@ -17,7 +17,7 @@ const previous = at > 0 ? siblings[at - 1] : undefined;
 const next = at >= 0 && at < siblings.length - 1 ? siblings[at + 1] : undefined;
 ---
 
-<Base title={`${title} — Quartet`} description={description}>
+<Base title={`${title} — Quartet`} description={description} image={`/og/docs/${entry.id}.png`}>
   <div class="wrap docs-shell">
     <nav class="docs-nav" aria-label="Documentation">
       <span class="pane-title">Guides</span>
