@@ -30,6 +30,23 @@ export interface Activity {
       };
 }
 
+/**
+ * One tool call your own agent's current turn made. Mirrors the bridge's `ToolCall`.
+ *
+ * Only ever your own: the other side of a conversation reports a tool's name through
+ * `PeerPresence.doing` and nothing else, so there is no peer equivalent of this.
+ */
+export interface ToolCall {
+  id: string;
+  name: string;
+  state: "running" | "ok" | "failed" | "needs-you";
+  /** What the call returned, already clipped by the bridge. */
+  result?: string;
+  /** Whether `result` is where the output was cut rather than where it ended. */
+  clipped?: boolean;
+  at: number;
+}
+
 export interface Aside {
   at: string;
   conversationId: string;
@@ -151,6 +168,8 @@ export interface BridgeState {
   atStart: Record<string, boolean>;
   asides: Record<string, Aside[]>;
   activity: Record<string, Activity>;
+  /** What your own agent's current turn has done, per conversation. Yours alone. */
+  toolCalls: Record<string, ToolCall[]>;
   /** Everyone in each room but you. */
   presence: Record<string, PeerPresence[]>;
   ledger: LedgerEntry[];
@@ -173,6 +192,7 @@ const EMPTY: BridgeState = {
   atStart: {},
   asides: {},
   activity: {},
+  toolCalls: {},
   presence: {},
   ledger: [],
   verdicts: {},
