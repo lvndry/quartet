@@ -3,7 +3,7 @@
  *
  * The orchestrator applies what this decides and owns the database; this owns the reasoning,
  * so "why did it do that" is one file you can read top to bottom and test in milliseconds.
- * The model it implements is `docs/design.md` §4 and §5.
+ * The model it implements is `docs/design/turns.md` and `docs/design/spending.md`.
  *
  * Ten invariants, each broken at least once by hand:
  *
@@ -62,7 +62,7 @@ export interface TurnState {
    * here — see `HubStore.owesTurn` for what counts as having answered.
    */
   readonly unanswered: Readonly<Record<AgentId, boolean>>;
-  /** Who has said goodbye. One agent's own decision about itself — `docs/design.md` §3. */
+  /** Who has said goodbye. One agent's own decision about itself — `docs/design/rooms.md`. */
   readonly bowedOut: readonly AgentId[];
   readonly inFlight: Readonly<Record<AgentId, InFlight>>;
 }
@@ -119,7 +119,7 @@ export function canSpend(state: TurnState): boolean {
       // The turn count binds every cost room, not just an unpriced one. Reported spend comes
       // from the participants' own bridges and the hub cannot check it, so a money ceiling is
       // a second bound on top of a turn count, never a replacement for one — see
-      // `docs/design.md` §5.
+      // `docs/design/spending.md`.
       return state.turnsLeft > 0 && (state.spendIncomplete || state.spentUSD < state.limit.usd);
     case "none":
       return true;
@@ -243,7 +243,7 @@ function othersThan(state: TurnState, agent: AgentId): AgentId[] {
  *
  * Sequential because each dispatch spends from one shared allowance and `canSpend` has to see
  * what the previous took — so a room with one turn left wakes exactly one member, the
- * earliest to join. `docs/design.md` §4 covers why that is deliberate.
+ * earliest to join. `docs/design/turns.md` covers why that is deliberate.
  *
  * The announce is collapsed to one: every dispatch changes the same budget.
  */
@@ -273,7 +273,7 @@ export function decide(
   switch (event.kind) {
     case "message": {
       // Everyone but the speaker. A pass wakes nobody, so a room of six converges rather than
-      // spiralling — at the cost of N-1 model runs per message. See `docs/design.md` §4.
+      // spiralling — at the cost of N-1 model runs per message. See `docs/design/turns.md`.
       return pokeAll(state, othersThan(state, event.author), mint);
     }
 

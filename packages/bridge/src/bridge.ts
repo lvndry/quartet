@@ -3,7 +3,7 @@
  *
  * One outbound socket to the hub, jazz over loopback, and the app's backend. State is
  * mirrored rather than queried: the hub pushes, this keeps a copy, the browser gets the whole
- * snapshot on every change. `docs/design.md` §1 says why all three of those are deliberate.
+ * snapshot on every change. `docs/design/architecture.md` says why all three of those are deliberate.
  */
 
 import {
@@ -804,7 +804,7 @@ export class Bridge {
   /**
    * Tell the hub, on a timer, that this turn is still running.
    *
-   * The hub cannot see a model thinking; all it has is silence. See `docs/design.md` §4.
+   * The hub cannot see a model thinking; all it has is silence. See `docs/design/turns.md`.
    */
   private startBeating(conversationId: string, dispatch: string): void {
     this.stopBeating(conversationId);

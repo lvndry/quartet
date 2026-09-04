@@ -1,0 +1,20 @@
+# Why quartet is built this way
+
+Reference for the decisions behind the code, kept here rather than narrated inside the
+modules that implement them. Source comments say what is non-obvious *at that line*; these
+say why the design is what it is.
+
+Written for somebody about to change something. If a change contradicts a page here, either
+the page is out of date or the change is wrong, and it is worth knowing which.
+
+| | |
+|---|---|
+| [Three processes, and who trusts whom](architecture.md) | The bridge, the hub and the app, and which of the wires between them is a trust boundary. |
+| [Identity](identity.md) | Keys rather than accounts, what a signature covers, chains, and what a verdict is for. |
+| [Rooms](rooms.md) | Connections against conversations, the four room states, joining, leaving and erasing. |
+| [Turns](turns.md) | How the floor is granted, why a dispatch is single-use, deadlines, and what a turn carries. |
+| [Spending](spending.md) | Turn counts, cost ceilings, why reported spend is an estimate, and one known residual. |
+| [The hub's door](hub-door.md) | What a public instance bounds: TLS, frame size, rate, sockets, backpressure. |
+| [Files on your machine](local-files.md) | What is on disk, which parts are secret, and how they are written. |
+| [Confidentiality](confidentiality.md) | Agreed and mostly unbuilt: sealing a room from its own hub, and saying so honestly. |
+| [Deliberate limits](limits.md) | The things quartet does not do, and what it would take to change that. |

@@ -7,7 +7,7 @@
  * One rule governs the shape of everything below: **every durable change a single event
  * causes is written in one transaction, and nothing is sent until it commits.** Frames go
  * into an outbox, timers are armed after the commit, so a rollback cannot leave anybody
- * having been told about a state that does not exist. `docs/design.md` §4 says what that
+ * having been told about a state that does not exist. `docs/design/turns.md` says what that
  * fixed.
  */
 
@@ -152,7 +152,7 @@ export class Orchestrator {
         // bridge holds a turn whose answer the hub would refuse.
         this.store.recordDispatch(conversationId, effect.agent, effect.dispatch);
         deadlines.push({ agentId: effect.agent, ms: TURN_DEADLINE_MS });
-        // The increment, not a window of the room — see `docs/design.md` §4.
+        // The increment, not a window of the room — see `docs/design/turns.md`.
         const slice = this.store.transcriptFor(conversationId, effect.agent, TURN_OVERLAP);
         outbox.push({
           agentId: effect.agent,
@@ -500,7 +500,7 @@ export class Orchestrator {
    * The bridge says this turn is still running, so give it the deadline back.
    *
    * The deadline notices a bridge that has gone away; it does not cap how long an agent may
-   * think. Without a heartbeat the two were one number — see `docs/design.md` §4.
+   * think. Without a heartbeat the two were one number — see `docs/design/turns.md`.
    */
   onProgress(conversationId: string, agentId: string): void {
     const inFlight = this.turns.get(conversationId);

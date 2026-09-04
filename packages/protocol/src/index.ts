@@ -9,7 +9,7 @@
  * something other than relaying.
  *
  * Why the model is shaped like this — rooms, turns, allowances, consent — is in
- * `docs/design.md`. Comments here cover only what is not obvious from the schema itself.
+ * `docs/design`. Comments here cover only what is not obvious from the schema itself.
  */
 
 import { z } from "zod";
@@ -29,7 +29,7 @@ export const UNLIMITED_TURN_BUDGET = 0;
 export const MAX_SPEND_USD = 1000;
 
 /**
- * How a conversation is allowed to spend. See `docs/design.md` §5.
+ * How a conversation is allowed to spend. See `docs/design/spending.md`.
  *
  * `cost` is never the only bound: reported spend comes from participants' own bridges and
  * the hub cannot check it, so a turn count runs underneath every money ceiling.
@@ -101,7 +101,7 @@ export const WELCOME_TRANSCRIPT_WINDOW = 60;
 export const HISTORY_PAGE_SIZE = 60;
 
 /**
- * How much of a room one dispatched turn carries. See `docs/design.md` §4.
+ * How much of a room one dispatched turn carries. See `docs/design/turns.md`.
  *
  * A turn carries the increment, not a fixed window: the agent resumes a jazz thread that
  * already holds the rest. `TURN_OVERLAP` is insurance for the one turn where that thread is
@@ -119,7 +119,7 @@ export const TURN_SLICE_MAX = 100;
 export const MAX_ROOM_MEMBERS = 6;
 
 /**
- * The hub's name for one dispatched turn. See `docs/design.md` §4.
+ * The hub's name for one dispatched turn. See `docs/design/turns.md`.
  *
  * Required back on everything a turn produces, which is what makes "the room gave you the
  * floor" checkable rather than assumed. Not a secret from the hub, which mints it, nor from
@@ -137,7 +137,7 @@ export const handleSchema = z
  * What kinds of thing appear in the *shared* transcript.
  *
  * There is deliberately no "human" kind — what you type goes to your own agent, never to the
- * other party. See `docs/design.md` §3.
+ * other party. See `docs/design/rooms.md`.
  */
 export const messageKindSchema = z.enum(["agent", "pass", "system"]);
 export type MessageKind = z.infer<typeof messageKindSchema>;
@@ -175,7 +175,7 @@ export const authorshipSchema = z.object({
 });
 export type Authorship = z.infer<typeof authorshipSchema>;
 
-/** Whether a room is running, and if not, who stopped it. See `docs/design.md` §3. */
+/** Whether a room is running, and if not, who stopped it. See `docs/design/rooms.md`. */
 export const roomStateSchema = z.enum(["proposed", "live", "halted", "closed"]);
 export type RoomState = z.infer<typeof roomStateSchema>;
 
@@ -297,7 +297,7 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
    * Prove the key, rather than present a secret.
    *
    * Answers the `challenge` the hub sends when the socket opens. One credential, one place it
-   * lives, and nothing on the wire worth stealing. See `docs/design.md` §2.
+   * lives, and nothing on the wire worth stealing. See `docs/design/identity.md`.
    */
   z.object({
     t: z.literal("hello"),
@@ -359,7 +359,7 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
    * Bring somebody into a room — only somebody you are already connected to.
    *
    * That connection is where consent to talk to you was given, and this spends it rather
-   * than asking for something new. See `docs/design.md` §3.
+   * than asking for something new. See `docs/design/rooms.md`.
    */
   z.object({
     t: z.literal("conversation.add"),
@@ -507,7 +507,7 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
   /** This conversation is gone. Drop it and its messages rather than diffing what changed. */
   z.object({ t: z.literal("conversation.removed"), conversationId: z.string() }),
   z.object({ t: z.literal("appended"), message: messageSchema }),
-  /** Your move. See `docs/design.md` §4 for what the slice is and why it is not the room. */
+  /** Your move. See `docs/design/turns.md` for what the slice is and why it is not the room. */
   z.object({
     t: z.literal("turn"),
     conversationId: z.string(),

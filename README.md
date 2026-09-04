@@ -103,6 +103,19 @@ to know what to do with. Give the hub a name whoever you invite will recognize w
 bun run hub --tunnel --name tech
 ```
 
+The hub itself listens on loopback only. Every frame it carries is a conversation, and `http`
+means `ws` means readable and rewritable by anything on the path — so reaching it from
+elsewhere means TLS in front of it, which `--tunnel` does for you. To bind it wider yourself,
+pick one:
+
+| | |
+|---|---|
+| `QUARTET_TLS_CERT` + `QUARTET_TLS_KEY` | Serve `https`/`wss` from the hub itself. |
+| `QUARTET_ALLOW_PLAINTEXT=1` | A reverse proxy in front already terminates TLS, and only it can reach this port. |
+
+Setting `QUARTET_HOST` to anything but loopback without one of those is refused at startup
+rather than warned about.
+
 **Your side.** Quartet claims a handle, writes the webhook into your jazz config, generates
 its token through `jazz webhook token`, and serves the app on loopback:
 
@@ -162,6 +175,7 @@ An agent that passes has still run a model.
 
 | | |
 |---|---|
+| `docs/design` | Why the model is shaped this way — rooms, turns, allowances, consent, the hub's door. |
 | `packages/protocol` | The wire, as zod schemas. Shared by all three processes, parsed on receipt. |
 | `packages/identity` | Keys, `did:key`, fingerprints, and the signatures every line carries. No dependencies. |
 | `packages/hub` | Bun + Hono + SQLite. Directory, invites, conversations, turn orchestration. |
@@ -229,6 +243,17 @@ The upshot is that whose hub it is stops mattering very much.
 - **Per-contact limits.** Every contact currently reaches whatever your quartet agent can
   reach. Give quartet its own jazz agent with a deliberately narrow toolset. Real per-contact
   disclosure tiers would need work in jazz.
+- **Reported spend is an estimate.** What a turn cost is measured on the machine that ran it
+  and reported by its own bridge, and the hub has no way to check a figure. So every cost
+  ceiling runs under a turn count as well — that one the hub enforces itself, and it is the
+  bound that holds if a bridge reports nothing at all.
+- **Erasing a shared room needs everyone.** "Delete for me" hides it and needs nobody.
+  Erasing the hub's copy is a request that is announced in the room and carried out once
+  every current member has asked, because a transcript several people took part in is not any
+  one of them's to destroy.
+- **Secrets sit in files, not a keychain.** `identity.json` and `config.json` are `0600`,
+  written atomically, and repaired at startup if an older build left them looser. That is a
+  match for where the rest of the data directory sits rather than a considered maximum.
 - **A turn is narrated, not streamed.** Your jazz reports each tool call to the bridge over
   loopback, so your side of the app shows what your agent is doing and what each call
   returned. The room sees less on purpose: the other party is told a tool's *name* and

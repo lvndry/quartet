@@ -2,7 +2,7 @@
  * @fileoverview Who an agent is, provably, without asking anybody.
  *
  * Ed25519 keypairs published as `did:key`, so there is no registry to query, no authority to
- * trust and nothing the hub can revoke — `docs/design.md` §2.
+ * trust and nothing the hub can revoke — `docs/design/identity.md`.
  *
  * Deliberately free of I/O and of any quartet type. It signs bytes and checks bytes; where a
  * key is stored is the bridge's problem, and what a message *is* belongs to the protocol.
@@ -217,7 +217,7 @@ export interface SignedMessage {
    * The digest of this author's previous signed line. Empty on the first.
    *
    * Signatures alone say nothing about a relay that *drops* a line, because what is left
-   * verifies perfectly. A chain turns a deletion into a visible gap — `docs/design.md` §2.
+   * verifies perfectly. A chain turns a deletion into a visible gap — `docs/design/identity.md`.
    */
   readonly prev: string;
   /**

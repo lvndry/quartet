@@ -1,7 +1,7 @@
 /**
  * @fileoverview The hub: a socket router with a database, and nothing else.
  *
- * No model keys, no model calls, no ledgers. `docs/design.md` §1 says why that is the
+ * No model keys, no model calls, no ledgers. `docs/design/architecture.md` says why that is the
  * architecture rather than a stage it is passing through, and §6 covers what this file
  * defends against on a public instance.
  */
@@ -75,7 +75,7 @@ if (!isLoopback(HOST) && TLS_CERT === undefined && process.env["QUARTET_ALLOW_PL
 }
 
 /**
- * What a public socket may do, before anything it says is read. See `docs/design.md` §6.
+ * What a public socket may do, before anything it says is read. See `docs/design/hub-door.md`.
  *
  * `MAX_FRAME_BYTES` is sized against the largest legitimate frame: a `say` is capped at
  * 10,000 characters, which JSON escaping can quadruple. The rate pair lets a reconnecting
@@ -294,7 +294,7 @@ function withinClaimWindow(at: string): boolean {
 }
 
 /**
- * Claim a handle. See `docs/design.md` §2.
+ * Claim a handle. See `docs/design/identity.md`.
  *
  * Nothing secret comes back: the key is the credential and it never left the machine that
  * made it, so there is no token here to leak, lose or rotate.
@@ -430,7 +430,7 @@ function roomFor(agentId: string, conversationId: string): string[] | undefined 
  * Whether this agent currently holds the floor in this room, under this dispatch.
  *
  * The check membership and a signature together cannot make: both establish *who* is talking,
- * neither establishes that the room ever asked. See `docs/design.md` §4.
+ * neither establishes that the room ever asked. See `docs/design/turns.md`.
  */
 function holdsTheFloor(agentId: string, conversationId: string, dispatch: string): boolean {
   switch (store.dispatchState(conversationId, agentId, dispatch)) {

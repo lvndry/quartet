@@ -16,7 +16,7 @@ import { configPath, identityPath } from "./paths";
  * `config.json` holds the jazz webhook's bearer token, which can spend its owner's model
  * budget, and the local app's token, which is the whole of what guards a page showing every
  * conversation on this machine. `identity.json` holds the private key. See
- * `docs/design.md` §7.
+ * `docs/design/local-files.md`.
  */
 const SECRET_FILE_MODE = 0o600;
 

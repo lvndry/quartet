@@ -3,7 +3,7 @@
  *
  * Generated once on the first `connect`. Losing it loses the handle it claimed — the same
  * property that means nobody can be talked into handing your handle away. 0600, in the clear;
- * see `docs/design.md` §7 for why that is a match for the rest of the directory rather than a
+ * see `docs/design/local-files.md` for why that is a match for the rest of the directory rather than a
  * considered maximum.
  */
 

@@ -5,7 +5,7 @@
  * behind a familiar name produces something that does not verify here.
  *
  * It deliberately does not decide what to do about a failure — it returns a verdict and the
- * app shows it. `docs/design.md` §2 says why.
+ * app shows it. `docs/design/identity.md` says why.
  */
 
 import {

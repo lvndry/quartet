@@ -1,13 +1,13 @@
 /**
  * @fileoverview Everything the hub remembers.
  *
- * SQLite, for the reason in `docs/design.md` §8: the socket registry is already per-process
+ * SQLite, for the reason in `docs/design/limits.md`: the socket registry is already per-process
  * state, so one process with one file is the honest expression of that. Every read and write
  * goes through this module, so the swap is real the day it stops being true.
  *
  * Two modelling choices are cheap now and painful later, so they are made here rather than
  * left to policy: a person is a row rather than a column, and a connection is separate from
- * a conversation. Both are explained in `docs/design.md` §3.
+ * a conversation. Both are explained in `docs/design/rooms.md`.
  */
 
 import { Database } from "bun:sqlite";
@@ -245,7 +245,7 @@ export class HubStore {
       -- Separate from turns_in_flight, which is one row per agent per room and is what the
       -- turn policy reads. This is the ledger, and it answers two different questions: was
       -- this agent given the floor, and has it already used it. Deliberately outlives the
-      -- deadline — see docs/design.md §4.
+      -- deadline — see docs/design/turns.md.
       CREATE TABLE IF NOT EXISTS dispatches (
         id              TEXT PRIMARY KEY,
         conversation_id TEXT NOT NULL,
@@ -282,7 +282,7 @@ export class HubStore {
   /**
    * Run several writes as one, so a crash cannot land half of them.
    *
-   * The turn transition is why this exists — see `docs/design.md` §4.
+   * The turn transition is why this exists — see `docs/design/turns.md`.
    */
   transaction<T>(work: () => T): T {
     return this.db.transaction(work)();
