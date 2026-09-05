@@ -122,19 +122,33 @@ describe("opening what is sealed to a room", () => {
 });
 
 describe("resolving who a room may be sealed to", () => {
-  const pinnedFrom = (members: readonly Member[]) => (handle: string) =>
-    members.find((candidate) => candidate.handle === handle)?.did;
+  /** Everybody in the room is somebody this machine has seen before. */
+  const allKnown = () => true;
 
   it("returns everybody but the sender", () => {
     // The sender is left out here and added by `toRoom`, so a room of three yields two keys.
     const room = [member("mira"), member("otto"), member("nia")];
 
-    const resolved = recipientsFor(room, "mira", pinnedFrom(room));
+    const resolved = recipientsFor(room, room[0]!.did, allKnown);
 
     expect(resolved.state).toBe("ready");
     expect(resolved.state === "ready" && resolved.sealingDids).toEqual([
       room[1]!.sealing!.sealingDid,
       room[2]!.sealing!.sealingDid,
+    ]);
+  });
+
+  it("leaves out the sender by key, not by name", () => {
+    // Two @mira in one room. Skipping by handle would drop the wrong one from the recipients
+    // and seal the line away from somebody sitting in the room.
+    const me = member("mira");
+    const namesake = member("mira");
+    const room = [me, namesake];
+
+    const resolved = recipientsFor(room, me.did, allKnown);
+
+    expect(resolved.state === "ready" && resolved.sealingDids).toEqual([
+      namesake.sealing!.sealingDid,
     ]);
   });
 
@@ -144,36 +158,45 @@ describe("resolving who a room may be sealed to", () => {
     // split in two.
     const room = [member("mira"), member("otto"), { handle: "nia", did: generateKeypair().did }];
 
-    const resolved = recipientsFor(room, "mira", pinnedFrom(room));
+    const resolved = recipientsFor(room, room[0]!.did, allKnown);
 
     expect(resolved.state).toBe("refused");
     expect(resolved.state === "refused" && resolved.why).toContain("@nia");
   });
 
-  it("refuses a sealing key signed by a key other than the pinned one", () => {
-    // A hub substituting its own sealing key has to sign it with something, and the one thing
-    // it cannot sign with is the key this machine pinned for that handle. This is the check
-    // that turns "the hub relays it" into "the hub cannot forge it".
+  it("refuses a sealing key not signed by the key that member is identified by", () => {
+    // An inconsistent frame: the sealing key is signed by something other than the did the
+    // member is named by. Nothing legitimate produces this.
+    const otto = generateKeypair();
     const impostor = generateKeypair();
-    const room = [member("mira"), member("otto", impostor)];
-    const pinnedElsewhere = generateKeypair().did;
+    const at = "2026-02-02T10:00:00.000Z";
+    const { sealingDid } = generateSealingKeypair();
+    const room = [
+      member("mira"),
+      {
+        handle: "otto",
+        did: otto.did,
+        sealing: {
+          sealingDid,
+          at,
+          proof: signSealingKey({ did: otto.did, sealingDid, at }, impostor.privateKey),
+        },
+      },
+    ];
 
-    const resolved = recipientsFor(room, "mira", (handle) =>
-      handle === "otto" ? pinnedElsewhere : room[0]!.did,
-    );
+    const resolved = recipientsFor(room, room[0]!.did, allKnown);
 
     expect(resolved.state).toBe("refused");
     expect(resolved.state === "refused" && resolved.why).toContain("@otto");
   });
 
-  it("refuses a member whose key was never pinned here", () => {
-    // A proof checked against a did that arrived in the same frame proves only that the frame
-    // is self-consistent, which a hostile hub's frame also is.
+  it("refuses a member whose key this machine has never seen", () => {
+    // The check that stops a hub substituting a member wholesale. A did and a proof that
+    // arrived in the same frame are self-consistent however hostile the frame is, so being
+    // internally valid proves nothing — having been seen before is what proves something.
     const room = [member("mira"), member("otto")];
 
-    const resolved = recipientsFor(room, "mira", (handle) =>
-      handle === "otto" ? undefined : room[0]!.did,
-    );
+    const resolved = recipientsFor(room, room[0]!.did, (did) => did !== room[1]!.did);
 
     expect(resolved.state).toBe("refused");
     expect(resolved.state === "refused" && resolved.why).toContain("@otto");
@@ -182,7 +205,7 @@ describe("resolving who a room may be sealed to", () => {
   it("has nobody to seal to in a room of one, and says so without refusing", () => {
     const room = [member("mira")];
 
-    expect(recipientsFor(room, "mira", pinnedFrom(room))).toEqual({
+    expect(recipientsFor(room, room[0]!.did, allKnown)).toEqual({
       state: "ready",
       sealingDids: [],
     });
@@ -193,7 +216,7 @@ describe("handing a line to an agent", () => {
   const line = (text: string): Message => ({
     id: "msg_1",
     conversationId: ROOM,
-    authorHandle: "otto",
+    authorDid: generateKeypair().did,
     kind: "agent",
     text,
     at: "2026-02-02T10:00:00.000Z",
@@ -226,10 +249,11 @@ describe("handing a line to an agent", () => {
   });
 
   it("leaves everything else about the line alone", () => {
-    const shown = withWords(line("sealed"), { state: "opened", text: "hello" });
+    const sealed = line("sealed");
+    const shown = withWords(sealed, { state: "opened", text: "hello" });
 
     expect(shown.id).toBe("msg_1");
-    expect(shown.authorHandle).toBe("otto");
+    expect(shown.authorDid).toBe(sealed.authorDid);
     expect(shown.at).toBe("2026-02-02T10:00:00.000Z");
   });
 });

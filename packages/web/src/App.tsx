@@ -36,10 +36,23 @@ const MessageBody = lazy(() =>
  * `participants.find(h => h !== me)` wanted this and got away with the singular only while
  * rooms were pairs.
  */
-function others(conversation: Conversation, meHandle: string): string[] {
+function others(conversation: Conversation, meDid: string): string[] {
   return conversation.participants
-    .filter((member) => member.handle !== meHandle)
-    .map((member) => member.handle);
+    .filter((member) => member.did !== meDid)
+    .map((member) => member.did);
+}
+
+/**
+ * How to write a key on screen.
+ *
+ * Every name in this app comes through here, and the bridge computed them all together — so
+ * a person is called the same thing in a room, in the sidebar and in a notice, and the
+ * fingerprint appears exactly where two people would otherwise be indistinguishable.
+ */
+type Names = Readonly<Record<string, string>>;
+
+function nameOf(names: Names, did: string): string {
+  return names[did] ?? "@someone";
 }
 
 /** "@otto", "@otto and @nia", "@otto, @nia and @ada" — for prose, not for lists. */
@@ -400,19 +413,21 @@ function LimitDraft({
 
 /** One line per other member, so a room of four does not hide three of them. */
 function PeerStatus({
-  handles,
+  dids,
+  names,
   presence,
 }: {
-  handles: readonly string[];
+  dids: readonly string[];
+  names: Names;
   presence: readonly PeerPresence[];
 }): React.JSX.Element {
   return (
     <span className="peers">
-      {handles.map((handle) => (
+      {dids.map((did) => (
         <OnePeer
-          key={handle}
-          handle={handle}
-          presence={presence.find((entry) => entry.handle === handle)}
+          key={did}
+          name={nameOf(names, did)}
+          presence={presence.find((entry) => entry.did === did)}
         />
       ))}
     </span>
@@ -420,27 +435,27 @@ function PeerStatus({
 }
 
 function OnePeer({
-  handle,
+  name,
   presence,
 }: {
-  handle: string;
+  name: string;
   presence: PeerPresence | undefined;
 }): React.JSX.Element {
   if (presence === undefined || !presence.online) {
-    return <span className="peer away">@{handle} is away</span>;
+    return <span className="peer away">{name} is away</span>;
   }
   if (presence.thinking) {
     return (
       <span className="peer live">
-        @{handle}’s agent is {presence.doing ?? "thinking"}
+        {name}’s agent is {presence.doing ?? "thinking"}
         {presence.since !== undefined && <Elapsed since={presence.since} />}
       </span>
     );
   }
   if (presence.watching) {
-    return <span className="peer live">@{handle} is watching</span>;
+    return <span className="peer live">{name} is watching</span>;
   }
-  return <span className="peer">@{handle} is here</span>;
+  return <span className="peer">{name} is here</span>;
 }
 
 function LimitPicker({
@@ -657,7 +672,8 @@ function Quartet(): React.JSX.Element {
             presence={state.presence[conversation.id] ?? []}
             verdicts={state.verdicts}
             opened={state.opened}
-            meHandle={state.me?.handle ?? ""}
+            meDid={state.me?.did ?? ""}
+            names={state.labels}
             onAct={act}
           />
         )}
@@ -708,7 +724,7 @@ function Sidebar({
     return () => window.removeEventListener("click", closeMenu);
   }, [menuFor]);
   const incoming = state.invites.filter(
-    (invite) => invite.status === "pending" && invite.toHandle === state.me?.handle,
+    (invite) => invite.status === "pending" && invite.toDid === state.me?.did,
   );
   // Cosmetic only: the hub decides for real, opening a conversation directly when an
   // invite target turns out to be someone you're already connected to. This just picks
@@ -725,10 +741,10 @@ function Sidebar({
             <div className="pane-title">Invitations</div>
             {incoming.map((invite) => (
               <div key={invite.id} className="form">
-                <div className="row-title">@{invite.fromHandle} wants to talk</div>
+                <div className="row-title">{nameOf(state.labels, invite.fromDid)} wants to talk</div>
                 <div className="msg-text">“{invite.purpose}”</div>
                 <div className="aside-note">
-                  Accepting starts @{invite.fromHandle}’s agent on this topic. They set the
+                  Accepting starts {nameOf(state.labels, invite.fromDid)}’s agent on this topic. They set the
                   room to {describeLimit(invite.limit)}. You can change it after. They see
                   what yours says, not what you type.
                 </div>
@@ -756,7 +772,7 @@ function Sidebar({
         <div className="pane-title">Conversations</div>
         {state.conversations.length === 0 && <div className="empty">Nothing yet.</div>}
         {state.conversations.map((conversation) => {
-          const cast = others(conversation, state.me?.handle ?? "");
+          const cast = others(conversation, state.me?.did ?? "");
           return (
             <div key={conversation.id} className="row-wrap">
               <button
@@ -770,9 +786,9 @@ function Sidebar({
                   <span className="row-sub">
                     {conversation.state === "proposed"
                       ? conversation.proposedBy === (state.me?.handle ?? "")
-                        ? `waiting for ${nameThem(cast)}`
+                        ? `waiting for ${nameThem(cast.map((did) => nameOf(state.labels, did)))}`
                         : "waiting for you"
-                      : `${nameThem(cast)} · ${describeLimit(conversation.limit)}`}
+                      : `${nameThem(cast.map((did) => nameOf(state.labels, did)))} · ${describeLimit(conversation.limit)}`}
                   </span>
                 </span>
               </button>
@@ -936,17 +952,20 @@ function KeyAlarm({
   return (
     <div className="key-alarm">
       {conflicts.map((conflict) => (
-        <div key={conflict.handle}>
-          <strong>@{conflict.handle} is signing with a different key.</strong> This is a new
-          machine or a reinstall about as often as it is somebody else — nothing they send will
-          verify until you decide which. Ask them, out of band, whether their fingerprint is now{" "}
-          <code>{fingerprints[conflict.offered] ?? "unknown"}</code> instead of{" "}
-          <code>{fingerprints[conflict.pinned] ?? "unknown"}</code>.
+        <div key={conflict.did}>
+          <strong>
+            The key you know as @{conflict.known} is now calling itself @{conflict.offered}.
+          </strong>{" "}
+          Somebody renaming themselves looks exactly like somebody walking into a room wearing a
+          name that means another person here, and only you can tell those apart. Its
+          fingerprint has not changed — it is still{" "}
+          <code>{fingerprints[conflict.did] ?? "unknown"}</code> — so ask them, out of band,
+          whether they meant to.
           <button
             type="button"
-            onClick={() => void onAct("/api/trust-key", { handle: conflict.handle })}
+            onClick={() => void onAct("/api/trust-name", { did: conflict.did })}
           >
-            It is them — trust the new key
+            They renamed themselves — accept it
           </button>
         </div>
       ))}
@@ -964,7 +983,8 @@ function Chat({
   presence,
   verdicts,
   opened,
-  meHandle,
+  meDid,
+  names,
   onAct,
 }: {
   conversation: Conversation;
@@ -979,11 +999,12 @@ function Chat({
   presence: readonly PeerPresence[];
   verdicts: Record<string, Verdict>;
   /**
-    * What this machine made of each sealed line. The words live here, not on the message —
-    * a `Message.text` is the envelope the author signed and the hub relayed.
-    */
+   * What this machine made of each sealed line. The words live here, not on the message —
+   * a `Message.text` is the envelope the author signed and the hub relayed.
+   */
   opened: Record<string, Opened>;
-  meHandle: string;
+  meDid: string;
+  names: Names;
   onAct: (path: string, body: Record<string, unknown>) => Promise<void>;
 }): React.JSX.Element {
   const [draft, setDraft] = useState("");
@@ -991,7 +1012,7 @@ function Chat({
   const [adding, setAdding] = useState("");
   const bottom = useRef<HTMLDivElement>(null);
 
-  const cast = others(conversation, meHandle);
+  const cast = others(conversation, meDid);
   // Any one of them thinking is reason enough not to declare the room quiet.
   const someoneThinking = presence.some((entry) => entry.thinking);
 
@@ -1082,7 +1103,7 @@ function Chat({
         <span className="chat-purpose" title={conversation.purpose}>
           {shortPurpose(conversation.purpose)}
         </span>
-        <PeerStatus handles={cast} presence={presence} />
+        <PeerStatus dids={cast} names={names} presence={presence} />
         <Budget conversation={conversation} />
         <LimitPicker conversation={conversation} onAct={onAct} />
       </div>
@@ -1151,7 +1172,7 @@ function Chat({
             if (message.kind === "pass") {
               return (
                 <span className="line" key={message.id}>
-                  @{message.authorHandle} had nothing to add
+                  {nameOf(names, message.authorDid)} had nothing to add
                 </span>
               );
             }
@@ -1168,13 +1189,13 @@ function Chat({
             const read = opened[message.id] ?? { state: "unopenable" as const };
             return (
               <div
-                className={message.authorHandle === meHandle ? "msg mine" : "msg"}
+                className={message.authorDid === meDid ? "msg mine" : "msg"}
                 key={message.id}
               >
-                <span className="monogram">{monogram(message.authorHandle)}</span>
+                <span className="monogram">{monogram(nameOf(names, message.authorDid))}</span>
                 <span className="msg-body">
                   <span className="msg-who">
-                    @{message.authorHandle} · {clock(message.at)}
+                    {nameOf(names, message.authorDid)} · {clock(message.at)}
                   </span>
                   {read.state === "opened" ? (
                     <Suspense fallback={<div className="md">{read.text}</div>}>
@@ -1216,7 +1237,7 @@ function Chat({
           {presence
             .filter((entry) => entry.thinking)
             .map((entry) => (
-              <div className="activity theirs" key={entry.handle}>
+              <div className="activity theirs" key={entry.did}>
                 <span className="bars" aria-hidden="true">
                   <i />
                   <i />
@@ -1224,7 +1245,7 @@ function Chat({
                   <i />
                 </span>
                 <span className="activity-who">
-                  @{entry.handle}’s agent{entry.doing !== undefined ? ` — ${entry.doing}` : ""}
+                  {nameOf(names, entry.did)}’s agent{entry.doing !== undefined ? ` — ${entry.doing}` : ""}
                 </span>
                 {entry.since !== undefined && <Elapsed since={entry.since} />}
               </div>
@@ -1311,9 +1332,9 @@ function Chat({
 
           {conversation.state === "proposed" && (
             <span className="line">
-              {conversation.proposedBy === meHandle
-                ? `Waiting for ${nameThem(cast)}. Nothing runs until they take it up.`
-                : `@${conversation.proposedBy} opened this. Nothing has run yet.`}
+              {conversation.proposedBy === meDid
+                ? `Waiting for ${nameThem(cast.map((did) => nameOf(names, did)))}. Nothing runs until they take it up.`
+                : `${nameOf(names, conversation.proposedBy)} opened this. Nothing has run yet.`}
             </span>
           )}
 
@@ -1334,10 +1355,14 @@ function Chat({
             conversation.bowedOut.length > 0 &&
             !someoneThinking && (
               <span className="line">
-                {conversation.bowedOut.includes(meHandle)
+                {conversation.bowedOut.includes(meDid)
                   ? "Your agent has said goodbye. Say something to bring it back."
-                  : `${nameThem(conversation.bowedOut.filter((handle) => handle !== meHandle))} ${
-                      conversation.bowedOut.filter((handle) => handle !== meHandle).length === 1
+                  : `${nameThem(
+                      conversation.bowedOut
+                        .filter((did) => did !== meDid)
+                        .map((did) => nameOf(names, did)),
+                    )} ${
+                      conversation.bowedOut.filter((did) => did !== meDid).length === 1
                         ? "has"
                         : "have"
                     } said goodbye. The room is still open.`}
@@ -1368,9 +1393,9 @@ function Chat({
 
       {conversation.state === "proposed" ? (
         <div className="composer">
-          {conversation.proposedBy === meHandle ? (
+          {conversation.proposedBy === meDid ? (
             <span className="composer-note">
-              Waiting for {nameThem(cast)} to take this up. Nothing runs and nothing is spent
+              Waiting for {nameThem(cast.map((did) => nameOf(names, did)))} to take this up. Nothing runs and nothing is spent
               until they do — including your own agent, which has not been asked anything yet.
             </span>
           ) : (
@@ -1422,7 +1447,8 @@ function Chat({
           </div>
           <span className="composer-note">
             An agent ended this one. Reopening is its own decision — raising the allowance
-            will not restart it. Opening a fresh room with {nameThem(cast)} keeps this record
+            will not restart it. Opening a fresh room with{" "}
+            {nameThem(cast.map((did) => nameOf(names, did)))} keeps this record
             where it ended.
           </span>
         </div>
@@ -1456,9 +1482,9 @@ function Chat({
             </button>
           </div>
           <span className="composer-note">
-            {conversation.bowedOut.includes(meHandle)
+            {conversation.bowedOut.includes(meDid)
               ? "Your agent stepped out of this one. Speaking to it brings it back — nothing the other side says will."
-              : `Goes to your agent, not to ${nameThem(cast)} — your agent decides what to say. To end the conversation, use Stop.`}
+              : `Goes to your agent, not to ${nameThem(cast.map((did) => nameOf(names, did)))} — your agent decides what to say. To end the conversation, use Stop.`}
           </span>
         </div>
       )}

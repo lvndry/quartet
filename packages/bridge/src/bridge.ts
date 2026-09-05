@@ -25,7 +25,7 @@ import {
   type Opened,
   type SealingClaim,
 } from "@quartet/protocol";
-import { fingerprint, parseTag, tag } from "@quartet/identity";
+import { displayTag, fingerprint, parseTag, tag } from "@quartet/identity";
 import type { DaemonSettings } from "./config";
 import type { Attestor, Verdict } from "./attest";
 import { recipientsFor, withWords, type Sealer } from "./sealer";
@@ -258,6 +258,7 @@ export class Bridge {
       verdicts: Object.fromEntries(this.verdicts),
       opened: Object.fromEntries(this.opened),
       keyConflicts: this.known.all(),
+      labels: this.labels(),
       fingerprints: this.fingerprints(),
       ...(keyStoreProblem !== undefined ? { keyStoreProblem } : {}),
       ...(this.lastError !== undefined ? { lastError: this.lastError } : {}),
@@ -310,7 +311,45 @@ export class Bridge {
     this.send({ t: "nudge", conversationId, steer: sealed });
   }
 
-  /** Short forms for every key on screen: mine, the directory's, and both sides of a conflict. */
+  /**
+   * Every key this bridge can put a name to, paired with the full tag for that name.
+   *
+   * One place, so a room, the directory and a log line cannot disagree about who somebody is.
+   */
+  private taggedNames(): Map<string, string> {
+    const pairs = new Map<string, string>();
+    const note = (handle: string, did: string | undefined): void => {
+      if (did === undefined) return;
+      const named = tag(handle, did);
+      if (named !== undefined) pairs.set(did, named);
+    };
+    if (this.me !== undefined) note(this.me.handle, this.attestor.did);
+    for (const entry of this.directory) note(entry.agent.handle, entry.agent.did);
+    for (const entry of this.connections) note(entry.withAgent.handle, entry.withAgent.did);
+    return pairs;
+  }
+
+  /**
+   * What to write on screen for each key.
+   *
+   * The bare handle while it is unambiguous among everyone this bridge knows, and as much
+   * fingerprint as it takes to separate them once it is not — see `displayTag`. Computed over
+   * everyone known rather than per room, so somebody does not change name between screens.
+   */
+  private labels(): Record<string, string> {
+    const named = this.taggedNames();
+    const everyone = [...named.values()];
+    const out: Record<string, string> = {};
+    for (const [did, full] of named) out[did] = displayTag(full, everyone);
+    return out;
+  }
+
+  /** How to name one key in a log line, falling back to its short form when unknown. */
+  private label(did: string): string {
+    return this.labels()[did] ?? `a key with fingerprint ${fingerprint(did) ?? "unknown"}`;
+  }
+
+  /** Short forms for every key on screen: mine, the directory's, and any that was renamed. */
   private fingerprints(): Record<string, string> {
     const dids = [
       this.attestor.did,
@@ -318,7 +357,7 @@ export class Bridge {
       ...this.connections.flatMap((entry) =>
         entry.withAgent.did !== undefined ? [entry.withAgent.did] : [],
       ),
-      ...this.known.all().flatMap((conflict) => [conflict.pinned, conflict.offered]),
+      ...this.known.all().map((conflict) => conflict.did),
     ];
     const out: Record<string, string> = {};
     for (const did of dids) {
@@ -326,22 +365,6 @@ export class Bridge {
       if (short !== undefined) out[did] = short;
     }
     return out;
-  }
-
-  /**
-   * The key a handle is known by here, from whatever the hub has shown us about them.
-   *
-   * Undefined for a stranger, which is the honest answer: until somebody compares a
-   * fingerprint out of band, "the key the hub says is theirs" is all any of this can mean.
-   * What it does buy immediately is *continuity* — the hub cannot change the key behind a
-   * handle later without every line after it failing to verify.
-   */
-  private didFor(handle: string): string | undefined {
-    if (handle === this.me?.handle) return this.attestor.did;
-    // The pin wins over whatever the hub is saying now. That is the entire point of holding
-    // one: a directory entry is the hub's claim, and a pin is what this machine concluded
-    // the first time — possibly after somebody read the fingerprint out loud.
-    return this.known.did(handle);
   }
 
   /**
@@ -369,12 +392,12 @@ export class Bridge {
       ),
     ];
     for (const { handle, did } of seen) {
-      if (did === undefined || handle === this.me?.handle) continue;
-      const conflict = this.known.offer(handle, did);
+      if (did === undefined || did === this.attestor.did) continue;
+      const conflict = this.known.offer(did, handle);
       if (conflict !== undefined) {
         hubLog.error(
-          `@${handle} is being offered under a different key than the one pinned here. ` +
-            "Nothing from them will verify until you compare fingerprints and decide.",
+          `the key this machine knows as @${conflict.known} is now calling itself ` +
+            `@${conflict.offered}. Compare fingerprints before treating it as either.`,
         );
       }
     }
@@ -418,12 +441,12 @@ export class Bridge {
   private judge(message: Message, replay = false): Verdict {
     const verdict = this.attestor.check(
       message,
-      { expectedDid: this.didFor(message.authorHandle) },
+      { expectedDid: message.authorDid },
       { replay },
     );
     this.verdicts.set(message.id, verdict);
     if (verdict.state === "broken") {
-      hubLog.error(`a message from @${message.authorHandle} did not check out: ${verdict.why}`);
+      hubLog.error(`a message from ${this.label(message.authorDid)} did not check out: ${verdict.why}`);
     }
     return verdict;
   }
@@ -474,7 +497,7 @@ export class Bridge {
         void this.known.repin(parsed.handle, wanted);
         this.send({
           t: "invite.send",
-          toTag: tag(parsed.handle, wanted) ?? "",
+          toDid: wanted,
           purpose,
           ...(limit !== undefined ? { limit } : {}),
         });
@@ -491,27 +514,27 @@ export class Bridge {
       void this.known.repin(parsed.handle, offered);
     }
 
-    // The did was already resolved above to check the fingerprint; sending it as a tag is what
-    // makes "which @mira" the sender's decision rather than the hub's pick.
-    const named = offered === undefined ? undefined : tag(parsed.handle, offered);
-    if (named === undefined) {
-      return { error: `this hub has no key for @${parsed.handle}, so there is nobody to name` };
+    // Resolved here rather than on the hub: by the time a frame is built the sender has
+    // already decided which @mira they meant, and sending the name instead would hand that
+    // decision back to whoever is routing it.
+    if (offered === undefined) {
+      return { error: `this hub has no key for @${parsed.handle}, so there is nobody to invite` };
     }
     this.send({
       t: "invite.send",
-      toTag: named,
+      toDid: offered,
       purpose,
       ...(limit !== undefined ? { limit } : {}),
     });
     return undefined;
   }
 
-  /** Accept a handle's new key, after a person has looked at the fingerprints and decided. */
-  async trustNewKey(handle: string): Promise<void> {
-    const conflict = this.known.conflict(handle);
+  /** Accept a key's new name, after a person has looked at the fingerprints and decided. */
+  async trustNewName(did: string): Promise<void> {
+    const conflict = this.known.conflict(did);
     if (conflict === undefined) return;
-    await this.known.repin(handle, conflict.offered);
-    hubLog.info(`re-pinned @${handle} to its new key`);
+    await this.known.repin(did, conflict.offered);
+    hubLog.info(`now known as @${conflict.offered}`, { was: `@${conflict.known}` });
     this.publish();
   }
 
@@ -728,8 +751,8 @@ export class Bridge {
 
       case "invite":
         hubLog.info(`invite ${frame.invite.status}`, {
-          from: `@${frame.invite.fromHandle}`,
-          to: `@${frame.invite.toHandle}`,
+          from: this.label(frame.invite.fromDid),
+          to: this.label(frame.invite.toDid),
         });
         this.invites = [frame.invite, ...this.invites.filter((i) => i.id !== frame.invite.id)];
         this.publish();
@@ -778,7 +801,7 @@ export class Bridge {
         }
         this.receive(arrived);
         // Our own message landing means our turn is over; anything else leaves us as we were.
-        if (arrived.authorHandle === this.me?.handle) {
+        if (arrived.authorDid === this.attestor.did) {
           this.attestor.confirmOwn(arrived);
           this.activity.set(arrived.conversationId, { state: "idle" });
           await this.recordOutgoing(arrived);
@@ -951,8 +974,8 @@ export class Bridge {
     const conversation = this.conversations.find((candidate) => candidate.id === conversationId);
     if (conversation === undefined) return { error: "this room is not one this bridge is in" };
 
-    const recipients = recipientsFor(conversation.participants, me.handle, (handle) =>
-      this.didFor(handle),
+    const recipients = recipientsFor(conversation.participants, this.attestor.did, (did) =>
+      this.known.handleOf(did) !== undefined,
     );
     if (recipients.state === "refused") return { error: recipients.why };
 
@@ -1003,10 +1026,9 @@ export class Bridge {
     if (this.activity.get(conversationId)?.state === "thinking") return;
 
     const conversation = this.conversations.find((candidate) => candidate.id === conversationId);
-    const room =
-      conversation?.participants
-        .filter((member) => member.handle !== me.handle)
-        .map((member) => member.handle) ?? [];
+    const room = (conversation?.participants ?? [])
+      .filter((member) => member.did !== this.attestor.did)
+      .map((member) => this.label(member.did));
     // Opened, not judged: these arrived as `appended` and were checked then. What the agent
     // must never be handed is the ciphertext, which it would read as the words.
     const readable = transcript.map((message) => this.wordsFor(message));
@@ -1030,6 +1052,7 @@ export class Bridge {
       {
         you: me.handle,
         speakingWith: room,
+        nameFor: (did) => this.label(did),
         purpose,
         transcript: readable,
         earlier,

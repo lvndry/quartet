@@ -1,9 +1,16 @@
 /**
- * @fileoverview Which key each handle is known by, on this machine.
+ * @fileoverview What each key calls itself, on this machine.
  *
- * The hub is the only thing that says which key sits behind `@mira`, and the hub is what this
- * layer declines to trust. Pinning closes that: the first answer is written down and every
- * one after has to agree, so a swapped key can only be swapped loudly, once.
+ * Pinned the other way round from how this started. While a handle was unique per hub, the
+ * question worth asking was "has @mira's key changed", because only an attack or a reinstall
+ * could change it. Now that a handle is a label and two friends may share one, that question
+ * has an innocent answer — a second @mira is a second person — and asking it would cry wolf
+ * every time somebody's friend picked a popular name.
+ *
+ * The question that stayed sharp is the mirror of it: *has a key I know started wearing a
+ * different name*. Nothing innocent needs that. A key is an identity somebody proved they
+ * hold, so a key that was @mira last week and is @robin today has either been renamed by its
+ * owner or is being walked into a room where @robin means somebody else.
  *
  * Trust on first use, with its weakness — the first answer is taken on faith. The fingerprint
  * in an invite is what fixes that, when somebody reads it to you out of band.
@@ -19,6 +26,7 @@ import type { Conflict } from "@quartet/protocol";
 export type { Conflict };
 
 export class KnownKeys {
+  /** did → the handle that key was first seen wearing. */
   private readonly pinned = new Map<string, string>();
   private readonly conflicts = new Map<string, Conflict>();
   private readonly path: string;
@@ -53,8 +61,8 @@ export class KnownKeys {
     try {
       const parsed: unknown = JSON.parse(raw);
       if (typeof parsed !== "object" || parsed === null) return;
-      for (const [handle, did] of Object.entries(parsed as Record<string, unknown>)) {
-        if (typeof did === "string" && isDid(did)) this.pinned.set(handle, did);
+      for (const [did, handle] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof handle === "string" && isDid(did)) this.pinned.set(did, handle);
       }
     } catch {
       this.unreadable = true;
@@ -69,12 +77,13 @@ export class KnownKeys {
       : undefined;
   }
 
-  did(handle: string): string | undefined {
-    return this.pinned.get(handle);
+  /** What this key has been calling itself, if this machine has seen it before. */
+  handleOf(did: string): string | undefined {
+    return this.pinned.get(did);
   }
 
-  conflict(handle: string): Conflict | undefined {
-    return this.conflicts.get(handle);
+  conflict(did: string): Conflict | undefined {
+    return this.conflicts.get(did);
   }
 
   all(): Conflict[] {
@@ -82,39 +91,39 @@ export class KnownKeys {
   }
 
   /**
-   * Record what the hub says a handle's key is.
+   * Record what the hub says this key calls itself.
    *
-   * Returns the conflict when this contradicts what was pinned, and never overwrites: the
-   * pinned key is the one somebody may have checked by hand, and a hub does not get to
-   * replace it by asserting louder. Clearing a conflict is a deliberate act — see `repin`.
+   * Returns the conflict when the name has changed under us, and never overwrites: the pinned
+   * name is what somebody may have checked by hand, and a hub does not get to replace it by
+   * asserting louder. Clearing a conflict is a deliberate act — see `repin`.
    */
-  offer(handle: string, did: string): Conflict | undefined {
+  offer(did: string, handle: string): Conflict | undefined {
     // Pinning on top of a file we failed to read would quietly replace whatever it held.
     if (this.unreadable) return undefined;
 
-    const pinned = this.pinned.get(handle);
-    if (pinned === undefined) {
-      this.pinned.set(handle, did);
+    const known = this.pinned.get(did);
+    if (known === undefined) {
+      this.pinned.set(did, handle);
       void this.save();
       return undefined;
     }
-    if (pinned === did) {
-      this.conflicts.delete(handle);
+    if (known === handle) {
+      this.conflicts.delete(did);
       return undefined;
     }
 
-    const conflict: Conflict = { handle, pinned, offered: did };
-    this.conflicts.set(handle, conflict);
+    const conflict: Conflict = { did, known, offered: handle };
+    this.conflicts.set(did, conflict);
     return conflict;
   }
 
-  /** Accept a new key for a handle, after a person has decided that is what they want. */
-  async repin(handle: string, did: string): Promise<void> {
+  /** Accept a key's new name, after a person has decided that is what they want. */
+  async repin(did: string, handle: string): Promise<void> {
     // A person has looked at this one, which is a better answer than a file we could not
     // read — so this is also how somebody recovers from a damaged one.
     this.unreadable = false;
-    this.pinned.set(handle, did);
-    this.conflicts.delete(handle);
+    this.pinned.set(did, handle);
+    this.conflicts.delete(did);
     await this.save();
   }
 

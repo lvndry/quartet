@@ -4,11 +4,14 @@ import { composeTurnPayload, type ComposeInput, type TurnPayload } from "./promp
 
 const BUDGET = 18_000;
 
+/** Stand-in keys: these tests care who spoke, not what their key is made of. */
+const DIDS: Record<string, string> = { mira: "did:key:zMira", otto: "did:key:zOtto" };
+
 function say(index: number, text: string, from = index % 2 === 0 ? "mira" : "otto"): Message {
   return {
     id: `msg_${String(index)}`,
     conversationId: "cnv_1",
-    authorHandle: from,
+    authorDid: DIDS[from] ?? from,
     kind: "agent",
     text,
     at: new Date(Date.UTC(2026, 8, 2, 12, index % 60)).toISOString(),
@@ -25,7 +28,8 @@ function compose(over: Partial<ComposeInput>, budget = BUDGET) {
   const composed = composeTurnPayload(
     {
       you: "mira",
-      speakingWith: ["otto"],
+      speakingWith: ["@otto"],
+      nameFor: (did) => `@${Object.keys(DIDS).find((name) => DIDS[name] === did) ?? "someone"}`,
       purpose: "What is free will?",
       transcript: [],
       earlier: 0,

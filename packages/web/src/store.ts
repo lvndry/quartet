@@ -54,6 +54,7 @@ const EMPTY: BridgeState = {
   verdicts: {},
   opened: {},
   keyConflicts: [],
+  labels: {},
   fingerprints: {},
 };
 

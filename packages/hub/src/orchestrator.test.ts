@@ -1,12 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import type { ServerFrame, Signature } from "@quartet/protocol";
+import { generateKeypair } from "@quartet/identity";
 import { HubStore } from "./db";
 import { Orchestrator } from "./orchestrator";
 
 function setup() {
   const store = new HubStore(":memory:");
-  const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
-  const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+  const mira = store.createAgent({ handle: "mira", displayName: "Mira" , did: generateKeypair().did });
+  const otto = store.createAgent({ handle: "otto", displayName: "Otto" , did: generateKeypair().did });
   if (mira === undefined || otto === undefined) throw new Error("agents");
   const connectionId = store.createConnection(mira.id, otto.id);
   const proposal = store.createConversation(connectionId, "find a time");
@@ -360,7 +361,7 @@ describe("an agent whose bridge was down", () => {
 describe("a room somebody was brought into", () => {
   function trio() {
     const base = setup();
-    const nia = base.store.createAgent({ handle: "nia", displayName: "Nia" });
+    const nia = base.store.createAgent({ handle: "nia", displayName: "Nia" , did: generateKeypair().did });
     if (nia === undefined) throw new Error("agent");
     base.online.add(nia.id);
     return { ...base, nia };

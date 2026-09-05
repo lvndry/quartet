@@ -47,6 +47,14 @@ export interface TurnPayload {
 export interface ComposeInput {
   readonly you: string;
   readonly speakingWith: readonly string[];
+  /**
+   * How to write a key as a name, for the one reader who cannot look one up.
+   *
+   * The transcript names its authors by key, because that is what they are. A model needs
+   * "@mira said" — so the bridge passes in the same resolver every other surface renders
+   * through, rather than this file inventing a second answer to who somebody is.
+   */
+  readonly nameFor: (did: string) => string;
   readonly purpose: string;
   readonly transcript: readonly Message[];
   /** How many messages precede `transcript` in the room, as the hub counted them. */
@@ -117,7 +125,7 @@ function bytes(text: string): number {
 export function composeTurnPayload(input: ComposeInput, budgetBytes: number): ComposedTurn {
   const all: TranscriptLine[] = input.transcript
     .filter((message) => message.kind === "agent")
-    .map((message) => ({ from: message.authorHandle, text: message.text, at: message.at }));
+    .map((message) => ({ from: input.nameFor(message.authorDid), text: message.text, at: message.at }));
 
   let lines = all;
   let dropped = 0;

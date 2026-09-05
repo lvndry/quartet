@@ -227,7 +227,7 @@ async function aRoom(names: [string, string]) {
   await first.connect();
   await second.connect();
 
-  first.send({ t: "invite.send", toTag: second.tag(), purpose: "find a time" });
+  first.send({ t: "invite.send", toDid: second.keypair.did, purpose: "find a time" });
   const invite = await second.waitForFrame("invite");
   second.send({ t: "invite.respond", inviteId: String(invite["inviteId"] ?? (invite["invite"] as { id: string }).id), accept: true });
 
@@ -326,7 +326,9 @@ describe("erasing a shared room", () => {
     // One member is not a quorum. @jonas took part in this and paid for his half of it.
     expect(second.seen("conversation.removed")).toHaveLength(0);
     const marked = second.last("conversation");
-    expect((marked?.["conversation"] as { eraseAsked: string[] }).eraseAsked).toEqual(["iris"]);
+    expect((marked?.["conversation"] as { eraseAsked: string[] }).eraseAsked).toEqual([
+      first.keypair.did,
+    ]);
 
     second.send({ t: "conversation.delete", conversationId, scope: "everyone" });
     await waitFor("the room to go once both have asked", () => second.seen("conversation.removed").length === 1);
@@ -386,10 +388,10 @@ describe("two people who chose the same name", () => {
     for (const party of [first, second, inviter]) await party.connect();
 
     // The *second* @sam, which a lookup by bare handle would never have found.
-    inviter.send({ t: "invite.send", toTag: second.tag(), purpose: "the right sam" });
+    inviter.send({ t: "invite.send", toDid: second.keypair.did, purpose: "the right sam" });
 
     const invite = await second.waitForFrame("invite");
-    expect(String((invite["invite"] as { toHandle: string }).toHandle)).toBe("sam");
+    expect(String((invite["invite"] as { toDid: string }).toDid)).toBe(second.keypair.did);
     expect(first.seen("invite")).toHaveLength(0);
     for (const party of [first, second, inviter]) party.socket.close();
   });

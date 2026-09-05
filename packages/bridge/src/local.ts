@@ -432,10 +432,10 @@ async function handleApi(
       return json({ ok: true });
     }
 
-    case "/api/trust-key": {
-      const handle = text("handle");
-      if (handle.length === 0) return json({ error: "handle is required" }, 400);
-      await bridge.trustNewKey(handle);
+    case "/api/trust-name": {
+      const did = text("did");
+      if (did.length === 0) return json({ error: "did is required" }, 400);
+      await bridge.trustNewName(did);
       return json({ ok: true });
     }
 
@@ -499,13 +499,13 @@ async function handleApi(
 
     case "/api/add": {
       const conversationId = text("conversationId");
-      // A tag, not a handle: the app picks somebody out of a directory it can already see, so
+      // A key, not a name: the app picks somebody out of a directory it can already see, so
       // it knows which @mira it meant and there is no reason to make the hub guess.
-      const tag = text("tag");
-      if (conversationId.length === 0 || tag.length === 0) {
-        return json({ error: "a conversation and a tag are both required" }, 400);
+      const did = text("did");
+      if (conversationId.length === 0 || did.length === 0) {
+        return json({ error: "a conversation and a did are both required" }, 400);
       }
-      bridge.send({ t: "conversation.add", conversationId, tag });
+      bridge.send({ t: "conversation.add", conversationId, did });
       return json({ ok: true });
     }
 

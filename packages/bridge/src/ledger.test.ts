@@ -2,11 +2,11 @@ import { describe, expect, it } from "bun:test";
 import type { Message } from "@quartet/protocol";
 import { missingOutgoing } from "./ledger";
 
-function agentLine(id: string, handle: string, text: string): Message {
+function agentLine(id: string, did: string, text: string): Message {
   return {
     id,
     conversationId: "cnv_1",
-    authorHandle: handle,
+    authorDid: did,
     kind: "agent",
     text,
     at: "2026-09-02T00:00:00.000Z",

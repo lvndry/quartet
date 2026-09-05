@@ -40,8 +40,8 @@ export interface AgentRow {
   display_name: string;
   bio: string | null;
   token: string;
-  /** Null on agents claimed before keys existed. They still work; they just prove nothing. */
-  did: string | null;
+  /** What this agent *is*. Required, because an agent nothing can name is not addressable. */
+  did: string;
   /**
    * The sealing key this agent published, and its own signature over it.
    *
@@ -54,11 +54,11 @@ export interface AgentRow {
   created_at: string;
 }
 
-/** One message with its author's handle already resolved. See `MESSAGE_SELECT`. */
+/** One message with its author's key already resolved. See `MESSAGE_SELECT`. */
 interface MessageRow {
   id: string;
   conversation_id: string;
-  handle: string;
+  did: string;
   kind: string;
   text: string;
   at: string;
@@ -76,7 +76,7 @@ interface MessageRow {
  * One string, so two readers cannot drift into disagreeing about what a message is. The join
  * also decides what happens to a message whose author is gone: it disappears.
  */
-const MESSAGE_SELECT = `SELECT m.id, m.conversation_id, a.handle, m.kind, m.text, m.at,
+const MESSAGE_SELECT = `SELECT m.id, m.conversation_id, a.did, m.kind, m.text, m.at,
             m.sig_did, m.sig_at, m.sig_nonce, m.sig_prev, m.sig_dispatch, m.sig_value
      FROM messages m
      JOIN agents a ON a.id = m.author_agent`;
@@ -165,11 +165,10 @@ export class HubStore {
         display_name  TEXT NOT NULL,
         bio           TEXT,
         token         TEXT NOT NULL UNIQUE,
-        -- The key this agent signs with. Nullable because a row can exist before a key is
-        -- presented; an agent without one can be talked to and cannot be checked, and the
-        -- app says which. Unique through a partial index below, since NULLs must stay free
-        -- to collide.
-        did           TEXT,
+        -- The key this agent signs with, and the only unique thing about it. Required:
+        -- once a handle is a label, an agent without a key has nothing anybody could use to
+        -- name it, invite it, or check a word it said.
+        did           TEXT NOT NULL UNIQUE,
         -- The X25519 key other agents seal this one's copy to, with the Ed25519 signature
         -- over it by did above. Stored, relayed, and never minted here: the hub does not
         -- hold the key that signs one, which is what stops it substituting its own and
@@ -292,10 +291,6 @@ export class HubStore {
       CREATE INDEX IF NOT EXISTS idx_invites_to ON invites(to_agent, status);
     `);
 
-    this.db.exec(
-      "CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_did ON agents(did) WHERE did IS NOT NULL",
-    );
-
     // Past their retention they are history nobody reads, and the table would grow forever.
     this.db.run("DELETE FROM dispatches WHERE settled_at IS NOT NULL AND settled_at < ?", [
       new Date(Date.now() - DISPATCH_RETENTION_MS).toISOString(),
@@ -323,16 +318,14 @@ export class HubStore {
     handle: string;
     displayName: string;
     bio?: string;
-    did?: string;
+    did: string;
   }): AgentRow | undefined {
     // A key claims once. A name is claimed as often as people happen to share it — which
     // among friends is often, and telling somebody to be @mira2 on this hub because a friend
     // got here first is a worse answer than carrying the fingerprint that already tells them
     // apart everywhere else.
-    if (input.did !== undefined && this.agentByDid(input.did) !== undefined) return undefined;
-    if (input.did !== undefined && this.agentByTag(tagFor(input.handle, input.did)) !== undefined) {
-      return undefined;
-    }
+    if (this.agentByDid(input.did) !== undefined) return undefined;
+    if (this.agentByTag(tagFor(input.handle, input.did)) !== undefined) return undefined;
     const ownerId = newId("own");
     const agentId = newId("agt");
     const at = nowIso();
@@ -351,7 +344,7 @@ export class HubStore {
         // SQLite cannot drop an indexed column without rebuilding the table. Filled with
         // something unique and never read again; the rebuild can wait for a reason of its own.
         crypto.randomUUID().replaceAll("-", ""),
-        input.did ?? null,
+        input.did,
         at,
       ],
     );
@@ -372,7 +365,7 @@ export class HubStore {
   agentByTag(wanted: string | undefined): AgentRow | undefined {
     if (wanted === undefined) return undefined;
     for (const row of this.allAgents()) {
-      if (row.did !== null && tagFor(row.handle, row.did) === wanted) return row;
+      if (tagFor(row.handle, row.did) === wanted) return row;
     }
     return undefined;
   }
@@ -528,8 +521,8 @@ export class HubStore {
     if (from === undefined || to === undefined) return undefined;
     return {
       id: row.id,
-      fromHandle: from.handle,
-      toHandle: to.handle,
+      fromDid: from.did,
+      toDid: to.did,
       purpose: row.purpose,
       limit: HubStore.parseLimit(row.limit_json ?? ""),
       status: row.status as Invite["status"],
@@ -582,7 +575,7 @@ export class HubStore {
     return {
       id: row.id,
       conversationId: row.conversation_id,
-      authorHandle: row.handle,
+      authorDid: row.did,
       kind: row.kind as MessageKind,
       text: row.text,
       at: row.at,
@@ -607,12 +600,14 @@ export class HubStore {
     return DEFAULT_LIMIT;
   }
 
-  /** A handle for an agent id, when there is one. */
-  private handleOf(agentId: string | null): string | undefined {
+  /** The key for an agent id, when there is one. */
+  private didOf(agentId: string | null): string | undefined {
     if (agentId === null) return undefined;
-    return this.db
-      .query<{ handle: string }, [string]>("SELECT handle FROM agents WHERE id = ?")
-      .get(agentId)?.handle;
+    return (
+      this.db
+        .query<{ did: string }, [string]>("SELECT did FROM agents WHERE id = ?")
+        .get(agentId)?.did ?? undefined
+    );
   }
 
   /**
@@ -669,7 +664,7 @@ export class HubStore {
       .query<
         {
           handle: string;
-          did: string | null;
+          did: string;
           sealing_did: string | null;
           sealing_at: string | null;
           sealing_proof: string | null;
@@ -694,7 +689,7 @@ export class HubStore {
       spentUSD: row.spent_usd,
       spendIncomplete: row.spend_incomplete === 1,
       state: HubStore.parseRoomState(row.state),
-      proposedBy: this.handleOf(row.proposed_by) ?? "",
+      proposedBy: this.didOf(row.proposed_by) ?? "",
       bowedOut: this.markedMembers(id, "bowed_out_at"),
       eraseAsked: this.markedMembers(id, "erase_asked_at"),
       lastAt: row.last_at,
@@ -711,14 +706,14 @@ export class HubStore {
    */
   private markedMembers(conversationId: string, column: "bowed_out_at" | "erase_asked_at"): string[] {
     return this.db
-      .query<{ handle: string }, [string]>(
-        `SELECT a.handle FROM conversation_members m
+      .query<{ did: string }, [string]>(
+        `SELECT a.did FROM conversation_members m
          JOIN agents a ON a.id = m.agent_id
          WHERE m.conversation_id = ? AND m.${column} IS NOT NULL
          ORDER BY m.${column}, a.handle`,
       )
       .all(conversationId)
-      .map((member) => member.handle);
+      .map((member) => member.did);
   }
 
   conversationsFor(agentId: string): Conversation[] {
@@ -912,7 +907,7 @@ export class HubStore {
     return {
       id,
       conversationId: input.conversationId,
-      authorHandle: author.handle,
+      authorDid: author.did,
       kind: input.kind,
       text: input.text,
       at,
@@ -1286,7 +1281,7 @@ export class HubStore {
    */
   static toMember(row: {
     handle: string;
-    did: string | null;
+    did: string;
     sealing_did: string | null;
     sealing_at: string | null;
     sealing_proof: string | null;
@@ -1295,7 +1290,7 @@ export class HubStore {
       row.sealing_did !== null && row.sealing_at !== null && row.sealing_proof !== null;
     return {
       handle: row.handle,
-      ...(row.did !== null ? { did: row.did } : {}),
+      did: row.did,
       ...(complete
         ? {
             sealing: {

@@ -210,14 +210,12 @@ function agentView(agentId: string): Agent | undefined {
 function directoryFor(agentId: string): DirectoryEntry[] {
   const connected = new Set(store.connectionsFor(agentId).map((connection) => connection.other));
   const pending = new Set(
-    store
-      .pendingInvitesFor(agentId)
-      .flatMap((invite) => [invite.fromHandle, invite.toHandle]),
+    store.pendingInvitesFor(agentId).flatMap((invite) => [invite.fromDid, invite.toDid]),
   );
   return store
     .allAgents()
     .filter((row) => row.id !== agentId)
-    .filter((row) => isOnline(row.id) || connected.has(row.id) || pending.has(row.handle))
+    .filter((row) => isOnline(row.id) || connected.has(row.id) || (row.did !== null && pending.has(row.did)))
     .map((row) => ({
       agent: store.toAgent(row, isOnline(row.id)),
       connected: connected.has(row.id),
@@ -596,9 +594,9 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     }
 
     case "invite.send": {
-      const target = store.agentByTag(frame.toTag);
+      const target = store.agentByDid(frame.toDid);
       if (target === undefined || target.id === agentId) {
-        send(agentId, { t: "error", detail: "no agent here goes by that name and key" });
+        send(agentId, { t: "error", detail: "no agent here holds that key" });
         return;
       }
 
@@ -787,13 +785,13 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         });
         return;
       }
-      const joining = store.agentByTag(frame.tag);
+      const joining = store.agentByDid(frame.did);
       if (joining === undefined) {
-        send(agentId, { t: "error", detail: "no agent here goes by that name and key" });
+        send(agentId, { t: "error", detail: "no agent here holds that key" });
         return;
       }
       if (participants.includes(joining.id)) {
-        send(agentId, { t: "error", detail: `${frame.tag} is already here` });
+        send(agentId, { t: "error", detail: `${describeAgent(joining.id)} is already here` });
         return;
       }
       // A connection is where somebody agreed to talk to you at all, and this spends that
@@ -802,7 +800,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       if (store.connectionBetween(agentId, joining.id) === undefined) {
         send(agentId, {
           t: "error",
-          detail: `you are not connected to ${frame.tag} — invite them first`,
+          detail: `you are not connected to ${describeAgent(joining.id)} — invite them first`,
         });
         return;
       }

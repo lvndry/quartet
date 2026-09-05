@@ -58,13 +58,13 @@ export async function readLedger(conversationId?: string): Promise<LedgerEntry[]
 /** Confirmed agent lines of yours that the local file does not yet have. */
 export function missingOutgoing(
   messages: readonly Message[],
-  meHandle: string,
+  meDid: string,
   knownIds: ReadonlySet<string>,
 ): Message[] {
   return messages.filter(
     (message) =>
       message.kind === "agent" &&
-      message.authorHandle === meHandle &&
+      message.authorDid === meDid &&
       !knownIds.has(message.id),
   );
 }

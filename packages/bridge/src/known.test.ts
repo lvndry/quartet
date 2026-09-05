@@ -38,37 +38,50 @@ describe("reading a handle somebody handed you", () => {
   });
 });
 
-describe("pinning the key behind a handle", () => {
-  it("takes the first answer and holds it against every later one", async () => {
+describe("remembering what a key calls itself", () => {
+  it("takes the first name and holds it against every later one", async () => {
     const mira = generateKeypair();
-    const impostor = generateKeypair();
     const known = new KnownKeys();
     await known.load();
 
-    expect(known.offer("mira", mira.did)).toBeUndefined();
-    expect(known.did("mira")).toBe(mira.did);
+    expect(known.offer(mira.did, "mira")).toBeUndefined();
+    expect(known.handleOf(mira.did)).toBe("mira");
 
-    // The same key again is not news, however many times a hub repeats it.
-    expect(known.offer("mira", mira.did)).toBeUndefined();
+    // The same name again is not news, however many times a hub repeats it.
+    expect(known.offer(mira.did, "mira")).toBeUndefined();
 
-    const conflict = known.offer("mira", impostor.did);
-    expect(conflict).toEqual({ handle: "mira", pinned: mira.did, offered: impostor.did });
-    // The pin does not move. A hub does not get to replace a checked key by asserting louder.
-    expect(known.did("mira")).toBe(mira.did);
+    const conflict = known.offer(mira.did, "robin");
+    expect(conflict).toEqual({ did: mira.did, known: "mira", offered: "robin" });
+    // The pin does not move. A hub does not get to rename somebody by asserting louder.
+    expect(known.handleOf(mira.did)).toBe("mira");
     expect(known.all()).toHaveLength(1);
+  });
+
+  it("says nothing when two different keys wear one name, because that is two people", async () => {
+    const mira = generateKeypair();
+    const alsoMira = generateKeypair();
+    const known = new KnownKeys();
+    await known.load();
+
+    expect(known.offer(mira.did, "mira")).toBeUndefined();
+    // The case that used to be the alarm. A handle is a label now, and friends pick the same
+    // ones — crying wolf here would train somebody to click through the real warning.
+    expect(known.offer(alsoMira.did, "mira")).toBeUndefined();
+    expect(known.all()).toHaveLength(0);
+    expect(known.handleOf(mira.did)).toBe("mira");
+    expect(known.handleOf(alsoMira.did)).toBe("mira");
   });
 
   it("moves the pin only when somebody decides it should", async () => {
     const mira = generateKeypair();
-    const replacement = generateKeypair();
     const known = new KnownKeys();
     await known.load();
 
-    known.offer("mira", mira.did);
-    known.offer("mira", replacement.did);
-    await known.repin("mira", replacement.did);
+    known.offer(mira.did, "mira");
+    known.offer(mira.did, "robin");
+    await known.repin(mira.did, "robin");
 
-    expect(known.did("mira")).toBe(replacement.did);
+    expect(known.handleOf(mira.did)).toBe("robin");
     expect(known.all()).toHaveLength(0);
   });
 
@@ -76,35 +89,34 @@ describe("pinning the key behind a handle", () => {
     const mira = generateKeypair();
     const first = new KnownKeys();
     await first.load();
-    first.offer("mira", mira.did);
+    first.offer(mira.did, "mira");
     // `offer` saves in the background; `repin` awaits, so it is what settles the file.
-    await first.repin("mira", mira.did);
+    await first.repin(mira.did, "mira");
 
     const second = new KnownKeys();
     await second.load();
 
-    expect(second.did("mira")).toBe(mira.did);
-    expect(second.offer("mira", generateKeypair().did)).toBeDefined();
+    expect(second.handleOf(mira.did)).toBe("mira");
+    expect(second.offer(mira.did, "robin")).toBeDefined();
   });
 
   it("will not quietly re-pin over a file it could not read", async () => {
     await Bun.write(join(workDir, "known.json"), "{ not json at all");
     const known = new KnownKeys();
     await known.load();
+    const mira = generateKeypair();
 
-    expect(known.did("mira")).toBeUndefined();
+    expect(known.handleOf(mira.did)).toBeUndefined();
     expect(known.problem()).toContain("could not be read");
 
     // The dangerous move would be treating this like a first run and pinning whatever the
-    // hub offers next — a free key swap at the one moment nothing is left to contradict it.
-    const impostor = generateKeypair();
-    expect(known.offer("mira", impostor.did)).toBeUndefined();
-    expect(known.did("mira")).toBeUndefined();
+    // hub offers next — a free rename at the one moment nothing is left to contradict it.
+    expect(known.offer(mira.did, "mira")).toBeUndefined();
+    expect(known.handleOf(mira.did)).toBeUndefined();
 
     // A person deciding beats an unreadable file, so that is also how somebody recovers.
-    const real = generateKeypair();
-    await known.repin("mira", real.did);
+    await known.repin(mira.did, "mira");
     expect(known.problem()).toBeUndefined();
-    expect(known.did("mira")).toBe(real.did);
+    expect(known.handleOf(mira.did)).toBe("mira");
   });
 });

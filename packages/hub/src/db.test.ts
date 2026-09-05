@@ -5,12 +5,13 @@ import {
   TURN_SLICE_MAX,
   WELCOME_TRANSCRIPT_WINDOW,
 } from "@quartet/protocol";
+import { generateKeypair } from "@quartet/identity";
 import { HubStore } from "./db";
 
 function setup(messageCount: number) {
   const store = new HubStore(":memory:");
-  const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
-  const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+  const mira = store.createAgent({ handle: "mira", displayName: "Mira" , did: generateKeypair().did });
+  const otto = store.createAgent({ handle: "otto", displayName: "Otto" , did: generateKeypair().did });
   if (mira === undefined || otto === undefined) throw new Error("agents");
   const connectionId = store.createConnection(mira.id, otto.id);
   const conversation = store.createConversation(connectionId, "find a time");
@@ -38,15 +39,15 @@ describe("hydrating a room", () => {
   });
 
   it("resolves each author once, not once per message", () => {
-    const { store, mira } = setup(5);
+    const { store, mira, otto } = setup(5);
     const carried = store.messagesForAgent(mira.id);
 
-    expect(carried.map((message) => message.authorHandle)).toEqual([
-      "mira",
-      "otto",
-      "mira",
-      "otto",
-      "mira",
+    expect(carried.map((message) => message.authorDid)).toEqual([
+      mira.did,
+      otto.did,
+      mira.did,
+      otto.did,
+      mira.did,
     ]);
   });
 });
@@ -169,8 +170,8 @@ describe("turns the hub is waiting on", () => {
 describe("whether a room owes an agent a turn", () => {
   function room() {
     const store = new HubStore(":memory:");
-    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
-    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" , did: generateKeypair().did });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" , did: generateKeypair().did });
     if (mira === undefined || otto === undefined) throw new Error("agents");
     const connectionId = store.createConnection(mira.id, otto.id);
     const conversation = store.createConversation(connectionId, "what is free will");
@@ -242,7 +243,7 @@ describe("who is in a room", () => {
   function trio() {
     const store = new HubStore(":memory:");
     const made = ["mira", "otto", "nia"].map((handle) =>
-      store.createAgent({ handle, displayName: handle }),
+      store.createAgent({ handle, displayName: handle, did: generateKeypair().did }),
     );
     const [mira, otto, nia] = made;
     if (mira === undefined || otto === undefined || nia === undefined) throw new Error("agents");
@@ -299,20 +300,20 @@ describe("who is in a room", () => {
     const { store, mira, otto, conversation } = trio();
 
     expect(store.conversationParticipantIds(conversation.id)).toEqual([mira.id, otto.id]);
-    expect(conversation.participants.map((member) => member.handle)).toEqual(["mira", "otto"]);
+    expect(conversation.participants.map((member) => member.did)).toEqual([mira.did, otto.did]);
   });
 
   it("grows, and the newcomer sees the room in their own list", () => {
-    const { store, nia, conversation } = trio();
+    const { store, mira, otto, nia, conversation } = trio();
     expect(store.conversationsFor(nia.id)).toHaveLength(0);
 
     store.addMember(conversation.id, nia.id);
 
     expect(store.conversationsFor(nia.id).map((room) => room.id)).toEqual([conversation.id]);
-    expect(store.conversation(conversation.id)?.participants.map((member) => member.handle)).toEqual([
-      "mira",
-      "otto",
-      "nia",
+    expect(store.conversation(conversation.id)?.participants.map((member) => member.did)).toEqual([
+      mira.did,
+      otto.did,
+      nia.did,
     ]);
   });
 
@@ -324,13 +325,13 @@ describe("who is in a room", () => {
   });
 
   it("shrinks, and the leaver stops seeing it", () => {
-    const { store, otto, conversation } = trio();
+    const { store, mira, otto, conversation } = trio();
     store.removeMember(conversation.id, otto.id);
 
     expect(store.isMember(conversation.id, otto.id)).toBe(false);
     expect(store.conversationsFor(otto.id)).toHaveLength(0);
-    expect(store.conversation(conversation.id)?.participants.map((member) => member.handle)).toEqual([
-      "mira",
+    expect(store.conversation(conversation.id)?.participants.map((member) => member.did)).toEqual([
+      mira.did,
     ]);
   });
 
@@ -364,7 +365,9 @@ describe("who is in a room", () => {
 describe("deleting a room", () => {
   function trio() {
     const store = new HubStore(":memory:");
-    const made = ["mira", "otto"].map((handle) => store.createAgent({ handle, displayName: handle }));
+    const made = ["mira", "otto"].map((handle) =>
+      store.createAgent({ handle, displayName: handle, did: generateKeypair().did }),
+    );
     const [mira, otto] = made;
     if (mira === undefined || otto === undefined) throw new Error("agents");
     const connectionId = store.createConnection(mira.id, otto.id);
@@ -403,8 +406,8 @@ describe("deleting a room", () => {
 describe("what one agent is sent for its turn", () => {
   function room() {
     const store = new HubStore(":memory:");
-    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
-    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" , did: generateKeypair().did });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" , did: generateKeypair().did });
     if (mira === undefined || otto === undefined) throw new Error("agents");
     const connectionId = store.createConnection(mira.id, otto.id);
     const conversation = store.createConversation(connectionId, "what is free will", undefined, mira.id);
@@ -514,8 +517,8 @@ describe("what one agent is sent for its turn", () => {
 describe("an agent that has said goodbye", () => {
   function room() {
     const store = new HubStore(":memory:");
-    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
-    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" , did: generateKeypair().did });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" , did: generateKeypair().did });
     if (mira === undefined || otto === undefined) throw new Error("agents");
     const connectionId = store.createConnection(mira.id, otto.id);
     const conversation = store.createConversation(connectionId, "what is free will", undefined, mira.id);
@@ -536,7 +539,7 @@ describe("an agent that has said goodbye", () => {
     store.setBowedOut(conversation.id, mira.id, true);
 
     expect(store.bowedOut(conversation.id)).toEqual([mira.id]);
-    expect(store.conversation(conversation.id)?.bowedOut).toEqual(["mira"]);
+    expect(store.conversation(conversation.id)?.bowedOut).toEqual([mira.did]);
   });
 
   it("comes back when its owner says so", () => {
@@ -567,20 +570,20 @@ describe("an agent that has said goodbye", () => {
 describe("agreeing to a conversation", () => {
   it("opens a room proposed, dispatching nothing yet", () => {
     const store = new HubStore(":memory:");
-    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
-    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" , did: generateKeypair().did });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" , did: generateKeypair().did });
     if (mira === undefined || otto === undefined) throw new Error("agents");
     const connectionId = store.createConnection(mira.id, otto.id);
 
     const room = store.createConversation(connectionId, "review the lease", undefined, mira.id);
     expect(room?.state).toBe("proposed");
-    expect(room?.proposedBy).toBe("mira");
+    expect(room?.proposedBy).toBe(mira.did);
   });
 
   it("goes live when the other side takes it up", () => {
     const store = new HubStore(":memory:");
-    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
-    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" , did: generateKeypair().did });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" , did: generateKeypair().did });
     if (mira === undefined || otto === undefined) throw new Error("agents");
     const connectionId = store.createConnection(mira.id, otto.id);
     const room = store.createConversation(connectionId, "review the lease", undefined, mira.id);
@@ -593,8 +596,8 @@ describe("agreeing to a conversation", () => {
     // Otherwise the approval is decorative: whoever opened the room could wake the other
     // side's agent by accepting on their behalf.
     const store = new HubStore(":memory:");
-    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
-    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" , did: generateKeypair().did });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" , did: generateKeypair().did });
     if (mira === undefined || otto === undefined) throw new Error("agents");
     const connectionId = store.createConnection(mira.id, otto.id);
     const room = store.createConversation(connectionId, "review the lease", undefined, mira.id);
@@ -607,8 +610,8 @@ describe("agreeing to a conversation", () => {
   it("closes a room that was turned down, rather than losing it", () => {
     // The proposer is owed the answer. A room that vanished would read as a bug on their end.
     const store = new HubStore(":memory:");
-    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
-    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" , did: generateKeypair().did });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" , did: generateKeypair().did });
     if (mira === undefined || otto === undefined) throw new Error("agents");
     const connectionId = store.createConnection(mira.id, otto.id);
     const room = store.createConversation(connectionId, "review the lease", undefined, mira.id);
@@ -619,8 +622,8 @@ describe("agreeing to a conversation", () => {
 
   it("ignores a second answer to a room already decided", () => {
     const store = new HubStore(":memory:");
-    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
-    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" , did: generateKeypair().did });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" , did: generateKeypair().did });
     if (mira === undefined || otto === undefined) throw new Error("agents");
     const connectionId = store.createConnection(mira.id, otto.id);
     const room = store.createConversation(connectionId, "review the lease", undefined, mira.id);
@@ -633,9 +636,9 @@ describe("agreeing to a conversation", () => {
 
   it("refuses somebody who is not in the room at all", () => {
     const store = new HubStore(":memory:");
-    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
-    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
-    const nia = store.createAgent({ handle: "nia", displayName: "Nia" });
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" , did: generateKeypair().did });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" , did: generateKeypair().did });
+    const nia = store.createAgent({ handle: "nia", displayName: "Nia" , did: generateKeypair().did });
     if (mira === undefined || otto === undefined || nia === undefined) throw new Error("agents");
     const connectionId = store.createConnection(mira.id, otto.id);
     const room = store.createConversation(connectionId, "review the lease", undefined, mira.id);
@@ -648,8 +651,8 @@ describe("agreeing to a conversation", () => {
 describe("the dispatch ledger", () => {
   function room() {
     const store = new HubStore(":memory:");
-    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
-    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" , did: generateKeypair().did });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" , did: generateKeypair().did });
     if (mira === undefined || otto === undefined) throw new Error("agents");
     const connectionId = store.createConnection(mira.id, otto.id);
     const conversation = store.createConversation(connectionId, "find a time");
@@ -696,8 +699,8 @@ describe("the dispatch ledger", () => {
 describe("a nonce that has already been used", () => {
   function room() {
     const store = new HubStore(":memory:");
-    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
-    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" , did: generateKeypair().did });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" , did: generateKeypair().did });
     if (mira === undefined || otto === undefined) throw new Error("agents");
     const connectionId = store.createConnection(mira.id, otto.id);
     const conversation = store.createConversation(connectionId, "find a time");
@@ -779,9 +782,9 @@ describe("a nonce that has already been used", () => {
 describe("erasing a room for everyone", () => {
   function trio() {
     const store = new HubStore(":memory:");
-    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
-    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
-    const nia = store.createAgent({ handle: "nia", displayName: "Nia" });
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" , did: generateKeypair().did });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" , did: generateKeypair().did });
+    const nia = store.createAgent({ handle: "nia", displayName: "Nia" , did: generateKeypair().did });
     if (mira === undefined || otto === undefined || nia === undefined) throw new Error("agents");
     const connectionId = store.createConnection(mira.id, otto.id);
     const conversation = store.createConversation(connectionId, "find a time");
@@ -794,7 +797,7 @@ describe("erasing a room for everyone", () => {
 
     expect(store.askErase(conversation.id, mira.id)).toBe(true);
     expect(store.everyoneAskedErase(conversation.id)).toBe(false);
-    expect(store.conversation(conversation.id)?.eraseAsked).toEqual(["mira"]);
+    expect(store.conversation(conversation.id)?.eraseAsked).toEqual([mira.did]);
 
     expect(store.askErase(conversation.id, otto.id)).toBe(true);
     expect(store.everyoneAskedErase(conversation.id)).toBe(true);
@@ -806,7 +809,7 @@ describe("erasing a room for everyone", () => {
     expect(store.askErase(conversation.id, mira.id)).toBe(false);
 
     expect(store.everyoneAskedErase(conversation.id)).toBe(false);
-    expect(store.conversation(conversation.id)?.eraseAsked).toEqual(["mira"]);
+    expect(store.conversation(conversation.id)?.eraseAsked).toEqual([mira.did]);
   });
 
   it("takes a newcomer's agreement too, since they are now in the room", () => {
@@ -834,8 +837,8 @@ describe("erasing a room for everyone", () => {
 describe("writing several things as one", () => {
   it("keeps none of them when the work throws", () => {
     const store = new HubStore(":memory:");
-    const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
-    const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+    const mira = store.createAgent({ handle: "mira", displayName: "Mira" , did: generateKeypair().did });
+    const otto = store.createAgent({ handle: "otto", displayName: "Otto" , did: generateKeypair().did });
     if (mira === undefined || otto === undefined) throw new Error("agents");
     const connectionId = store.createConnection(mira.id, otto.id);
     const conversation = store.createConversation(connectionId, "find a time");

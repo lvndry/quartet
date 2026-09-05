@@ -74,7 +74,7 @@ export class RoomPresence {
       this.doing.delete(key);
     }
     return {
-      handle: agent.handle,
+      did: agent.did ?? "",
       online: this.isOnline(agentId),
       watching: this.watching.get(agentId) === conversationId,
       thinking,

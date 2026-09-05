@@ -1,12 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import type { PeerPresence, ServerFrame } from "@quartet/protocol";
+import { generateKeypair } from "@quartet/identity";
 import { HubStore } from "./db";
 import { RoomPresence } from "./presence";
 
 function setup() {
   const store = new HubStore(":memory:");
-  const mira = store.createAgent({ handle: "mira", displayName: "Mira" });
-  const otto = store.createAgent({ handle: "otto", displayName: "Otto" });
+  const mira = store.createAgent({ handle: "mira", displayName: "Mira" , did: generateKeypair().did });
+  const otto = store.createAgent({ handle: "otto", displayName: "Otto" , did: generateKeypair().did });
   if (mira === undefined || otto === undefined) throw new Error("agents");
   const connectionId = store.createConnection(mira.id, otto.id);
   const conversation = store.createConversation(connectionId, "find a time");
@@ -56,7 +57,7 @@ describe("room presence", () => {
     presence.watch(mira.id, conversation.id);
 
     const mira_ = soleOther(frames, otto.id);
-    expect(mira_.handle).toBe("mira");
+    expect(mira_.did).toBe(mira.did);
     expect(mira_.watching).toBe(true);
     expect(mira_.online).toBe(true);
     expect(mira_.thinking).toBe(false);
@@ -89,26 +90,26 @@ describe("room presence", () => {
 describe("presence in a room of three", () => {
   it("tells each member about both of the others, and never about themselves", () => {
     const { store, mira, otto, conversation, frames, online, presence } = setup();
-    const nia = store.createAgent({ handle: "nia", displayName: "Nia" });
+    const nia = store.createAgent({ handle: "nia", displayName: "Nia" , did: generateKeypair().did });
     if (nia === undefined) throw new Error("agent");
     store.addMember(conversation.id, nia.id);
     online.add(nia.id);
 
     presence.announce(conversation.id);
 
-    const handlesSeenBy = (agentId: string) =>
+    const seenBy = (agentId: string) =>
       lastPresence(frames, agentId)
-        .others.map((entry) => entry.handle)
+        .others.map((entry) => entry.did)
         .sort();
 
-    expect(handlesSeenBy(mira.id)).toEqual(["nia", "otto"]);
-    expect(handlesSeenBy(otto.id)).toEqual(["mira", "nia"]);
-    expect(handlesSeenBy(nia.id)).toEqual(["mira", "otto"]);
+    expect(seenBy(mira.id)).toEqual([nia.did, otto.did].sort());
+    expect(seenBy(otto.id)).toEqual([mira.did, nia.did].sort());
+    expect(seenBy(nia.id)).toEqual([mira.did, otto.did].sort());
   });
 
   it("shows one member thinking without saying it of the others", () => {
-    const { store, mira, conversation, frames, online, thinking, presence } = setup();
-    const nia = store.createAgent({ handle: "nia", displayName: "Nia" });
+    const { store, mira, otto, conversation, frames, online, thinking, presence } = setup();
+    const nia = store.createAgent({ handle: "nia", displayName: "Nia", did: generateKeypair().did });
     if (nia === undefined) throw new Error("agent");
     store.addMember(conversation.id, nia.id);
     online.add(nia.id);
@@ -117,8 +118,8 @@ describe("presence in a room of three", () => {
     presence.announce(conversation.id);
 
     const miraSees = lastPresence(frames, mira.id).others;
-    expect(miraSees.find((entry) => entry.handle === "nia")?.thinking).toBe(true);
-    expect(miraSees.find((entry) => entry.handle === "otto")?.thinking).toBe(false);
+    expect(miraSees.find((entry) => entry.did === nia.did)?.thinking).toBe(true);
+    expect(miraSees.find((entry) => entry.did === otto.did)?.thinking).toBe(false);
   });
 
   it("drops somebody from the list once they leave", () => {

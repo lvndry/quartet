@@ -118,6 +118,46 @@ export function tag(handle: string, did: string): string | undefined {
 }
 
 /**
+ * How to write a tag on screen, given everyone else on screen.
+ *
+ * The full fingerprint is what gets stored, sent, and compared — it has to be, because a
+ * short one can be ground out by anybody willing to generate keys until four characters
+ * match, which is the attack `fingerprint` is shaped to prevent. But nobody reads sixteen
+ * hex digits to tell two friends apart, and most rooms contain no two people wearing one
+ * name at all.
+ *
+ * So: the name alone while it is unambiguous, and exactly as much of the fingerprint as it
+ * takes to separate the people actually in front of you once it is not. Same bargain as a
+ * short commit hash, and the same reason it is safe — the short form is a label for
+ * something already identified, never the thing that identifies it.
+ */
+export function displayTag(wanted: string, among: Iterable<string>): string {
+  const mine = parseTag(wanted);
+  if (mine === undefined) return wanted;
+  if (mine.fingerprint === undefined) return `@${mine.handle}`;
+
+  const rivals: string[] = [];
+  for (const other of among) {
+    const parsed = parseTag(other);
+    if (parsed === undefined || parsed.handle !== mine.handle) continue;
+    if (parsed.fingerprint === undefined || parsed.fingerprint === mine.fingerprint) continue;
+    rivals.push(parsed.fingerprint);
+  }
+  if (rivals.length === 0) return `@${mine.handle}`;
+
+  // Group by group until nobody else shares the prefix. A fingerprint is grouped in fours
+  // for reading aloud, so growing it in fours is what stays readable.
+  const groups = mine.fingerprint.split("-");
+  for (let taken = 1; taken < groups.length; taken += 1) {
+    const prefix = groups.slice(0, taken).join("-");
+    if (!rivals.some((rival) => rival.startsWith(prefix))) {
+      return `@${mine.handle}#${prefix}`;
+    }
+  }
+  return `@${mine.handle}#${mine.fingerprint}`;
+}
+
+/**
  * Read back what somebody was given over a channel that is not this one.
  *
  * The fingerprint is optional because leaving it out is a real choice with a real cost, not a
