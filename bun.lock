@@ -9,6 +9,29 @@
         "typescript": "^7.0.2",
       },
     },
+    "packages/app": {
+      "name": "@quartet/app",
+      "version": "0.1.0",
+      "dependencies": {
+        "@quartet/protocol": "workspace:*",
+        "@quartet/theme": "workspace:*",
+        "katex": "^0.18.5",
+        "qrcode": "^1.5.4",
+        "react": "^19.2.8",
+        "react-dom": "^19.2.8",
+        "react-markdown": "^10.1.0",
+        "rehype-katex": "^7.0.1",
+        "remark-gfm": "^4.0.1",
+        "remark-math": "^6.0.0",
+      },
+      "devDependencies": {
+        "@types/qrcode": "^1.5.6",
+        "@types/react": "^19.2.18",
+        "@types/react-dom": "^19.2.5",
+        "@vitejs/plugin-react": "^6.1.1",
+        "vite": "^8.2.2",
+      },
+    },
     "packages/bridge": {
       "name": "@quartet/bridge",
       "version": "0.1.0",
@@ -56,29 +79,6 @@
       "version": "0.1.0",
       "dependencies": {
         "cloudflared": "^0.7.3",
-      },
-    },
-    "packages/web": {
-      "name": "@quartet/web",
-      "version": "0.1.0",
-      "dependencies": {
-        "@quartet/protocol": "workspace:*",
-        "@quartet/theme": "workspace:*",
-        "katex": "^0.18.5",
-        "qrcode": "^1.5.4",
-        "react": "^19.2.8",
-        "react-dom": "^19.2.8",
-        "react-markdown": "^10.1.0",
-        "rehype-katex": "^7.0.1",
-        "remark-gfm": "^4.0.1",
-        "remark-math": "^6.0.0",
-      },
-      "devDependencies": {
-        "@types/qrcode": "^1.5.6",
-        "@types/react": "^19.2.18",
-        "@types/react-dom": "^19.2.5",
-        "@vitejs/plugin-react": "^6.1.1",
-        "vite": "^8.2.2",
       },
     },
     "packages/website": {
@@ -299,6 +299,8 @@
 
     "@pagefind/windows-x64": ["@pagefind/windows-x64@1.5.2", "", { "os": "win32", "cpu": "x64" }, "sha512-Fa2Iyw7kaDRzGMfNYNUXNW2zbL5FQVDgSOcbDHdzBrDEdpqOqg8TcZ68F22ol6NJ9IGzvUdmeyZypLW5dyhqsg=="],
 
+    "@quartet/app": ["@quartet/app@workspace:packages/app"],
+
     "@quartet/bridge": ["@quartet/bridge@workspace:packages/bridge"],
 
     "@quartet/hub": ["@quartet/hub@workspace:packages/hub"],
@@ -310,8 +312,6 @@
     "@quartet/theme": ["@quartet/theme@workspace:packages/theme"],
 
     "@quartet/tunnel": ["@quartet/tunnel@workspace:packages/tunnel"],
-
-    "@quartet/web": ["@quartet/web@workspace:packages/web"],
 
     "@quartet/website": ["@quartet/website@workspace:packages/website"],
 
