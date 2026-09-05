@@ -83,6 +83,8 @@ function remedyFor(reason: RefusalReason, hubUrl: string): string {
       return "this bridge's sealing key is not signed by its own identity key — sealing.json and identity.json have come from different identities";
     case "bad-signature":
       return "the hub would not accept this key's signature — identity.json may be damaged";
+    case "displaced":
+      return "another bridge signed in with this same key, so this one has stood down — one identity, one bridge; start a second agent with `quartet connect --identity <name>`";
     default:
       // Nothing a person does differently fixes a challenge mismatch: it is this end and the
       // hub disagreeing about a nonce, which is a bug or a proxy replaying frames.
@@ -103,6 +105,7 @@ function asRefusalReason(text: string): RefusalReason {
     "bad-challenge",
     "bad-signature",
     "bad-sealing-key",
+    "displaced",
   ];
   return known.find((reason) => reason === text) ?? "bad-challenge";
 }
@@ -602,6 +605,23 @@ export class Bridge {
   }
 
   /**
+   * A refusal, but only if it is about the socket this bridge is actually using.
+   *
+   * The displacement case makes this necessary rather than tidy. A bridge that reconnects
+   * after a dropped tunnel *is* the thing that displaces its own stale socket, so the hub
+   * quite correctly tells that old socket it has been replaced — and a bridge that took that
+   * personally would stand down the healthy connection it had just made.
+   */
+  private refuseFrom(socket: WebSocket, reason: RefusalReason, detail: string): void {
+    if (this.socket !== socket) {
+      hubLog.debug(`refusal on a socket already replaced (${reason}) — not ours to act on`);
+      return;
+    }
+    if (this.refusal !== undefined) return;
+    this.refuse(reason, detail);
+  }
+
+  /**
    * Record a refusal, say what would fix it, and stop reconnecting.
    *
    * The remedy is the point. "no agent has claimed that key" is a true sentence that leaves
@@ -719,6 +739,10 @@ export class Bridge {
         return;
       }
       hubLog.debug(`← ${frame.t}`);
+      if (frame.t === "refused") {
+        this.refuseFrom(socket, frame.reason, frame.detail);
+        return;
+      }
       void this.onFrame(frame);
     });
 
@@ -729,8 +753,8 @@ export class Bridge {
       // frame could be read still ends deliberately rather than going round again. The reason
       // text is the hub's own word for it; anything unrecognised is treated as the general
       // case, which is the safe way to be wrong here.
-      if (code === REFUSED_CLOSE_CODE && this.refusal === undefined) {
-        this.refuse(asRefusalReason(reason), "the hub refused this key at the door");
+      if (code === REFUSED_CLOSE_CODE) {
+        this.refuseFrom(socket, asRefusalReason(reason), "the hub refused this key at the door");
       }
       retire(`disconnected by the hub (code ${String(code ?? "?")}${reason ? `: ${reason}` : ""})`);
     });
@@ -969,13 +993,6 @@ export class Bridge {
         hubLog.error(frame.detail);
         this.lastError = frame.detail;
         this.publish();
-        return;
-
-      // The door, not the conversation. Recorded rather than retried: `retire` reads this and
-      // stops, which is the whole difference between a hub that is down and a hub that has
-      // made up its mind.
-      case "refused":
-        this.refuse(frame.reason, frame.detail);
         return;
 
       default:

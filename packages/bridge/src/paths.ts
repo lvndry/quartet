@@ -113,6 +113,16 @@ export async function listIdentityLabels(): Promise<string[]> {
   return found.sort();
 }
 
+/**
+ * Another identity's config, without becoming that identity.
+ *
+ * `configPath` answers for whichever identity this run has chosen. This is for the questions
+ * that are about the others — which of them is already running, most of all.
+ */
+export function identityConfigPath(label: string): string {
+  return join(identitiesDirectory(), label, "config.json");
+}
+
 /** Make this identity's directory, before anything tries to write a key into it. */
 export async function makeIdentityDirectory(): Promise<void> {
   await mkdir(getDataDirectory(), { recursive: true });

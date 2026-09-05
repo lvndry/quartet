@@ -90,6 +90,33 @@ async function waitFor(what: string, ready: () => boolean, ms = 5_000): Promise<
   throw new Error(`timed out waiting for ${what}`);
 }
 
+describe("a bridge displaced by another holding the same key", () => {
+  it("stands down instead of evicting it back", async () => {
+    hub = refusingHub("displaced", "another bridge signed in as this agent");
+    running = bridgeFor(hub.url);
+    await running.start();
+
+    await waitFor("the displacement to arrive", () => running?.snapshot().hubRefusal !== undefined);
+    const state = running.snapshot();
+
+    expect(state.hubRefusal?.reason).toBe("displaced");
+    // No claim would help: the key is fine, there are simply two of it.
+    expect(state.hubRefusal?.claimable).toBe(false);
+    expect(state.hubRefusal?.remedy).toContain("--identity");
+    // The whole point. Reconnecting would displace the bridge that displaced this one, and
+    // the two would trade places for as long as both were running.
+    await Bun.sleep(2_500);
+    expect(hub.attempts()).toBe(1);
+  });
+
+  // Not covered here: a displacement aimed at a socket this bridge has *already* replaced,
+  // which `refuseFrom` ignores. Constructing it needs a socket the hub still considers open
+  // while this end has moved on, and this end only moves on after its 15s connect timeout or
+  // its 90s silence limit — so any honest test of it is a slow one. The guard matters: a
+  // bridge reconnecting after a dropped tunnel is itself what displaces its own stale socket,
+  // and acting on that notice would stand down the connection it had just made.
+});
+
 describe("a hub that refuses this key", () => {
   it("is not knocked on again", async () => {
     hub = refusingHub("unclaimed-key", "no agent has claimed that key");

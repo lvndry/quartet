@@ -22,6 +22,7 @@ import {
   isQuickTunnel,
   loadIdentityConfig,
   loadMachineConfig,
+  peekIdentityConfig,
   rememberedHandle,
   saveIdentityConfig,
   saveMachineConfig,
@@ -579,7 +580,55 @@ async function reportFilePermissions(): Promise<void> {
   }
 }
 
-async function chooseIdentity(options: { mayCreate: boolean }): Promise<IdentityChoice> {
+/**
+ * Whether a bridge for this identity is already up on this machine, and where.
+ *
+ * Asked from the port and token that identity left in its own config. A stale port answers
+ * nothing, or answers something that will not take this token — both of which are "no", which
+ * is the right answer for a bridge that is no longer running.
+ */
+async function liveBridge(label: string): Promise<number | undefined> {
+  const config = await peekIdentityConfig(label);
+  const port = config?.localPort;
+  const token = config?.localToken;
+  if (port === undefined || token === undefined) return undefined;
+  const response = await fetch(`http://localhost:${String(port)}/alive`, {
+    headers: { authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(1_500),
+  }).catch(() => undefined);
+  return response?.ok === true ? port : undefined;
+}
+
+/** One local identity, described in terms of the hub this run is joining. */
+interface IdentityOffer {
+  readonly label: string;
+  /** What this hub calls it, when it has been here before. */
+  readonly handle?: string;
+  /** The port a bridge for it is already serving on, when one is. */
+  readonly busyOn?: number;
+}
+
+async function offersFor(hubUrl: string, labels: readonly string[]): Promise<IdentityOffer[]> {
+  const offers = await Promise.all(
+    labels.map(async (label): Promise<IdentityOffer> => {
+      const config = await peekIdentityConfig(label);
+      const handle = config === undefined ? undefined : rememberedHandle(config, hubUrl);
+      const busyOn = await liveBridge(label);
+      return {
+        label,
+        ...(handle !== undefined ? { handle } : {}),
+        ...(busyOn !== undefined ? { busyOn } : {}),
+      };
+    }),
+  );
+  // The ones that have been to this hub first: those are the answers to the question asked.
+  return offers.sort((left, right) => Number(right.handle !== undefined) - Number(left.handle !== undefined));
+}
+
+async function chooseIdentity(
+  hubUrl: string,
+  options: { mayCreate: boolean },
+): Promise<IdentityChoice> {
   // An explicit directory is the last word, wherever it points and whatever is in it. It is
   // how a second bridge runs from a path outside `~/.quartet` at all.
   const dataDir = argValue("data-dir");
@@ -596,6 +645,16 @@ async function chooseIdentity(options: { mayCreate: boolean }): Promise<Identity
       return { kind: "stop" };
     }
     if (known.includes(wanted)) {
+      if (options.mayCreate) {
+        const port = await liveBridge(wanted);
+        if (port !== undefined) {
+          console.error(`\n  ! ${wanted} is already connected from this machine, on port ${String(port)}.`);
+          console.error("    Two bridges cannot share one key: they take turns evicting each other");
+          console.error("    from the hub and neither one works. Pick another --identity name to");
+          console.error("    start a second agent.\n");
+          return { kind: "stop" };
+        }
+      }
       setIdentityLabel(wanted);
       return { kind: "existing", label: wanted };
     }
@@ -608,12 +667,6 @@ async function chooseIdentity(options: { mayCreate: boolean }): Promise<Identity
     return { kind: "new", label: wanted };
   }
 
-  if (known.length === 1) {
-    const only = known[0] as string;
-    setIdentityLabel(only);
-    return { kind: "existing", label: only };
-  }
-
   if (known.length === 0) {
     if (options.mayCreate) return { kind: "new" };
     console.error(`\n  ! no identities in ${identitiesDirectory()}.`);
@@ -621,27 +674,63 @@ async function chooseIdentity(options: { mayCreate: boolean }): Promise<Identity
     return { kind: "stop" };
   }
 
-  // Several, and nothing said which. Not a thing to guess: every identity here is a separate
-  // key with its own rooms, and picking the wrong one answers somebody else's conversations.
+  const offers = await offersFor(hubUrl, known);
+  const free = offers.filter((offer) => offer.busyOn === undefined);
+
+  // A script must never stop on a question, so it gets the one unambiguous answer or an
+  // error naming the flag. Only a terminal is offered the choice.
   if (process.stdin.isTTY !== true) {
+    const only = free[0];
+    if (free.length === 1 && only !== undefined) {
+      setIdentityLabel(only.label);
+      return { kind: "existing", label: only.label };
+    }
+    if (free.length === 0) {
+      console.error(`\n  ! every identity here is already connected: ${known.join(", ")}`);
+      console.error("    Two bridges cannot share one key. Start another agent by naming an");
+      console.error("    identity that does not exist yet: --identity <new name>.\n");
+      return { kind: "stop" };
+    }
     console.error(`\n  ! this machine has several identities: ${known.join(", ")}`);
-    console.error("    Say which with --identity <name>.\n");
+    console.error(
+      `    Say which with --identity <name> — free right now: ${free.map((offer) => offer.label).join(", ")}.\n`,
+    );
     return { kind: "stop" };
   }
-  console.log("\n  Which identity?\n");
-  for (const [index, name] of known.entries()) {
-    console.log(`    ${String(index + 1).padStart(2)}  ${name}`);
+
+  // Always offered, even with one identity on file and nothing running. Starting a *second*
+  // agent is a thing people do, and with the door invisible the only way to find it was to
+  // run `connect` again — which silently started a second bridge on the same key, and the
+  // two spent the afternoon evicting each other from the hub.
+  const fallback = free[0]?.label;
+  console.log(`\n  Which identity on ${hubUrl}?\n`);
+  for (const [index, offer] of offers.entries()) {
+    const known_here = offer.handle === undefined ? "not claimed here yet" : `@${offer.handle}`;
+    const busy = offer.busyOn === undefined ? "" : `  — already connected on port ${String(offer.busyOn)}`;
+    console.log(`    ${String(index + 1).padStart(2)}  ${offer.label.padEnd(16)}${known_here}${busy}`);
   }
+  console.log(`     n  a new one`);
   console.log("");
+
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const answer = (await prompt("  Number or name: ")).trim();
-    const byNumber = known[Number(answer) - 1];
-    const picked = byNumber ?? known.find((name) => name === answer);
-    if (picked !== undefined) {
-      setIdentityLabel(picked);
-      return { kind: "existing", label: picked };
+    const answer = (await prompt(`  Number, name or n${fallback === undefined ? "" : ` [${fallback}]`}: `)).trim();
+    if (answer === "n" || answer.toLowerCase() === "new") return { kind: "new" };
+    if (answer === "" && fallback !== undefined) {
+      setIdentityLabel(fallback);
+      return { kind: "existing", label: fallback };
     }
-    console.log(`  That is not one of them. Pick 1-${String(known.length)}, or type a name.`);
+    const picked = offers[Number(answer) - 1] ?? offers.find((offer) => offer.label === answer);
+    if (picked === undefined) {
+      console.log(`  That is not one of them. Pick 1-${String(offers.length)}, n, or type a name.`);
+      continue;
+    }
+    if (picked.busyOn !== undefined) {
+      console.log(`  ${picked.label} is already connected on port ${String(picked.busyOn)} — two bridges`);
+      console.log("  cannot share one key. Pick another, or n for a new identity.");
+      continue;
+    }
+    setIdentityLabel(picked.label);
+    return { kind: "existing", label: picked.label };
   }
   return { kind: "stop" };
 }
@@ -658,13 +747,14 @@ async function chooseIdentity(options: { mayCreate: boolean }): Promise<Identity
  * by a script or a service manager must not stop on a question, and the stored URL is a
  * better answer than a hang.
  */
-async function chooseHub(stored: string): Promise<string> {
+async function chooseHub(stored: string | undefined): Promise<string> {
+  const fallback = stored ?? process.env["QUARTET_HUB"] ?? DEFAULT_HUB_URL;
   const fromFlag = argValue("hub");
   if (fromFlag !== undefined) return fromFlag;
-  if (process.stdin.isTTY !== true) return stored;
+  if (process.stdin.isTTY !== true) return fallback;
 
-  const answer = await prompt(`\n  hub URL [${stored}]: `);
-  return answer === "" ? stored : answer;
+  const answer = await prompt(`\n  hub URL [${fallback}]: `);
+  return answer === "" ? fallback : answer;
 }
 
 async function connect(): Promise<void> {
@@ -673,20 +763,13 @@ async function connect(): Promise<void> {
 
   if (!(await ensureJazzInstalled())) process.exit(1);
 
-  const choice = await chooseIdentity({ mayCreate: true });
-  if (choice.kind === "stop") process.exit(1);
-  const fresh = choice.kind === "new";
-
-  // A new identity has no directory yet, so there is nothing to read and nothing to harden
-  // until its key is written — which happens once the hub has accepted a handle for it.
+  // The hub comes first, and everything after it is asked in its terms. Which identities are
+  // worth offering depends on which hub this is — a handle belongs to a hub, so the useful
+  // question is "who are you *here*", and asking it the other way round meant answering it
+  // from whatever identity happened to be on disk.
   let machine = await loadMachineConfig();
-  let config: IdentityConfig = fresh
-    ? { label: choice.label ?? "", hubUrl: process.env["QUARTET_HUB"] ?? DEFAULT_HUB_URL }
-    : await loadIdentityConfig(choice.label);
-  if (!fresh) await reportFilePermissions();
-
   const requestedPort = argValue("port");
-  const hubUrl = await chooseHub(config.hubUrl);
+  const hubUrl = await chooseHub(machine.lastHubUrl);
 
   // Checked up front rather than left to the reconnect loop, which cannot tell a hub that is
   // restarting from a name that is never coming back — and only one of those is worth waiting for.
@@ -697,6 +780,21 @@ async function connect(): Promise<void> {
     console.error("");
     process.exit(1);
   }
+  if (machine.lastHubUrl !== hubUrl) {
+    machine = { ...machine, lastHubUrl: hubUrl };
+    await saveMachineConfig(machine);
+  }
+
+  const choice = await chooseIdentity(hubUrl, { mayCreate: true });
+  if (choice.kind === "stop") process.exit(1);
+  const fresh = choice.kind === "new";
+
+  // A new identity has no directory yet, so there is nothing to read and nothing to harden
+  // until its key is written — which happens once the hub has accepted a handle for it.
+  let config: IdentityConfig = fresh
+    ? { label: choice.label ?? "", hubUrl }
+    : await loadIdentityConfig(choice.label);
+  if (!fresh) await reportFilePermissions();
 
   // Generated but not yet kept when this identity is new: the folder is named after the
   // handle the hub accepts, so nothing is written until there is an accepted handle to name
@@ -741,7 +839,11 @@ async function connect(): Promise<void> {
   }
 
   if (known === undefined) {
-    const suggested = argValue("handle") ?? choice.label ?? config.label ?? rememberedHandle(config, hubUrl);
+    // Any of these may be absent, and a brand-new identity has no label yet — so an empty
+    // one must not become an empty default, which read as `Handle to claim here []:`.
+    const suggested = [argValue("handle"), choice.label, config.label, rememberedHandle(config, hubUrl)]
+      .map((candidate) => candidate?.trim())
+      .find((candidate) => candidate !== undefined && candidate.length > 0);
     const claimed = await claimHandle(hubUrl, keypair, suggested);
     if (claimed === undefined) process.exit(1);
 
@@ -929,7 +1031,10 @@ async function connect(): Promise<void> {
  * device list only helps somebody who knows which list to look at.
  */
 async function pairDevice(): Promise<void> {
-  const choice = await chooseIdentity({ mayCreate: false });
+  const machine = await loadMachineConfig();
+  const choice = await chooseIdentity(argValue("hub") ?? machine.lastHubUrl ?? DEFAULT_HUB_URL, {
+    mayCreate: false,
+  });
   if (choice.kind !== "existing") process.exit(1);
   await reportFilePermissions();
   const config = await loadIdentityConfig(choice.label);
@@ -1003,8 +1108,8 @@ function usage(): void {
       "quartet — a place where jazz agents meet, get introduced, and talk",
       "",
       "  quartet connect            start the bridge and open the app",
-      "    --identity <name>        which identity on this machine to be — asked when there",
-      "                             are several, created when there are none",
+      "    --identity <name>        which identity on this machine to be, skipping the",
+      "                             question — a name it does not know makes a new one",
       "    --hub <url>              which hub to join",
       "    --no-expose              skip the public https URL, so the app is reachable from",
       "                             this machine only and no phone can pair with it",
@@ -1041,10 +1146,12 @@ function usage(): void {
  * else, which told you nothing about whether this identity actually works.
  */
 async function info(): Promise<void> {
-  const choice = await chooseIdentity({ mayCreate: false });
+  const machine = await loadMachineConfig();
+  const choice = await chooseIdentity(argValue("hub") ?? machine.lastHubUrl ?? DEFAULT_HUB_URL, {
+    mayCreate: false,
+  });
   if (choice.kind !== "existing") process.exit(1);
   await reportFilePermissions();
-  const machine = await loadMachineConfig();
   const config = await loadIdentityConfig(choice.label);
 
   console.log(`identity   ${config.label}`);

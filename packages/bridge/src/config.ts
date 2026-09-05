@@ -19,7 +19,13 @@
 import { chmod, stat } from "node:fs/promises";
 import type { StoredDevice } from "./devices";
 import { writeJsonAtomically } from "./atomic";
-import { configPath, hasIdentity, identityPath, machineConfigPath } from "./paths";
+import {
+  configPath,
+  hasIdentity,
+  identityConfigPath,
+  identityPath,
+  machineConfigPath,
+} from "./paths";
 
 /**
  * Owner-only, for both files here that hold a secret.
@@ -52,6 +58,13 @@ export interface DaemonSettings {
 export interface MachineConfig {
   /** Where jazz is listening for every identity here. */
   readonly daemonUrl?: string;
+  /**
+   * The hub this machine last joined — the default the next `connect` offers.
+   *
+   * Machine-level because it is asked before an identity is chosen, and it is asked first
+   * precisely because the identity question only makes sense in terms of a hub.
+   */
+  readonly lastHubUrl?: string;
 }
 
 export interface IdentityConfig {
@@ -159,6 +172,23 @@ export async function loadIdentityConfig(label: string): Promise<IdentityConfig>
     // A corrupt config should not wedge the CLI: falling back to defaults lets `connect`
     // walk the user through setup again, which rewrites the file anyway.
     return fallback;
+  }
+}
+
+/**
+ * Read another identity's config without switching to it.
+ *
+ * For the questions one identity asks about its neighbours — which is, in practice, only
+ * "is that one already running", answered from the port and token it left here.
+ */
+export async function peekIdentityConfig(label: string): Promise<IdentityConfig | undefined> {
+  const file = Bun.file(identityConfigPath(label));
+  if (!(await file.exists())) return undefined;
+  try {
+    const parsed = (await file.json()) as Partial<IdentityConfig>;
+    return { ...parsed, label: parsed.label ?? label, hubUrl: parsed.hubUrl ?? DEFAULT_HUB_URL };
+  } catch {
+    return undefined;
   }
 }
 

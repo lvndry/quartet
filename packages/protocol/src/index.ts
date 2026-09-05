@@ -551,6 +551,15 @@ export const refusalReasonSchema = z.enum([
   "bad-signature",
   /** The sealing key was not signed by the identity key offering it. */
   "bad-sealing-key",
+  /**
+   * Another socket signed in as this same agent, and took the place of this one.
+   *
+   * Settled like the rest, and for a sharper reason: a hub holds one socket per agent, so a
+   * displaced bridge that reconnects displaces the one that displaced it. Two live bridges
+   * sharing a key then take turns evicting each other for as long as both are running, and
+   * neither can hold a conversation while it happens.
+   */
+  "displaced",
 ]);
 export type RefusalReason = z.infer<typeof refusalReasonSchema>;
 

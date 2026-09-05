@@ -251,6 +251,18 @@ export function startLocalServer(options: LocalServerOptions): {
           : json({ error: "no turn is waiting on that key" }, 404);
       }
 
+      // Whether a bridge for this identity is already up. Asked by `connect` before it
+      // starts a second one on the same key — two bridges holding one identity take turns
+      // evicting each other from the hub's socket for that agent, forever, and neither is
+      // usable while it is happening.
+      //
+      // Behind the token like everything else: the answer is only meaningful to something
+      // that already holds this identity's config, and that is exactly who asks.
+      if (url.pathname === "/alive") {
+        if (caller.kind === "anonymous") return json({ error: "unauthorized" }, 401);
+        return json({ ok: true });
+      }
+
       if (url.pathname.startsWith("/api/")) {
         if (caller.kind === "anonymous") return json({ error: "unauthorized" }, 401);
         if (caller.kind === "device") void options.devices.touch(caller.device.id);

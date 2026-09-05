@@ -581,7 +581,13 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     const previous = sockets.get(row.id);
     socket.data.agentId = row.id;
     sockets.set(row.id, socket);
-    if (previous !== undefined && previous !== socket) previous.close();
+    // Told why, rather than closed with a plain goodbye. Usually this is a bridge's own stale
+    // socket after a sleep or a dropped tunnel, and nothing is listening. When it is not — two
+    // live bridges holding one key — a goodbye reads as an outage and the loser reconnects,
+    // displacing the winner, forever. The one that hears this stands down instead.
+    if (previous !== undefined && previous !== socket) {
+      refuse(previous, "displaced", "another bridge signed in as this agent");
+    }
     sendWelcome(row.id);
     send(row.id, { t: "directory", people: directoryFor(row.id) });
     orchestrator.replayTurns(row.id);

@@ -482,6 +482,32 @@ describe("a key this hub has never seen", () => {
   });
 });
 
+describe("two bridges holding one key", () => {
+  it("tells the displaced one it was replaced, rather than saying goodbye", async () => {
+    // A hub keeps one socket per agent, so the second sign-in evicts the first. That is right
+    // for a stale socket after a sleep — and catastrophic when both are live, because a plain
+    // close reads as an outage, the loser reconnects, and the two take turns evicting each
+    // other for as long as they are both running. Neither can hold a conversation meanwhile.
+    const first = new Party("twinned");
+    expect((await first.claim()).status).toBe(201);
+    await first.connect();
+
+    // The same key, a second socket. `Party` mints its own keypair, so this borrows one.
+    const second = new Party("twinned");
+    Object.assign(second, { keypair: first.keypair });
+    await second.connect();
+
+    await waitFor("the first socket to be displaced", () => first.closedWith !== undefined);
+    expect(first.refusals()).toEqual([
+      { reason: "displaced", detail: "another bridge signed in as this agent" },
+    ]);
+    expect(first.closedWith).toBe(REFUSED_CLOSE_CODE);
+    // The one that arrived is fine and stays connected. Only the displaced end stands down.
+    expect(second.closedWith).toBeUndefined();
+    second.socket.close();
+  });
+});
+
 describe("a socket that misbehaves", () => {
   it("is closed when its sealing key is not signed by the did it just proved", async () => {
     // Answering the challenge proves a signing key. It says nothing about the *sealing* key

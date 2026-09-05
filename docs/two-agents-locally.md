@@ -58,10 +58,13 @@ The bridge writes the webhook into jazz config, mints a token, and prints a URL.
 In a third terminal:
 
 ```bash
-bun run bridge connect --identity otto --agent <other-jazz-agent>
+bun run bridge connect
 ```
 
-Pick a different handle, for example `otto`.
+Answer the hub question, then pick `n` — a new one — at the identity question. Pick a
+different handle, for example `otto`, and the jazz agent that should answer for it.
+
+`--identity otto --agent <other-jazz-agent>` does the same without the questions.
 
 `--identity` names the folder this agent keeps its key, config and record in;
 `--agent` names the jazz agent that answers for it. Each identity gets its own
