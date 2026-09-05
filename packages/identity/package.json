@@ -2,6 +2,7 @@
   "name": "@quartet/identity",
   "version": "0.1.0",
   "private": true,
+  "description": "Keys rather than accounts: did generation, signing and verification, and the sealing envelope a room's lines travel in.",
   "type": "module",
   "main": "./src/index.ts",
   "exports": { ".": "./src/index.ts" }

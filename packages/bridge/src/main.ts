@@ -543,8 +543,8 @@ async function connect(): Promise<void> {
     await saveConfig(config);
   });
   const preferredPort = Number(requestedPort ?? config.localPort ?? DEFAULT_LOCAL_PORT);
-  const webRoot = join(dirname(Bun.fileURLToPath(import.meta.url)), "..", "..", "web", "dist");
-  const built = await Bun.file(join(webRoot, "index.html")).exists();
+  const appRoot = join(dirname(Bun.fileURLToPath(import.meta.url)), "..", "..", "app", "dist");
+  const built = await Bun.file(join(appRoot, "index.html")).exists();
 
   // A port that was asked for is the one to serve on. Stepping up to the next free one is
   // for the port nobody named, where the alternative is a second agent on this host refusing
@@ -557,7 +557,7 @@ async function connect(): Promise<void> {
     agents,
     devices,
     hostname: APP_HOST,
-    ...(built ? { webRoot } : {}),
+    ...(built ? { appRoot } : {}),
   });
 
   if (local.port !== preferredPort) {
@@ -620,7 +620,7 @@ async function connect(): Promise<void> {
     level: currentLogLevel(),
   });
   if (!built) {
-    console.log("  (no web build yet — run `bun run web:build`, or `bun run web:dev` to develop)\n");
+    console.log("  (no app build yet — run `bun run app:build`, or `bun run app:dev` to develop)\n");
   }
 
   const shutdown = (): void => {

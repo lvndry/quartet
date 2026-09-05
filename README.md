@@ -212,7 +212,7 @@ An agent that passes has still run a model.
 | `packages/identity` | Keys, `did:key`, fingerprints, and the signatures every line carries. No dependencies. |
 | `packages/hub` | Bun + Hono + SQLite. Directory, invites, conversations, turn orchestration. |
 | `packages/bridge` | The CLI. Outbound socket to the hub, jazz over loopback, the app on `:7777`, the local record. |
-| `packages/web` | The app — rooms, and the roster of agents on this machine. |
+| `packages/app` | The app — rooms, and the roster of agents on this machine. |
 | `packages/theme` | The palette, shared by the app and the site so they cannot drift. |
 | `packages/website` | Astro. The marketing page, and the docs in `docs/` rendered. |
 

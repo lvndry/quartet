@@ -2,8 +2,10 @@
   "name": "@quartet/theme",
   "version": "0.1.0",
   "private": true,
+  "description": "Design tokens only — colours, type stacks and the shared favicon. No component styles; those live in each app.",
   "type": "module",
   "exports": {
-    "./tokens.css": "./tokens.css"
+    "./tokens.css": "./tokens.css",
+    "./favicon.svg": "./favicon.svg"
   }
 }

@@ -4,27 +4,9 @@
   "workspaces": {
     "": {
       "name": "quartet",
-      "dependencies": {
-        "cloudflared": "^0.7.3",
-        "hono": "^4.13.5",
-        "katex": "^0.18.5",
-        "qrcode": "^1.5.4",
-        "react": "^19.2.8",
-        "react-dom": "^19.2.8",
-        "react-markdown": "^10.1.0",
-        "rehype-katex": "^7.0.1",
-        "remark-gfm": "^4.0.1",
-        "remark-math": "^6.0.0",
-        "zod": "^4.5.4",
-      },
       "devDependencies": {
         "@types/bun": "^1.4.0",
-        "@types/qrcode": "^1.5.6",
-        "@types/react": "^19.2.18",
-        "@types/react-dom": "^19.2.5",
-        "@vitejs/plugin-react": "^6.1.1",
         "typescript": "^7.0.2",
-        "vite": "^8.2.2",
       },
     },
     "packages/bridge": {
@@ -34,16 +16,23 @@
         "quartet": "./src/main.ts",
       },
       "dependencies": {
+        "@quartet/identity": "workspace:*",
         "@quartet/protocol": "workspace:*",
         "@quartet/tunnel": "workspace:*",
+        "qrcode": "^1.5.4",
+      },
+      "devDependencies": {
+        "@types/qrcode": "^1.5.6",
       },
     },
     "packages/hub": {
       "name": "@quartet/hub",
       "version": "0.1.0",
       "dependencies": {
+        "@quartet/identity": "workspace:*",
         "@quartet/protocol": "workspace:*",
         "@quartet/tunnel": "workspace:*",
+        "hono": "^4.13.5",
       },
     },
     "packages/identity": {
@@ -53,6 +42,10 @@
     "packages/protocol": {
       "name": "@quartet/protocol",
       "version": "0.1.0",
+      "dependencies": {
+        "@quartet/identity": "workspace:*",
+        "zod": "^4.5.4",
+      },
     },
     "packages/theme": {
       "name": "@quartet/theme",
@@ -61,6 +54,9 @@
     "packages/tunnel": {
       "name": "@quartet/tunnel",
       "version": "0.1.0",
+      "dependencies": {
+        "cloudflared": "^0.7.3",
+      },
     },
     "packages/web": {
       "name": "@quartet/web",
@@ -68,6 +64,21 @@
       "dependencies": {
         "@quartet/protocol": "workspace:*",
         "@quartet/theme": "workspace:*",
+        "katex": "^0.18.5",
+        "qrcode": "^1.5.4",
+        "react": "^19.2.8",
+        "react-dom": "^19.2.8",
+        "react-markdown": "^10.1.0",
+        "rehype-katex": "^7.0.1",
+        "remark-gfm": "^4.0.1",
+        "remark-math": "^6.0.0",
+      },
+      "devDependencies": {
+        "@types/qrcode": "^1.5.6",
+        "@types/react": "^19.2.18",
+        "@types/react-dom": "^19.2.5",
+        "@vitejs/plugin-react": "^6.1.1",
+        "vite": "^8.2.2",
       },
     },
     "packages/website": {

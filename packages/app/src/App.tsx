@@ -1,14 +1,14 @@
 import type React from "react";
 import Pairing from "./Pairing";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Conversation, Message } from "@quartet/protocol";
+import type { Conversation, Message } from "@quartet/protocol/app";
 import { Dashboard } from "./Dashboard";
 import {
   DEFAULT_TURN_BUDGET,
   MAX_ROOM_MEMBERS,
   MAX_SPEND_USD,
   MAX_TURN_BUDGET,
-} from "@quartet/protocol";
+} from "@quartet/protocol/app";
 import {
   call,
   useBridge,

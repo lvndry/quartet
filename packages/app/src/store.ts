@@ -8,8 +8,8 @@
  */
 
 import { useSyncExternalStore } from "react";
-import type { BridgeState } from "@quartet/protocol";
-export type { Limit, PeerPresence } from "@quartet/protocol";
+import type { BridgeState } from "@quartet/protocol/app";
+export type { Limit, PeerPresence } from "@quartet/protocol/app";
 
 /**
  * Every shape in a snapshot, from the one place it is defined.
@@ -34,8 +34,8 @@ export type {
   Opened,
   ToolCall,
   Verdict,
-} from "@quartet/protocol";
-export type { Conflict as KeyConflict } from "@quartet/protocol";
+} from "@quartet/protocol/app";
+export type { Conflict as KeyConflict } from "@quartet/protocol/app";
 
 const EMPTY: BridgeState = {
   connectedToHub: false,

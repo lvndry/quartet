@@ -2,12 +2,21 @@
   "name": "@quartet/bridge",
   "version": "0.1.0",
   "private": true,
+  "description": "Your half, on your machine: one outbound socket to a hub, jazz over loopback, your keys and your ledger, and it serves the app.",
   "type": "module",
   "bin": {
     "quartet": "./src/main.ts"
   },
+  "scripts": {
+    "start": "bun run src/main.ts"
+  },
   "dependencies": {
+    "@quartet/identity": "workspace:*",
     "@quartet/protocol": "workspace:*",
-    "@quartet/tunnel": "workspace:*"
+    "@quartet/tunnel": "workspace:*",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/qrcode": "^1.5.6"
   }
 }

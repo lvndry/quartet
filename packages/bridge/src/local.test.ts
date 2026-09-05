@@ -8,6 +8,9 @@ import { DeviceRegistry } from "./devices";
 import { startLocalServer } from "./local";
 import type { AgentAdmin } from "./agent-admin";
 import type { Bridge } from "./bridge";
+import { mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const TOKEN = "a".repeat(32);
 
@@ -152,5 +155,90 @@ describe("the app shell", () => {
     // /pair is treated as a page, not as the API route that shares its path.
     const response = await fetch(`${origin}/pair?code=ABCDEFGH`);
     expect(response.status).not.toBe(404);
+  });
+});
+
+/**
+ * Serving the built app, which is a filesystem path rather than a route.
+ *
+ * Untested until the directory it points at was renamed, which is exactly the kind of change
+ * a type checker cannot see: `join(..., "app", "dist")` is as valid a string as `"web"` was,
+ * and the only symptom would have been every page serving the "no build found" notice.
+ */
+describe("the app itself", () => {
+  const root = join(tmpdir(), `quartet-approot-${String(Math.random()).slice(2)}`);
+
+  beforeEach(async () => {
+    await mkdir(root, { recursive: true });
+    await Bun.write(join(root, "index.html"), "<!doctype html><title>quartet</title>");
+    await Bun.write(join(root, "assets", "app.js"), "export default 1;");
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  function serving(appRoot: string | undefined) {
+    return startLocalServer({
+      port: 0,
+      mayMoveUp: true,
+      token: TOKEN,
+      bridge: stubBridge,
+      agents: stubAgents,
+      devices: new DeviceRegistry([], async () => {}),
+      ...(appRoot === undefined ? {} : { appRoot }),
+    });
+  }
+
+  test("serves the build at the root", async () => {
+    const local = serving(root);
+    try {
+      const response = await fetch(`http://127.0.0.1:${String(local.port)}/`);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("<title>quartet</title>");
+    } finally {
+      local.stop();
+    }
+  });
+
+  test("serves an asset by its own path", async () => {
+    const local = serving(root);
+    try {
+      const response = await fetch(`http://127.0.0.1:${String(local.port)}/assets/app.js`);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("export default 1;");
+    } finally {
+      local.stop();
+    }
+  });
+
+  test("falls back to the shell so a hard refresh keeps client routing", async () => {
+    const local = serving(root);
+    try {
+      const response = await fetch(`http://127.0.0.1:${String(local.port)}/rooms/anything`);
+      expect(await response.text()).toContain("<title>quartet</title>");
+    } finally {
+      local.stop();
+    }
+  });
+
+  test("says so plainly when there is no build, naming a script that exists", async () => {
+    const local = serving(undefined);
+    try {
+      const response = await fetch(`http://127.0.0.1:${String(local.port)}/`);
+      expect(response.status).toBe(503);
+      const said = await response.text();
+      // The message names a command a reader is about to type, so it has to be a real one.
+      const scripts = JSON.parse(
+        await Bun.file(new URL("../../../package.json", import.meta.url)).text(),
+      ) as { scripts: Record<string, string> };
+      const named = [...said.matchAll(/bun run ([a-z:]+)/g)]
+        .map((match) => match[1])
+        .filter((script): script is string => script !== undefined);
+      expect(named.length).toBeGreaterThan(0);
+      for (const script of named) expect(Object.keys(scripts.scripts)).toContain(script);
+    } finally {
+      local.stop();
+    }
   });
 });
