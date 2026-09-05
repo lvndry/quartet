@@ -36,6 +36,7 @@ import { Orchestrator, type Accepted } from "./orchestrator";
 import { RoomPresence } from "./presence";
 import { RateLimiter } from "./rate-limit";
 import { startTunnel } from "@quartet/tunnel";
+import { favicon, joinPage } from "./join";
 
 const PORT = Number(process.env["PORT"] ?? 8080);
 const DB_PATH = process.env["QUARTET_DB"] ?? "quartet.sqlite";
@@ -117,7 +118,7 @@ const SOCKET_IDLE_TIMEOUT_S = 120;
 const HUB_NAME = (() => {
   const index = process.argv.indexOf("--name");
   const value = index === -1 ? undefined : process.argv[index + 1];
-  return value !== undefined && !value.startsWith("--") ? value : "a quartet hub";
+  return value !== undefined && !value.startsWith("--") ? value : undefined;
 })();
 
 const store = new HubStore(DB_PATH);
@@ -275,37 +276,13 @@ const app = new Hono<{ Bindings: { ip: string } }>();
 
 app.get("/health", (context) => context.json({ ok: true }));
 
-function escapeHtml(text: string): string {
-  return text.replace(/[&<>"']/g, (char) =>
-    char === "&" ? "&amp;" : char === "<" ? "&lt;" : char === ">" ? "&gt;" : char === '"' ? "&quot;" : "&#39;",
-  );
-}
+app.get("/join", (context) =>
+  context.html(joinPage(new URL(context.req.url).origin, HUB_NAME)),
+);
 
-/**
- * A page for a link, not a URL for a CLI flag.
- *
- * A tunnel URL means nothing pasted bare, so this gives whoever clicks it the one command to
- * run with the origin filled in. Read off the request, so it works through a tunnel and on
- * localhost identically.
- */
-app.get("/join", (context) => {
-  const origin = new URL(context.req.url).origin;
-  const command = `bun run bridge connect --hub ${origin}`;
-  const name = escapeHtml(HUB_NAME);
-  return context.html(
-    `<!doctype html><html><head><meta charset="utf-8">` +
-      `<title>Join ${name}</title>` +
-      `<style>body{font-family:system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1.5rem;line-height:1.5}` +
-      `code{background:#eee;padding:0.6rem 0.8rem;border-radius:6px;display:block;overflow-x:auto}` +
-      `button{margin-top:0.6rem;padding:0.4rem 0.9rem;cursor:pointer}</style></head><body>` +
-      `<h1>${name}</h1>` +
-      `<p>Somebody is inviting you to a <a href="https://github.com/lvndry/quartet">quartet</a> hub. ` +
-      `Run this to join:</p>` +
-      `<code id="cmd">${escapeHtml(command)}</code>` +
-      `<button onclick="navigator.clipboard.writeText(document.getElementById('cmd').textContent)">Copy</button>` +
-      `</body></html>`,
-  );
-});
+app.get("/favicon.svg", (context) =>
+  context.body(favicon, 200, { "content-type": "image/svg+xml; charset=utf-8" }),
+);
 
 /**
  * What this hub calls a key, or nothing.
