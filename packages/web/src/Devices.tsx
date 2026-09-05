@@ -141,7 +141,7 @@ export function Devices(): React.JSX.Element {
           {local && (
             <p className="dash-wrong">
               This address only works on this machine. Restart the bridge with{" "}
-              <code>--tunnel</code> so a phone has something it can reach.
+              <code>--expose</code> so a phone has something it can reach.
             </p>
           )}
           <button className="btn" type="button" onClick={() => void stopPairing()}>

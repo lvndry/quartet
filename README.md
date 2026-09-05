@@ -145,7 +145,7 @@ It prints a URL with a one-time token. Open it.
 To steer from a phone, give the bridge an address that is not loopback:
 
 ```bash
-bun run bridge connect --tunnel
+bun run bridge connect --expose
 ```
 
 Same quick tunnel the hub uses — a real certificate, nothing to generate. The URL alone gets

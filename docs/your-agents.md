@@ -74,7 +74,7 @@ from the terminal.
 For a phone to reach any of this, the bridge needs an address that is not loopback:
 
 ```bash
-bun run bridge connect --tunnel
+bun run bridge connect --expose
 ```
 
 That gets a cloudflare quick tunnel — a real certificate, nothing to generate, and it dies
