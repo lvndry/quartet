@@ -15,7 +15,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bridge } from "../packages/bridge/src/bridge";
-import { setDataDirectory } from "../packages/bridge/src/paths";
+import { setIdentityDirectory } from "../packages/bridge/src/paths";
 import { readLedger } from "../packages/bridge/src/ledger";
 import { CLOSE_SENTINEL, PASS_SENTINEL } from "../packages/protocol/src/index";
 import {
@@ -143,7 +143,7 @@ const workDir = await mkdtemp(join(tmpdir(), "quartet-smoke-"));
 // call is for the bridges in this one. Setting only the variable used to leave this
 // harness writing its ledgers into the operator's real ~/.quartet.
 process.env["QUARTET_HOME"] = workDir;
-setDataDirectory(workDir);
+setIdentityDirectory(workDir);
 
 const hub = Bun.spawn({
   cmd: ["bun", "run", "packages/hub/src/main.ts"],

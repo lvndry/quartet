@@ -25,6 +25,39 @@ function isKeypair(value: unknown): value is Keypair {
 }
 
 /**
+ * Write a keypair into this identity's directory, refusing to land on one already there.
+ *
+ * Separate from `loadIdentity` because a new identity is claimed before it is kept: the hub
+ * has to accept the handle first, and a directory created ahead of that answer is a folder
+ * named after a handle somebody else holds. Generating the key early costs nothing — it is
+ * only bytes until this writes it.
+ */
+export async function writeIdentity(keypair: Keypair): Promise<undefined | { error: string }> {
+  const path = identityPath();
+  try {
+    await mkdir(dirname(path), { recursive: true });
+    // "wx" fails rather than truncates, so two bridges racing to first-run in one directory
+    // cannot erase each other's key.
+    await writeFile(path, `${JSON.stringify(keypair, null, 2)}\n`, {
+      encoding: "utf-8",
+      mode: SECRET_FILE_MODE,
+      flag: "wx",
+    });
+    // Masked by the umask on write, so asserted separately.
+    await chmod(path, SECRET_FILE_MODE);
+    return undefined;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "unknown error";
+    return { error: `could not write ${path}: ${detail}` };
+  }
+}
+
+/** A key that exists only in memory until `writeIdentity` keeps it. */
+export function newIdentity(): Keypair {
+  return generateKeypair();
+}
+
+/**
  * The keypair for this data directory, generating one the first time.
  *
  * A file that exists but does not parse is left where it is and reported. Writing a fresh key

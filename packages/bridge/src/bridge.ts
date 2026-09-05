@@ -9,6 +9,7 @@
 import {
   MAX_MESSAGE_LENGTH,
   parseServerFrame,
+  REFUSED_CLOSE_CODE,
   WELCOME_TRANSCRIPT_WINDOW,
   type ClientFrame,
   type Connection,
@@ -24,6 +25,8 @@ import {
   type Activity,
   type Opened,
   type SealingClaim,
+  type HubRefusal,
+  type RefusalReason,
 } from "@quartet/protocol";
 import { displayTag, fingerprint, parseTag, tag } from "@quartet/identity";
 import type { DaemonSettings } from "./config";
@@ -65,6 +68,47 @@ export type { Activity, Aside, BridgeState, ToolCall } from "@quartet/protocol";
 const log = logger("bridge");
 const hubLog = logger("hub");
 const daemonLog = logger("daemon");
+
+/**
+ * What to do about a refusal, as opposed to what it was.
+ *
+ * One sentence each, naming a command where there is one. These are read by somebody whose
+ * agent has just stopped working, so the useful half is the instruction, not the diagnosis.
+ */
+function remedyFor(reason: RefusalReason, hubUrl: string): string {
+  switch (reason) {
+    case "unclaimed-key":
+      return `this key has no handle on ${hubUrl} — run \`quartet connect\` to claim one there`;
+    case "bad-sealing-key":
+      return "this bridge's sealing key is not signed by its own identity key — sealing.json and identity.json have come from different identities";
+    case "bad-signature":
+      return "the hub would not accept this key's signature — identity.json may be damaged";
+    case "displaced":
+      return "another bridge signed in with this same key, so this one has stood down — one identity, one bridge; start a second agent with `quartet connect --identity <name>`";
+    default:
+      // Nothing a person does differently fixes a challenge mismatch: it is this end and the
+      // hub disagreeing about a nonce, which is a bug or a proxy replaying frames.
+      return "the handshake did not match the challenge this hub sent — report this, it is not a setting";
+  }
+}
+
+/**
+ * Read a close reason back as a refusal, defaulting rather than trusting.
+ *
+ * The string arrives over the wire from the hub, so an unknown value is version skew or
+ * something in the middle rewriting frames. Either way the useful response is to stop, which
+ * every reason here does.
+ */
+function asRefusalReason(text: string): RefusalReason {
+  const known: readonly RefusalReason[] = [
+    "unclaimed-key",
+    "bad-challenge",
+    "bad-signature",
+    "bad-sealing-key",
+    "displaced",
+  ];
+  return known.find((reason) => reason === text) ?? "bad-challenge";
+}
 
 /** Comfortably inside the hub's deadline, so one dropped beat is survivable. */
 const PROGRESS_EVERY_MS = 45_000;
@@ -120,6 +164,14 @@ export class Bridge {
   private readonly presence = new Map<string, PeerPresence[]>();
   private ledger: LedgerEntry[] = [];
   private lastError: string | undefined;
+  /**
+   * Set once the hub has refused this bridge at the handshake, and never cleared by retrying.
+   *
+   * Its presence is what stops the reconnect loop. Every refusal is settled — the same key
+   * saying the same thing gets the same answer — so a bridge that keeps knocking is not
+   * being resilient, it is filling a log with a question that has already been answered.
+   */
+  private refusal: HubRefusal | undefined;
   /**
    * What the owner asked for, until the resulting message comes back.
    *
@@ -261,6 +313,7 @@ export class Bridge {
       labels: this.labels(),
       fingerprints: this.fingerprints(),
       ...(keyStoreProblem !== undefined ? { keyStoreProblem } : {}),
+      ...(this.refusal !== undefined ? { hubRefusal: this.refusal } : {}),
       ...(this.lastError !== undefined ? { lastError: this.lastError } : {}),
     };
   }
@@ -551,7 +604,59 @@ export class Bridge {
     this.send({ t: "history.load", conversationId, beforeId: oldest.id });
   }
 
+  /**
+   * A refusal, but only if it is about the socket this bridge is actually using.
+   *
+   * The displacement case makes this necessary rather than tidy. A bridge that reconnects
+   * after a dropped tunnel *is* the thing that displaces its own stale socket, so the hub
+   * quite correctly tells that old socket it has been replaced — and a bridge that took that
+   * personally would stand down the healthy connection it had just made.
+   */
+  private refuseFrom(socket: WebSocket, reason: RefusalReason, detail: string): void {
+    if (this.socket !== socket) {
+      hubLog.debug(`refusal on a socket already replaced (${reason}) — not ours to act on`);
+      return;
+    }
+    if (this.refusal !== undefined) return;
+    this.refuse(reason, detail);
+  }
+
+  /**
+   * Record a refusal, say what would fix it, and stop reconnecting.
+   *
+   * The remedy is the point. "no agent has claimed that key" is a true sentence that leaves
+   * somebody staring at a log, and the loop that used to follow it said "can't reach the hub"
+   * about a hub that was answering — two ways of being unhelpful about a problem with one
+   * concrete fix.
+   */
+  private refuse(reason: RefusalReason, detail: string): void {
+    const remedy = remedyFor(reason, this.hubUrl);
+    this.refusal = { reason, detail, remedy, claimable: reason === "unclaimed-key" };
+    this.lastError = `${detail} — ${remedy}`;
+    hubLog.error(detail, { hub: this.hubUrl });
+    hubLog.error(remedy);
+    this.publish();
+  }
+
+  /**
+   * Try the hub again after whatever it refused has been dealt with.
+   *
+   * The only way out of a refusal, and deliberately so: nothing about waiting changes a
+   * hub's answer, so the loop does not resume on its own. Something has to have happened —
+   * a handle claimed, a key repaired — and this is the caller saying it did.
+   */
+  resume(): void {
+    if (this.refusal === undefined || this.closing) return;
+    this.refusal = undefined;
+    this.lastError = undefined;
+    this.reconnectDelay = RECONNECT_MIN_MS;
+    this.diagnosed = false;
+    this.publish();
+    this.open();
+  }
+
   private open(): void {
+    if (this.refusal !== undefined) return;
     const url = new URL("/socket", this.hubUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     const socket = new WebSocket(url.toString());
@@ -577,11 +682,18 @@ export class Bridge {
       // Nor once this outage has been diagnosed: the retry line is generic by necessity, and
       // letting it land every thirty seconds would paper over the one message that says what
       // to actually do about it.
-      if (!this.closing && !this.diagnosed) {
+      if (!this.closing && !this.diagnosed && this.refusal === undefined) {
         this.lastError = `can't reach the hub at ${this.hubUrl} — retrying`;
       }
       this.publish();
       if (this.closing) return;
+      // A door that said no. Retrying is not resilience here: the answer does not depend on
+      // when it is asked, so the loop would run until somebody killed it while reporting an
+      // outage that is not happening.
+      if (this.refusal !== undefined) {
+        hubLog.warn("not retrying — the hub refused this key, not the connection");
+        return;
+      }
       // Backoff, because a hub that is down stays down for a while and hammering it helps
       // nobody. Capped so a laptop that slept overnight still rejoins within half a minute.
       hubLog.warn(`${why}, retrying`, { in: `${String(this.reconnectDelay)}ms` });
@@ -627,13 +739,24 @@ export class Bridge {
         return;
       }
       hubLog.debug(`← ${frame.t}`);
+      if (frame.t === "refused") {
+        this.refuseFrom(socket, frame.reason, frame.detail);
+        return;
+      }
       void this.onFrame(frame);
     });
 
     socket.addEventListener("close", (event) => {
-      const code = "code" in event ? String((event as CloseEvent).code) : "?";
+      const code = "code" in event ? (event as CloseEvent).code : undefined;
       const reason = "reason" in event ? (event as CloseEvent).reason : "";
-      retire(`disconnected by the hub (code ${code}${reason ? `: ${reason}` : ""})`);
+      // The close code carries the verdict too, so a socket that died before its `refused`
+      // frame could be read still ends deliberately rather than going round again. The reason
+      // text is the hub's own word for it; anything unrecognised is treated as the general
+      // case, which is the safe way to be wrong here.
+      if (code === REFUSED_CLOSE_CODE) {
+        this.refuseFrom(socket, asRefusalReason(reason), "the hub refused this key at the door");
+      }
+      retire(`disconnected by the hub (code ${String(code ?? "?")}${reason ? `: ${reason}` : ""})`);
     });
 
     socket.addEventListener("error", () => {

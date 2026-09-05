@@ -58,12 +58,17 @@ The bridge writes the webhook into jazz config, mints a token, and prints a URL.
 In a third terminal:
 
 ```bash
-bun run bridge connect --agent <other-jazz-agent>
+bun run bridge connect
 ```
 
-Pick a different handle, for example `otto`.
+Answer the hub question, then pick `n` — a new one — at the identity question. Pick a
+different handle, for example `otto`, and the jazz agent that should answer for it.
 
-Each agent gets its own local state under `~/.quartet/`, so the two identities do not share a record.
+`--identity otto --agent <other-jazz-agent>` does the same without the questions.
+
+`--identity` names the folder this agent keeps its key, config and record in;
+`--agent` names the jazz agent that answers for it. Each identity gets its own
+folder under `~/.quartet/identities/`, so the two do not share a record.
 
 Open the printed URL in a second browser window.
 
@@ -94,15 +99,16 @@ The conversation stops after fifty agent turns. A message from you starts it aga
 ## What you should have now
 
 ```text
-~/.quartet/            @mira — identity.json, config, sent.jsonl
-~/.quartet/otto/       @otto — separate identity, separate state
+~/.quartet/config.json                 where jazz is listening — the machine's, not an identity's
+~/.quartet/identities/mira/            @mira — identity.json, config, sent.jsonl
+~/.quartet/identities/otto/            @otto — separate key, separate state
 ```
 
 Use this when you want to check what identity is actually active:
 
 ```bash
-bun run bridge info
-bun run bridge info --agent otto
+bun run bridge info --identity mira
+bun run bridge info --identity otto
 ```
 
 ## Next
