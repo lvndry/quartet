@@ -95,11 +95,6 @@ button, input, textarea { font: inherit; color: inherit; }
 .nav-toggle:hover { border-color: var(--signal); color: var(--signal); }
 .nav-scrim { display: none; }
 
-/* A wide screen's dividend is more of the record visible, not more margin. */
-@media (min-width: 1600px) {
-  .led-text { -webkit-line-clamp: 5; }
-}
-
 @media (max-width: 959px) {
   /* Fixed here, not fluid: the tablet band has one column of chat to protect, and a ledger
      that grew with the viewport would take it from the conversation. */
@@ -108,8 +103,8 @@ button, input, textarea { font: inherit; color: inherit; }
   /* Absolute inside `.columns` rather than fixed against the viewport, so the drawer starts
      where the topbar ends without anyone having to know how tall the topbar is — which
      changes with the safe-area inset on a notched phone, and would change again if the bar
-     ever wrapped. The scrim stops at the topbar too, leaving the toggle that opened the
-     drawer available to close it. */
+     ever wrapped. The scrim is a sibling of `.columns` rather than a child, so it keeps
+     covering the whole window as it did before — dimming the topbar is the point of it. */
   .pane.nav {
     display: none;
     position: absolute; top: 0; left: 0; bottom: 0; width: 17rem;
@@ -135,7 +130,14 @@ button, input, textarea { font: inherit; color: inherit; }
   .pane.ledger { display: none; }
 }
 
-.pane { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--rule); }
+/* A pane is asked to look right in its own box, so it is the box it should be consulting.
+   The nav is 16rem in a three-column window and 17rem as a drawer; the ledger is anywhere
+   from 14rem to 26rem. Keying their contents to the viewport meant answering a question
+   about themselves by measuring something else. */
+.pane {
+  min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--rule);
+  container-type: inline-size;
+}
 .pane-scroll { overflow-y: auto; min-height: 0; flex: 1; }
 
 .pane-title {
@@ -411,6 +413,22 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
   overflow: hidden; white-space: pre-wrap; word-break: break-word;
 }
 .led-steer { font-family: var(--mono); font-size: 0.62rem; color: var(--brass); }
+
+/* Once the column has the room, the clock moves out of the text's way into its own gutter,
+   the record gets the full width instead of starting a line below the time, and two more
+   lines of it survive the clamp. A wide screen's dividend is more of the record visible,
+   not more margin.
+
+   Placed after `.led-text` deliberately: both rules are a single class, so source order is
+   what decides between them. */
+@container (min-width: 21rem) {
+  .led-row {
+    display: grid; grid-template-columns: 4.5rem minmax(0, 1fr);
+    column-gap: 0.6rem; row-gap: 0.2rem;
+  }
+  .led-text, .led-steer { grid-column: 2; }
+  .led-text { -webkit-line-clamp: 5; }
+}
 .led-foot { padding: 0.8rem 1rem; font-family: var(--mono); font-size: 0.62rem; color: var(--slate); line-height: 1.7; }
 
 .placeholder { display: grid; place-items: center; height: 100%; padding: 2rem; text-align: center; }
@@ -524,7 +542,9 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
 }
 .dash-new { border-style: dashed; color: var(--slate); width: calc(100% - 2rem); margin: 0.7rem 1rem; }
 
-.dash-editor { padding: 0.9rem 1.1rem 1.6rem; max-width: 34rem; }
+/* A form is a column too, but a wider one than prose: the fields have their own labels and
+   hints to carry, and 34rem on a studio display was a strip. */
+.dash-editor { padding: 0.9rem 1.1rem 1.6rem; max-width: clamp(34rem, 46vw, 46rem); }
 .dash-promote { width: 100%; margin-bottom: 0.5rem; }
 
 /* Group heads carry the structure, so they get the rule that runs to the edge. */
