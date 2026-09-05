@@ -542,6 +542,15 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     /** Load the page immediately older than this message. */
     beforeId: z.string(),
   }),
+  /**
+   * Still here. Sent on a timer whenever the socket is up, whether or not a turn is running.
+   *
+   * An idle quartet socket used to carry nothing at all between turns, and everything in the
+   * path — the hub's own idle timeout, a tunnel, a NAT table — treats a silent connection as
+   * an abandoned one. The `progress` beat does not cover this: it only runs mid-turn, which
+   * is the case that was never at risk.
+   */
+  z.object({ t: z.literal("ping") }),
 ]);
 export type ClientFrame = z.infer<typeof clientFrameSchema>;
 
@@ -616,6 +625,13 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
     /** Everyone in the room but you. Sent whole, so a member leaving is just a shorter list. */
     others: z.array(peerPresenceSchema),
   }),
+  /**
+   * Answer to a `ping`.
+   *
+   * The reply is the point, not the ping: a socket that can be written to but never answers
+   * is exactly what a dropped tunnel leaves behind, and only a round trip tells them apart.
+   */
+  z.object({ t: z.literal("pong") }),
   /** One page of older messages, oldest first, in answer to `history.load`. */
   z.object({
     t: z.literal("history"),

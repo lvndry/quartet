@@ -579,8 +579,26 @@ async function connect(): Promise<void> {
       local.setPublicOrigin(tunnel.url);
       stopTunnel = tunnel.stop;
       console.log(`\n  ✓ also reachable at ${tunnel.url}`);
-      console.log("    Nothing can get in with that URL alone. To let a device in, run");
-      console.log(`    \`bun run bridge pair${identityFlags()}\` and scan the code.\n`);
+      console.log("    Nothing can get in with that URL alone.\n");
+
+      // Exposing the app and then being told to run a second command to use it is a
+      // two-step for something that is one intention. The exception is a bridge that
+      // already has devices on it: a code nobody asked for is a credential sitting on a
+      // screen, and re-pairing a phone you already paired is not why you passed the flag.
+      if (devices.list().length === 0) {
+        const offer = devices.offerPairing();
+        console.log(await QRCode.toString(`${tunnel.url}/pair?code=${offer.code}`, {
+          type: "terminal",
+          small: true,
+        }));
+        console.log(`  scan that to pair a device — the code is ${offer.code}`);
+        console.log(`  good for two minutes. \`bun run bridge pair${identityFlags()}\` for another.\n`);
+      } else {
+        const paired = devices.list();
+        const names = paired.map((device) => device.name).join(", ");
+        console.log(`  ${String(paired.length)} device${paired.length === 1 ? "" : "s"} paired: ${names}`);
+        console.log(`  \`bun run bridge pair${identityFlags()}\` to add another.\n`);
+      }
     } else {
       console.warn(`\n  ! no tunnel (${tunnel.kind}) — the app is still on ${appUrl}\n`);
     }
