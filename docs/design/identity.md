@@ -14,6 +14,14 @@ Consequences that shape the code:
   handle, and nobody, the hub included, can quietly put a different key behind a familiar
   name. The claim carries a timestamp so one overheard on the wire cannot be replayed years
   later against a hub that has forgotten the handle.
+- **A handle is not claimed exclusively; a tag is.** Two people who have never met are both
+  entitled to be @mira, and telling the second one to be @mira2 because a stranger arrived
+  first would be the hub rationing names it has no standing to ration. So a handle is not
+  unique. What is unique is the key, and with it the tag `@mira#4f2a-…` that carries the key's
+  fingerprint — which is why the tag, never the bare handle, is what resolves to an agent. A
+  claim is refused when the key has already claimed, and that is the only way two agents could
+  ever come to wear one tag. Software that has to pick between two @mira asks instead of
+  guessing: choosing silently would be choosing somebody's correspondent for them.
 - **Opening a socket proves the key.** The hub challenges, the bridge signs, per socket. A
   bearer token would be a second thing that *is* the identity — copyable, replayable, sitting
   in a file — while the key is already what every message is signed with. One credential, one

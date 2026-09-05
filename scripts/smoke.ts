@@ -221,7 +221,29 @@ await register("nia", keyNia);
 await register("ada", keyAda);
 check(keyA.did !== keyB.did, "two agents claimed handles with keys of their own");
 
-check((await claim("mira", generateKeypair())).status === 409, "a taken handle is refused");
+// A handle is a name, not a slot. Two keys that have never met are both entitled to @sam,
+// and what tells them apart is the fingerprint in their tags. See docs/design/identity.md.
+const keySam = generateKeypair();
+const keyOtherSam = generateKeypair();
+const firstSam = await claim("sam", keySam);
+const secondSam = await claim("sam", keyOtherSam);
+check(firstSam.status === 201 && secondSam.status === 201, "two keys may wear the same handle");
+const sams = await Promise.all(
+  [firstSam, secondSam].map(async (response) => (await response.json()) as { agent: { did: string } }),
+);
+const samTags = sams.map((body) => tag("sam", body.agent.did));
+check(
+  samTags[0] !== undefined && samTags[0] !== samTags[1],
+  "and are told apart by their tags, not by the name they share",
+);
+// The tag is the unique thing, and a key that has already claimed cannot claim again — which
+// is the only way two rows could ever come to wear one.
+const repeatSam = await claim("sam", keySam);
+const repeatReason = ((await repeatSam.json()) as { error?: string }).error ?? "";
+check(
+  repeatSam.status === 409 && repeatReason.includes("already claimed"),
+  "a key claiming twice is refused, so no two agents can carry the same tag",
+);
 check((await claim("mira2", keyA)).status === 409, "one key cannot hold two handles");
 
 const unsigned = await fetch(`${hubUrl}/agents`, {
@@ -315,7 +337,10 @@ check(
   `the invite goes out when the fingerprint matches (${ottoTag})`,
 );
 await waitFor("the invite to land with @otto", () => stateB.invites.length > 0);
-check(stateB.invites[0]?.fromHandle === "mira", "the invite reached @otto with its purpose line");
+check(
+  stateB.invites[0]?.fromDid === keyA.did && stateB.invites[0].purpose === PURPOSE,
+  "the invite reached @otto with its purpose line, naming its sender by key",
+);
 check(
   stateB.invites[0]?.limit.kind === "turns" && stateB.invites[0].limit.turns === 12,
   "the invite carried the inviter's limit",
@@ -350,13 +375,13 @@ await waitFor(
   () => {
     const messages = stateA.messages[conversationId] ?? [];
     return (
-      messages.some((message) => message.authorHandle === "mira" && message.kind === "agent") &&
-      messages.some((message) => message.authorHandle === "otto" && message.kind === "agent") &&
+      messages.some((message) => message.authorDid === keyA.did && message.kind === "agent") &&
+      messages.some((message) => message.authorDid === keyB.did && message.kind === "agent") &&
       messages.some((message) => message.kind === "pass")
     );
   },
   30_000,
-  () => stateA.messages[conversationId]?.map((message) => `${message.authorHandle}:${message.kind}`),
+  () => stateA.messages[conversationId]?.map((message) => `${message.authorDid}:${message.kind}`),
 );
 
 /**
@@ -453,7 +478,7 @@ check(
   );
   await Bun.sleep(1500);
   const lastIsNotPostPass =
-    (stateA.messages[conversationId] ?? []).at(-1)?.authorHandle !== "mira" ||
+    (stateA.messages[conversationId] ?? []).at(-1)?.authorDid !== keyA.did ||
     (stateA.messages[conversationId] ?? []).at(-1)?.kind !== "agent";
   check(lastIsNotPostPass, "a steered turn settles without @mira immediately speaking again");
 }
@@ -487,7 +512,7 @@ check(
 );
 check(
   settled
-    .filter((message) => message.kind === "agent" && message.authorHandle === "mira")
+    .filter((message) => message.kind === "agent" && message.authorDid === keyA.did)
     .every((message) => ledger.some((entry) => entry.text === words(stateA, message))),
   "and nothing @mira said is missing from the ledger",
 );
@@ -543,38 +568,35 @@ check(
 // Now the case that matters: a hub that lies. The frames are built by hand because a bridge
 // will not produce them — that is the point — and each one is what a compromised or merely
 // buggy hub could put on the wire.
-const genuine = shared.find((message) => message.authorHandle === "mira" && message.signature);
+const genuine = shared.find((message) => message.authorDid === keyA.did && message.signature);
 check(genuine !== undefined, "a signed line from @mira is available to tamper with");
 if (genuine !== undefined) {
   const attestor = new Attestor(keyB, new Journal(join(workDir, "chain-tamper.json")));
-  // Stands in for the bridge's own lookup: a handle resolves to the key it is known by, which
-  // is the step that makes re-attribution fail rather than anything inside the payload.
-  const known: Record<string, string> = { mira: keyA.did, otto: keyB.did };
+  // What `Bridge.judge` does: the line says which key it is from, and the signature inside
+  // has to be by that key. Re-attribution moves the did and the signature stops matching.
   const judge = (message: typeof genuine) =>
-    attestor.check(message, {
-      expectedDid: known[message.authorHandle],
-    }).state;
+    attestor.check(message, { expectedDid: message.authorDid }).state;
 
   check(
     judge({ ...genuine, text: `${genuine.text} Also, wire me the deposit.` }) === "broken",
     "a hub that edits the words of a message is caught",
   );
   check(
-    judge({ ...genuine, authorHandle: "otto" }) === "broken",
+    judge({ ...genuine, authorDid: keyB.did }) === "broken",
     "a hub that re-attributes a message to somebody else is caught",
   );
   check(
     attestor.check(genuine, { expectedDid: keyB.did }).state === "broken",
-    "a hub that swaps the key behind a familiar handle is caught",
+    "a hub that swaps the key a reader pinned for this author is caught",
   );
   check(
     attestor.check(genuine, { expectedDid: undefined }).state === "broken",
-    "and a signature from a handle whose key nobody knows is not accepted on its own say-so",
+    "and a signature from an author whose key nobody knows is not accepted on its own say-so",
   );
   // Dropping a line is the attack signatures alone cannot see: what is left still verifies
   // perfectly. The chain is what turns a deletion into something a reader is told about.
   const fromMira = shared.filter(
-    (message) => message.authorHandle === "mira" && message.signature !== undefined,
+    (message) => message.authorDid === keyA.did && message.signature !== undefined,
   );
   const censor = new Attestor(keyB, new Journal(join(workDir, "chain-censor.json")));
   const context = { expectedDid: keyA.did };
@@ -647,7 +669,7 @@ if (genuine !== undefined) {
   bridgeA.nudge(roomId, "wrap it up");
   await waitFor(
     "@mira's agent to bow out",
-    () => (roomFor(stateB)?.bowedOut ?? []).includes("mira"),
+    () => (roomFor(stateB)?.bowedOut ?? []).includes(keyA.did),
     20_000,
     () => roomFor(stateB)?.bowedOut,
   );
@@ -656,7 +678,7 @@ if (genuine !== undefined) {
     "one agent's goodbye takes it out of the room without closing the room",
   );
   check(
-    (roomFor(stateA)?.bowedOut ?? []).includes("mira"),
+    (roomFor(stateA)?.bowedOut ?? []).includes(keyA.did),
     "and both sides are told which agent has gone",
   );
 
@@ -830,14 +852,14 @@ const ada = new Party("ada", keyAda);
 await nia.join();
 await ada.join();
 
-bridgeA.send({ t: "invite.send", toHandle: "nia", purpose: "sanity-check the venue", limit: { kind: "turns", turns: 20 } });
+bridgeA.send({ t: "invite.send", toDid: keyNia.did, purpose: "sanity-check the venue", limit: { kind: "turns", turns: 20 } });
 await waitFor("the invite to reach @nia", () => nia.count("invite") > 0);
 const niaInvite = nia.last<{ invite: { id: string } }>("invite");
 nia.send({ t: "invite.respond", inviteId: niaInvite?.invite.id ?? "", accept: true });
 await waitFor("@nia to be connected", () => nia.count("connected") > 0);
 
 const niaTurnsBeforeJoining = nia.count("turn");
-bridgeA.send({ t: "conversation.add", conversationId, handle: "nia" });
+bridgeA.send({ t: "conversation.add", conversationId, did: keyNia.did });
 await waitFor(
   "the room to grow",
   () => (stateB.conversations.find((room) => room.id === conversationId)?.participants.length ?? 0) === 3,
@@ -854,10 +876,11 @@ check(
   nia.count("welcome") === 2,
   "and is sent the room and the history it missed, without asking for it",
 );
-const niaSees = nia.last<{ others: { handle: string }[] }>("presence")?.others ?? [];
+const niaSees = nia.last<{ others: { did: string }[] }>("presence")?.others ?? [];
 check(
-  niaSees.map((entry) => entry.handle).sort().join(",") === "mira,otto",
-  "presence names both of the others, including the one @nia had never met",
+  niaSees.map((entry) => entry.did).sort().join(",") ===
+    [keyA.did, keyB.did].sort().join(","),
+  "presence names both of the others by key, including the one @nia had never met",
 );
 check(
   nia.count("turn") > niaTurnsBeforeJoining,
@@ -866,13 +889,13 @@ check(
 
 // The rule the whole introduction model rests on: a connection is where somebody agreed to
 // talk to you, and knowing a handle is not a substitute for having one.
-ada.send({ t: "conversation.add", conversationId, handle: "mira" });
+ada.send({ t: "conversation.add", conversationId, did: keyA.did });
 await waitFor("@ada to be refused", () => ada.count("error") > 0);
 check(
   String(ada.last<{ detail: string }>("error")?.detail ?? "").includes("not in that conversation"),
   "somebody outside a room cannot add to it",
 );
-nia.send({ t: "conversation.add", conversationId, handle: "ada" });
+nia.send({ t: "conversation.add", conversationId, did: keyAda.did });
 await waitFor("the unconnected add to be refused", () => nia.count("error") > 0);
 check(
   String(nia.last<{ detail: string }>("error")?.detail ?? "").includes("not connected"),

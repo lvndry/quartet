@@ -152,7 +152,7 @@ describe("the paths that only exist as strings", () => {
     const match = /appRoot = join\([\s\S]*?"\.\.",\s*"\.\.",\s*"([^"]+)",\s*"([^"]+)"\)/.exec(main);
     expect(match).not.toBeNull();
     const [, pkg, outDir] = match ?? [];
-    expect(packageNames).toContain(pkg);
+    expect(packageNames).toContain(pkg ?? "");
 
     // And that the package really does build there, rather than the two agreeing by luck.
     const viteConfig = readFileSync(join(PACKAGES, pkg ?? "", "vite.config.ts"), "utf8");
