@@ -25,7 +25,7 @@ import {
   type Opened,
   type SealingClaim,
 } from "@quartet/protocol";
-import { fingerprint, parseTag } from "@quartet/identity";
+import { fingerprint, parseTag, tag } from "@quartet/identity";
 import type { DaemonSettings } from "./config";
 import type { Attestor, Verdict } from "./attest";
 import { recipientsFor, withWords, type Sealer } from "./sealer";
@@ -445,12 +445,40 @@ export class Bridge {
       return { error: `"${target}" is not a handle or a handle#fingerprint` };
     }
 
-    const offered = this.directory.find((entry) => entry.agent.handle === parsed.handle)?.agent.did;
+    // Every key on this hub wearing that name, not the first one found. Two friends who both
+    // go by @mira is the ordinary case now, and picking one of them silently would be this
+    // bridge choosing somebody's correspondent for them.
+    const wearing = this.directory.filter((entry) => entry.agent.handle === parsed.handle);
+    if (wearing.length > 1 && parsed.fingerprint === undefined) {
+      const choices = wearing
+        .map((entry) => (entry.agent.did === undefined ? undefined : tag(parsed.handle, entry.agent.did)))
+        .filter((named): named is string => named !== undefined);
+      return {
+        error:
+          `${String(wearing.length)} agents here go by @${parsed.handle}. ` +
+          `Say which: ${choices.join(", ")}`,
+      };
+    }
+    const offered = wearing[0]?.agent.did;
     if (parsed.fingerprint !== undefined) {
       if (offered === undefined) {
         return {
           error: `this hub has no key for @${parsed.handle}, so the fingerprint proves nothing`,
         };
+      }
+      const wanted = wearing.find(
+        (entry) => entry.agent.did !== undefined && fingerprint(entry.agent.did) === parsed.fingerprint,
+      )?.agent.did;
+      if (wanted !== undefined) {
+        // Checked by a person, so it supersedes anything pinned on a hub's say-so alone.
+        void this.known.repin(parsed.handle, wanted);
+        this.send({
+          t: "invite.send",
+          toTag: tag(parsed.handle, wanted) ?? "",
+          purpose,
+          ...(limit !== undefined ? { limit } : {}),
+        });
+        return undefined;
       }
       if (fingerprint(offered) !== parsed.fingerprint) {
         return {
@@ -463,9 +491,15 @@ export class Bridge {
       void this.known.repin(parsed.handle, offered);
     }
 
+    // The did was already resolved above to check the fingerprint; sending it as a tag is what
+    // makes "which @mira" the sender's decision rather than the hub's pick.
+    const named = offered === undefined ? undefined : tag(parsed.handle, offered);
+    if (named === undefined) {
+      return { error: `this hub has no key for @${parsed.handle}, so there is nobody to name` };
+    }
     this.send({
       t: "invite.send",
-      toHandle: parsed.handle,
+      toTag: named,
       purpose,
       ...(limit !== undefined ? { limit } : {}),
     });

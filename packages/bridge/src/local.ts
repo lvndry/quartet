@@ -499,11 +499,13 @@ async function handleApi(
 
     case "/api/add": {
       const conversationId = text("conversationId");
-      const handle = text("handle");
-      if (conversationId.length === 0 || handle.length === 0) {
-        return json({ error: "a conversation and a handle are both required" }, 400);
+      // A tag, not a handle: the app picks somebody out of a directory it can already see, so
+      // it knows which @mira it meant and there is no reason to make the hub guess.
+      const tag = text("tag");
+      if (conversationId.length === 0 || tag.length === 0) {
+        return json({ error: "a conversation and a tag are both required" }, 400);
       }
-      bridge.send({ t: "conversation.add", conversationId, handle });
+      bridge.send({ t: "conversation.add", conversationId, tag });
       return json({ ok: true });
     }
 

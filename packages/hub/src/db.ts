@@ -11,6 +11,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { tag as tagFor } from "@quartet/identity";
 import type { InFlight } from "./turn-policy";
 import {
   DEFAULT_LIMIT,
@@ -157,7 +158,10 @@ export class HubStore {
       CREATE TABLE IF NOT EXISTS agents (
         id            TEXT PRIMARY KEY,
         owner_id      TEXT NOT NULL REFERENCES owners(id),
-        handle        TEXT NOT NULL UNIQUE,
+        -- Not unique: a handle is a name, and two people who have never met are entitled to
+        -- the same one. What is unique is did below, because that is the identity. See
+        -- docs/design/identity.md.
+        handle        TEXT NOT NULL,
         display_name  TEXT NOT NULL,
         bio           TEXT,
         token         TEXT NOT NULL UNIQUE,
@@ -321,8 +325,14 @@ export class HubStore {
     bio?: string;
     did?: string;
   }): AgentRow | undefined {
-    if (this.agentByHandle(input.handle) !== undefined) return undefined;
+    // A key claims once. A name is claimed as often as people happen to share it — which
+    // among friends is often, and telling somebody to be @mira2 on this hub because a friend
+    // got here first is a worse answer than carrying the fingerprint that already tells them
+    // apart everywhere else.
     if (input.did !== undefined && this.agentByDid(input.did) !== undefined) return undefined;
+    if (input.did !== undefined && this.agentByTag(tagFor(input.handle, input.did)) !== undefined) {
+      return undefined;
+    }
     const ownerId = newId("own");
     const agentId = newId("agt");
     const at = nowIso();
@@ -352,8 +362,30 @@ export class HubStore {
     return this.db.query<AgentRow, [string]>("SELECT * FROM agents WHERE did = ?").get(did) ?? undefined;
   }
 
-  agentByHandle(handle: string): AgentRow | undefined {
-    return this.db.query<AgentRow, [string]>("SELECT * FROM agents WHERE handle = ?").get(handle) ?? undefined;
+  /**
+   * The agent somebody meant by `@mira#4f2a-…`.
+   *
+   * The name people write down, and the only one that stays unambiguous once a handle can be
+   * worn by more than one key. A bare handle is deliberately not accepted: on a hub with two
+   * @mira, picking one of them would be picking somebody's correspondent for them.
+   */
+  agentByTag(wanted: string | undefined): AgentRow | undefined {
+    if (wanted === undefined) return undefined;
+    for (const row of this.allAgents()) {
+      if (row.did !== null && tagFor(row.handle, row.did) === wanted) return row;
+    }
+    return undefined;
+  }
+
+  /** Whose agent proposed this room, as an id rather than a name. */
+  proposerId(conversationId: string): string | undefined {
+    return (
+      this.db
+        .query<{ proposed_by: string | null }, [string]>(
+          "SELECT proposed_by FROM conversations WHERE id = ?",
+        )
+        .get(conversationId)?.proposed_by ?? undefined
+    );
   }
 
   agentById(id: string): AgentRow | undefined {
@@ -597,9 +629,11 @@ export class HubStore {
     const conversation = this.conversation(conversationId);
     if (conversation === undefined || conversation.state !== "proposed") return undefined;
 
+    // Compared by id, not by name. Once two agents can wear one handle, a name in a
+    // membership test is a hole: the @mira who is not in this room would pass it.
     const responder = this.agentById(agentId);
-    if (responder === undefined || responder.handle === conversation.proposedBy) return undefined;
-    if (!conversation.participants.some((member) => member.handle === responder.handle)) {
+    if (responder === undefined || responder.id === this.proposerId(conversationId)) return undefined;
+    if (!(this.conversationParticipantIds(conversationId) ?? []).includes(responder.id)) {
       return undefined;
     }
 
