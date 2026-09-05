@@ -89,6 +89,7 @@ posts the code, and receives a device token.
 | **Single use** | The code is spent on first redemption, whether or not it succeeded. |
 | **Short TTL** | Two minutes. A pairing code lying around is a credential lying around. |
 | **QR, not text** | A 32-character token typed on a phone is a token that gets pasted into a chat app to make it typable. |
+| **The code rides in the QR** | So a scan is the whole of pairing. The two are not split into "scan, then type": the URL is the part that plausibly leaks — it is printed at startup, kept in config, and is a public DNS name — and it opens nothing on its own. The QR is an artifact you point a camera at deliberately, and treating it as the credential is what it already is. |
 | **Rate limited** | Redemption attempts are bounded, so a guessable code is not brute-forceable within its TTL. |
 
 Pairing is initiated from the machine, never from the phone. There is no "request access"
