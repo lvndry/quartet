@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateKeypair, type Keypair } from "@quartet/identity";
+import { generateKeypair, generateSealingKeypair, verifySealingKey, type Keypair } from "@quartet/identity";
 import type { Message } from "@quartet/protocol";
 import { Attestor } from "./attest";
 import { Journal } from "./journal";
@@ -164,5 +164,39 @@ describe("a transcript the hub replays on reconnect", () => {
     for (const message of older) receiver.check(message, context(), { replay: true });
 
     expect(receiver.check(say(sender, 3), context()).state).toBe("signed");
+  });
+});
+
+describe("binding a sealing key to this identity", () => {
+  it("signs the binding with the key the far side has pinned", () => {
+    // The join between the two keypairs, and the only one. An X25519 key cannot vouch for
+    // itself, so this signature is the entire difference between a key the agent published
+    // and a key the hub made up.
+    const attestor = new Attestor(mira, new Journal(join(workDir, "journal.json")));
+    const { sealingDid } = generateSealingKeypair();
+
+    const claim = attestor.bindSealingKey(sealingDid);
+
+    expect(claim.sealingDid).toBe(sealingDid);
+    expect(verifySealingKey({ did: mira.did, ...claim }, claim.proof)).toBe(true);
+  });
+
+  it("produces a claim that will not check out against anybody else's key", () => {
+    const attestor = new Attestor(mira, new Journal(join(workDir, "journal.json")));
+    const { sealingDid } = generateSealingKeypair();
+
+    const claim = attestor.bindSealingKey(sealingDid);
+
+    expect(verifySealingKey({ did: otto.did, ...claim }, claim.proof)).toBe(false);
+  });
+
+  it("covers the sealing key itself, so one cannot be swapped under a good signature", () => {
+    const attestor = new Attestor(mira, new Journal(join(workDir, "journal.json")));
+    const claim = attestor.bindSealingKey(generateSealingKeypair().sealingDid);
+    const substituted = generateSealingKeypair().sealingDid;
+
+    expect(
+      verifySealingKey({ did: mira.did, sealingDid: substituted, at: claim.at }, claim.proof),
+    ).toBe(false);
   });
 });

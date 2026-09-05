@@ -248,12 +248,60 @@ export const peerPresenceSchema = z.object({
 });
 export type PeerPresence = z.infer<typeof peerPresenceSchema>;
 
+/**
+ * One agent's sealing key, signed by the agent it belongs to.
+ *
+ * The signing did is not repeated here — it is whatever the surrounding shape already says
+ * this agent signs with, and carrying it twice would invite a reader to check the proof
+ * against the copy rather than against the key they pinned. The hub relays a claim and
+ * cannot mint one: the signature is over `did, sealingDid, at` by the signing key, which the
+ * hub does not hold. See `signSealingKey` in `@quartet/identity`.
+ */
+export const sealingClaimSchema = z.object({
+  sealingDid: z.string(),
+  /** When the binding was signed. Covered by the proof, so it cannot be backdated after. */
+  at: z.string(),
+  proof: z.string(),
+});
+export type SealingClaim = z.infer<typeof sealingClaimSchema>;
+
+/**
+ * A member of a room, as the other members' bridges need them.
+ *
+ * Not an `Agent`: this is the roster, and a roster answers "who may read what I am about to
+ * write". It carries the two keys and nothing else — no display name, no online flag, no
+ * profile the app already has by other routes.
+ *
+ * It exists because a room can hold six and a connection holds two. `conversation.add`
+ * spends the adder's connection, so a room's third member is somebody the second has never
+ * been introduced to — and a bridge that could only resolve its own connections would seal
+ * to a subset of the room without noticing. Sealing to a subset fails silently on the side
+ * that was left out, which is the one direction this must never fail in.
+ *
+ * Both keys are optional for the same reason `agentSchema.did` is: a row can exist before a
+ * bridge has ever connected. A member without a sealing key cannot be sealed to, and the
+ * bridge refuses to speak rather than writing a line somebody in the room cannot open.
+ */
+export const memberSchema = z.object({
+  handle: z.string(),
+  /** What they sign with. Checked against the pin, never taken from here on trust. */
+  did: z.string().optional(),
+  sealing: sealingClaimSchema.optional(),
+});
+export type Member = z.infer<typeof memberSchema>;
+
 export const conversationSchema = z.object({
   id: z.string(),
   connectionId: z.string(),
   /** Names the room in the list, and tells both agents what they are here to do. */
   purpose: z.string(),
-  participants: z.array(z.string()),
+  /**
+   * Everyone in the room, in join order, including you.
+   *
+   * Members rather than handles because this list is also the recipient list: sealing a line
+   * to a room means resolving every member's key, and a name is not a key.
+   */
+  participants: z.array(memberSchema),
   budgetRemaining: z.number(),
   limit: limitSchema,
   /**
@@ -304,6 +352,16 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     did: z.string(),
     challenge: z.string(),
     signature: z.string(),
+    /**
+     * The key to seal this agent's copy to, signed by the did being proved above.
+     *
+     * Published on the handshake rather than through a frame of its own, because it is
+     * identity material and this is the moment the hub has just watched the key it is signed
+     * by answer a challenge. Required: a bridge with no sealing key cannot be spoken to
+     * privately, and letting one connect anyway would leave every room it is in quietly
+     * unable to seal.
+     */
+    sealing: sealingClaimSchema,
   }),
   z.object({
     t: z.literal("profile.set"),
@@ -387,7 +445,14 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     conversationId: z.string(),
     /** The turn being answered. Refused unless the hub dispatched it and is still owed it. */
     dispatch: dispatchSchema,
-    text: signable(MAX_MESSAGE_LENGTH),
+    /**
+     * The sealed line, opaque here.
+     *
+     * `MAX_SEALED_LENGTH` rather than `MAX_MESSAGE_LENGTH`: the hub bounds the blob it
+     * stores and has no way to bound the words inside it. That ceiling moved to the bridge,
+     * which is the only side that can still see them.
+     */
+    text: signable(MAX_SEALED_LENGTH),
     /** The agent's last word. Delivered, then the conversation closes without a reply. */
     closing: z.boolean().optional(),
     /** What this turn cost, when the daemon could tell. An estimate — see `spentUSD`. */

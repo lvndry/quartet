@@ -197,6 +197,12 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
 .provenance.unsigned { color: var(--slate); }
 .provenance.broken { color: var(--vermilion); }
 
+/* A line this machine holds and cannot read. Set apart from speech on purpose: the words in
+   it are the app's, and a reader who mistakes them for the other party's has been misled by
+   the styling rather than by the text. */
+.unreadable { font-style: italic; color: var(--slate); }
+.unreadable.unopenable { color: var(--vermilion); font-style: normal; }
+
 .key-alarm {
   padding: 0.7rem 1rem; font-size: 0.8rem; line-height: 1.5;
   color: var(--cream); background: color-mix(in srgb, var(--vermilion) 14%, transparent);

@@ -18,6 +18,7 @@ import {
   type Limit,
   type PeerPresence,
   type ToolCall,
+  type Opened,
   type Verdict,
 } from "./store";
 
@@ -35,7 +36,9 @@ const MessageBody = lazy(() =>
  * rooms were pairs.
  */
 function others(conversation: Conversation, meHandle: string): string[] {
-  return conversation.participants.filter((handle) => handle !== meHandle);
+  return conversation.participants
+    .filter((member) => member.handle !== meHandle)
+    .map((member) => member.handle);
 }
 
 /** "@otto", "@otto and @nia", "@otto, @nia and @ada" — for prose, not for lists. */
@@ -645,6 +648,7 @@ export default function App(): React.JSX.Element {
             toolCalls={state.toolCalls[conversation.id] ?? []}
             presence={state.presence[conversation.id] ?? []}
             verdicts={state.verdicts}
+            opened={state.opened}
             meHandle={state.me?.handle ?? ""}
             onAct={act}
           />
@@ -951,6 +955,7 @@ function Chat({
   toolCalls,
   presence,
   verdicts,
+  opened,
   meHandle,
   onAct,
 }: {
@@ -965,6 +970,11 @@ function Chat({
   /** Everyone in the room but you. */
   presence: readonly PeerPresence[];
   verdicts: Record<string, Verdict>;
+  /**
+    * What this machine made of each sealed line. The words live here, not on the message —
+    * a `Message.text` is the envelope the author signed and the hub relayed.
+    */
+  opened: Record<string, Opened>;
   meHandle: string;
   onAct: (path: string, body: Record<string, unknown>) => Promise<void>;
 }): React.JSX.Element {
@@ -1144,6 +1154,10 @@ function Chat({
                 </span>
               );
             }
+            // No entry at all is the same as one that would not open: either way this
+            // machine has an envelope and no words, and printing the envelope would show
+            // somebody JSON in the place where a sentence goes.
+            const read = opened[message.id] ?? { state: "unopenable" as const };
             return (
               <div
                 className={message.authorHandle === meHandle ? "msg mine" : "msg"}
@@ -1154,9 +1168,20 @@ function Chat({
                   <span className="msg-who">
                     @{message.authorHandle} · {clock(message.at)}
                   </span>
-                  <Suspense fallback={<div className="md">{message.text}</div>}>
-                    <MessageBody text={message.text} />
-                  </Suspense>
+                  {read.state === "opened" ? (
+                    <Suspense fallback={<div className="md">{read.text}</div>}>
+                      <MessageBody text={read.text} />
+                    </Suspense>
+                  ) : (
+                    // Deliberately not rendered as markdown. This sentence is this machine
+                    // talking about a line, not the line — and formatting it like speech is
+                    // how somebody comes to read it as something the other party wrote.
+                    <span className={`unreadable ${read.state}`}>
+                      {read.state === "sealed-to-others"
+                        ? "sealed to the others in this room — written before you joined"
+                        : "this line did not open — compare the fingerprints for this room"}
+                    </span>
+                  )}
                   <Provenance verdict={verdicts[message.id]} />
                 </span>
               </div>

@@ -257,11 +257,49 @@ describe("who is in a room", () => {
     return { store, mira, otto, nia, conversation };
   }
 
+  it("carries each member's sealing key into the roster, whole or not at all", () => {
+    // The rail this whole thing rides. A bridge cannot seal a line to a room it has no keys
+    // for, and the roster is the only place those keys reach it.
+    const { store, mira, otto, conversation } = trio();
+    store.recordSealingKey(mira.id, {
+      sealingDid: "did:key:zSealMira",
+      at: "2026-02-02T10:00:00.000Z",
+      proof: "sig-mira",
+    });
+
+    const roster = store.conversation(conversation.id)?.participants ?? [];
+
+    expect(roster.find((member) => member.handle === "mira")?.sealing).toEqual({
+      sealingDid: "did:key:zSealMira",
+      at: "2026-02-02T10:00:00.000Z",
+      proof: "sig-mira",
+    });
+    // Otto's bridge has never connected, so there is nothing to relay for him — and a bridge
+    // reading this refuses to speak rather than sealing a line he could not open.
+    expect(roster.find((member) => member.handle === "otto")?.sealing).toBeUndefined();
+    expect(otto.sealing_did).toBeNull();
+  });
+
+  it("replaces a sealing key on rotation rather than accumulating them", () => {
+    // The hub holds what to seal to next. Everything already sealed to the old key stays
+    // sealed to it, and the only copy of that key is on the bridge that made it.
+    const { store, mira, conversation } = trio();
+    const at = "2026-02-02T10:00:00.000Z";
+    store.recordSealingKey(mira.id, { sealingDid: "did:key:zFirst", at, proof: "one" });
+    store.recordSealingKey(mira.id, { sealingDid: "did:key:zSecond", at, proof: "two" });
+
+    const roster = store.conversation(conversation.id)?.participants ?? [];
+
+    expect(roster.find((member) => member.handle === "mira")?.sealing?.sealingDid).toBe(
+      "did:key:zSecond",
+    );
+  });
+
   it("starts a room with both ends of the connection it grew from", () => {
     const { store, mira, otto, conversation } = trio();
 
     expect(store.conversationParticipantIds(conversation.id)).toEqual([mira.id, otto.id]);
-    expect(conversation.participants).toEqual(["mira", "otto"]);
+    expect(conversation.participants.map((member) => member.handle)).toEqual(["mira", "otto"]);
   });
 
   it("grows, and the newcomer sees the room in their own list", () => {
@@ -271,7 +309,11 @@ describe("who is in a room", () => {
     store.addMember(conversation.id, nia.id);
 
     expect(store.conversationsFor(nia.id).map((room) => room.id)).toEqual([conversation.id]);
-    expect(store.conversation(conversation.id)?.participants).toEqual(["mira", "otto", "nia"]);
+    expect(store.conversation(conversation.id)?.participants.map((member) => member.handle)).toEqual([
+      "mira",
+      "otto",
+      "nia",
+    ]);
   });
 
   it("orders members by when they joined, which is the order turns are offered in", () => {
@@ -287,7 +329,9 @@ describe("who is in a room", () => {
 
     expect(store.isMember(conversation.id, otto.id)).toBe(false);
     expect(store.conversationsFor(otto.id)).toHaveLength(0);
-    expect(store.conversation(conversation.id)?.participants).toEqual(["mira"]);
+    expect(store.conversation(conversation.id)?.participants.map((member) => member.handle)).toEqual([
+      "mira",
+    ]);
   });
 
   it("gives up a turn owed to somebody who has left", () => {

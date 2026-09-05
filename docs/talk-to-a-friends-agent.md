@@ -113,10 +113,11 @@ third person. See [Rooms](rooms.md).
 
 ## Things worth knowing
 
-- **The hub can read the room.** It can't forge, alter, re-attribute or delete a message
-  without that being detectable — every line is signed and chained — but the conversation
-  isn't encrypted. What you tell your *own* agent is sealed, and the hub only relays that back
-  to you. Don't run a conversation through somebody's hub that you wouldn't run past them.
+- **The hub can't read the room, and can see everything around it.** Every line is signed,
+  chained and sealed to the people in the room, so a hub can neither forge one nor read one.
+  What it does keep, forever, is who spoke to whom, when, how often and at what length. There
+  is no forward secrecy either: whoever takes your data directory can open your whole history.
+  And sealing is from the *hub* — your friend's machine holds your words in the clear.
 - **Nobody pays for anybody else's inference.** Every model call happens on its owner's
   machine with their own key.
 - **Your record is yours.** `sent.jsonl` in your data dir holds every line your agent sent,

@@ -10,6 +10,7 @@
  * Run with: bun scripts/smoke.ts
  */
 
+import { Database } from "bun:sqlite";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +26,8 @@ import {
   signChallenge,
   signClaim,
   signMessage,
+  signSealingKey,
+  unpackEnvelope,
   tag,
   type Keypair,
 } from "../packages/identity/src/index";
@@ -356,10 +359,22 @@ await waitFor(
   () => stateA.messages[conversationId]?.map((message) => `${message.authorHandle}:${message.kind}`),
 );
 
+/**
+ * The words behind a line, the way the app reads them.
+ *
+ * Off the snapshot's `opened` map and never off `message.text`, which is the envelope the
+ * author signed and the hub relayed. A test that read the message directly would compare
+ * against ciphertext and pass by accident on every assertion phrased as a negative.
+ */
+const words = (state: typeof stateA, message: { id: string }): string | undefined => {
+  const read = state.opened[message.id];
+  return read?.state === "opened" ? read.text : undefined;
+};
+
 const transcript = stateA.messages[conversationId] ?? [];
 check(transcript.length > 1, `the agents exchanged ${String(transcript.length)} messages`);
 check(
-  !transcript.some((message) => message.kind === "agent" && message.text === PURPOSE),
+  !transcript.some((message) => message.kind === "agent" && words(stateA, message) === PURPOSE),
   "the purpose was a steer, not an agent utterance in the room",
 );
 check(
@@ -391,8 +406,10 @@ check(
   "the human aside was kept locally",
 );
 check(
-  !(stateB.messages[conversationId] ?? []).some((message) =>
-    message.text.includes("rue Oberkampf"),
+  !(stateB.messages[conversationId] ?? []).some(
+    (message) =>
+      message.text.includes("rue Oberkampf") ||
+      (words(stateB, message) ?? "").includes("rue Oberkampf"),
   ),
   "the human aside never crossed to the other party",
 );
@@ -465,15 +482,39 @@ check(ledger.length > 0, `the local ledger recorded ${String(ledger.length)} out
 // and the point of the ledger is that it matches what crossed *now*, not a moment ago.
 const settled = stateA.messages[conversationId] ?? [];
 check(
-  ledger.every((entry) => settled.some((message) => message.text === entry.text)),
+  ledger.every((entry) => settled.some((message) => words(stateA, message) === entry.text)),
   "every ledger entry corresponds to something that actually crossed",
 );
 check(
   settled
     .filter((message) => message.kind === "agent" && message.authorHandle === "mira")
-    .every((message) => ledger.some((entry) => entry.text === message.text)),
+    .every((message) => ledger.some((entry) => entry.text === words(stateA, message))),
   "and nothing @mira said is missing from the ledger",
 );
+
+// The claim the sealing layer makes, asserted against the hub's actual database rather than
+// against the wire format. Everything above proves the words reached the far side; this
+// proves they did not stay behind. A hub operator with root on this machine, reading the file
+// the hub writes, finds envelopes.
+{
+  const stored = new Database(join(workDir, "hub.sqlite"), { readonly: true })
+    .query<{ kind: string; text: string }, []>("SELECT kind, text FROM messages")
+    .all();
+  const agentLines = stored.filter((row) => row.kind === "agent");
+  check(agentLines.length > 0, `the hub's database holds ${String(agentLines.length)} spoken lines`);
+  check(
+    agentLines.every((row) => unpackEnvelope(row.text) !== undefined),
+    "and every one of them is an envelope rather than words",
+  );
+  // Named plaintext from the run above, looked for in what the hub kept. A single hit here is
+  // the whole feature failing, and it is worth spelling out rather than inferring from a
+  // format check that a future change could satisfy while still leaking.
+  const secrets = [...ledger.map((entry) => entry.text), PURPOSE, "rue Oberkampf"];
+  check(
+    !agentLines.some((row) => secrets.some((secret) => row.text.includes(secret))),
+    "and nothing anybody said is recoverable from the hub's own copy",
+  );
+}
 
 // Every line in the room carries a signature, and both ends agree it holds. This is the
 // property the whole identity layer exists for: @otto's bridge concluded that @mira said
@@ -597,7 +638,7 @@ if (genuine !== undefined) {
   bridgeB.send({ t: "conversation.respond", conversationId: roomId, accept: true });
   await waitFor(
     "the opening turn to settle",
-    () => (stateA.messages[roomId] ?? []).some((message) => message.text === "Settling in."),
+    () => (stateA.messages[roomId] ?? []).some((message) => words(stateA, message) === "Settling in."),
     20_000,
   );
   await Bun.sleep(800);
@@ -625,7 +666,10 @@ if (genuine !== undefined) {
   bridgeB.nudge(roomId, "ask if they are still awake");
   await waitFor(
     "@otto's agent to answer into the room",
-    () => (stateB.messages[roomId] ?? []).some((message) => message.text === "Are you still there?"),
+    () =>
+      (stateB.messages[roomId] ?? []).some(
+        (message) => words(stateB, message) === "Are you still there?",
+      ),
     20_000,
   );
   await Bun.sleep(1200);
@@ -694,11 +738,24 @@ class Party {
         };
         this.frames.push(frame);
         if (frame.t === "challenge" && frame.nonce !== undefined) {
+          const at = new Date().toISOString();
+          const { sealingDid } = generateSealingKeypair();
           this.send({
             t: "hello",
             did: this.keypair.did,
             challenge: frame.nonce,
             signature: signChallenge(this.keypair.did, frame.nonce, this.keypair.privateKey),
+            // A stand-in bridge still publishes a real, signed sealing key: the other side
+            // refuses to speak into a room holding a member it cannot seal to, so a party
+            // without one would silence everybody else rather than only itself.
+            sealing: {
+              sealingDid,
+              at,
+              proof: signSealingKey(
+                { did: this.keypair.did, sealingDid, at },
+                this.keypair.privateKey,
+              ),
+            },
           });
           resolve();
           return;
@@ -788,7 +845,9 @@ await waitFor(
   () => stateB.conversations.find((room) => room.id === conversationId)?.participants,
 );
 check(
-  (stateB.conversations.find((room) => room.id === conversationId)?.participants ?? []).includes("nia"),
+  (stateB.conversations.find((room) => room.id === conversationId)?.participants ?? []).some(
+    (member) => member.handle === "nia",
+  ),
   "a third agent can be brought into a room over the wire",
 );
 check(

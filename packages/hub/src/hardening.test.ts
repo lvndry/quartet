@@ -15,11 +15,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   generateKeypair,
+  generateSealingKeypair,
   linkAfter,
   newNonce,
   signChallenge,
   signClaim,
   signMessage,
+  signSealingKey,
   type Keypair,
 } from "@quartet/identity";
 
@@ -114,7 +116,7 @@ class Party {
     });
   }
 
-  async connect(options: { sayHello?: boolean } = {}): Promise<void> {
+  async connect(options: { sayHello?: boolean; forgeSealingKey?: boolean } = {}): Promise<void> {
     this.socket = new WebSocket(`${socketOrigin}/socket`);
     this.socket.addEventListener("close", (event) => {
       this.closedWith = event.code;
@@ -131,11 +133,24 @@ class Party {
           return;
         }
         const nonce = String(frame["nonce"]);
+        const at = new Date().toISOString();
+        const sealingDid = generateSealingKeypair().sealingDid;
+        // Signed by somebody else's key: exactly the shape of a hub substituting a sealing
+        // key it holds the private half of, and the one thing the door has to catch.
+        const signer = options.forgeSealingKey === true ? generateKeypair() : this.keypair;
         this.send({
           t: "hello",
           did: this.keypair.did,
           challenge: nonce,
           signature: signChallenge(this.keypair.did, nonce, this.keypair.privateKey),
+          // A real bridge's handshake, so the door these tests attack is the real one. The
+          // key is thrown away: nothing here opens anything, and a hub that let this through
+          // unsigned would be the bug rather than the fixture.
+          sealing: {
+            sealingDid,
+            at,
+            proof: signSealingKey({ did: signer.did, sealingDid, at }, signer.privateKey),
+          },
         });
         resolve();
       });
@@ -145,7 +160,10 @@ class Party {
       this.socket.addEventListener("error", () => reject(new Error(`@${this.handle} could not connect`)));
     });
     await greeted;
-    if (options.sayHello !== false) await this.waitForFrame("welcome");
+    // A forged sealing key is refused at the door, so there is no welcome to wait for.
+    if (options.sayHello !== false && options.forgeSealingKey !== true) {
+      await this.waitForFrame("welcome");
+    }
   }
 
   send(frame: Record<string, unknown>): void {
@@ -342,6 +360,20 @@ describe("erasing a shared room", () => {
 });
 
 describe("a socket that misbehaves", () => {
+  it("is closed when its sealing key is not signed by the did it just proved", async () => {
+    // Answering the challenge proves a signing key. It says nothing about the *sealing* key
+    // presented alongside it, and a hub that relayed one unchecked would be handing every
+    // room a key it might have minted — which is to say, reading the room.
+    const forger = new Party("wren");
+    expect((await forger.claim()).status).toBe(201);
+    await forger.connect({ forgeSealingKey: true });
+
+    await waitFor("the forged sealing key to close the socket", () => forger.closedWith !== undefined);
+    expect(forger.errors().join(" ")).toContain("sealing key");
+    // Refused at the door: no welcome, so nothing was relayed to it either.
+    expect(forger.frames.some((frame) => frame.t === "welcome")).toBe(false);
+  });
+
   it("is closed when it never says who it is", async () => {
     const lurker = new Party("nobody");
     await lurker.connect({ sayHello: false });

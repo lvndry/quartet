@@ -1,12 +1,35 @@
 import { describe, expect, it } from "bun:test";
-import { generateSealingKeypair, packEnvelope, seal } from "@quartet/identity";
-import { Sealer } from "./sealer";
+import {
+  generateKeypair,
+  generateSealingKeypair,
+  packEnvelope,
+  seal,
+  signSealingKey,
+  type Keypair,
+} from "@quartet/identity";
+import type { Member, Message } from "@quartet/protocol";
+import { recipientsFor, Sealer, withWords } from "./sealer";
 import type { SealingKeys } from "./sealing-keys";
 
 const ROOM = "cnv_6aa49acb";
 
 function keys(overrides: Partial<SealingKeys> = {}): SealingKeys {
   return { current: generateSealingKeypair(), retired: [], ...overrides };
+}
+
+/** One member as the hub would relay them: a handle, a signing key, and a sealed-to key. */
+function member(handle: string, signer: Keypair = generateKeypair()): Member {
+  const at = "2026-02-02T10:00:00.000Z";
+  const { sealingDid } = generateSealingKeypair();
+  return {
+    handle,
+    did: signer.did,
+    sealing: {
+      sealingDid,
+      at,
+      proof: signSealingKey({ did: signer.did, sealingDid, at }, signer.privateKey),
+    },
+  };
 }
 
 describe("sealing a steer to yourself", () => {
@@ -95,5 +118,118 @@ describe("opening what is sealed to a room", () => {
 
     expect(sealer.open("just some words", ROOM).state).toBe("unopenable");
     expect(sealer.open("", ROOM).state).toBe("unopenable");
+  });
+});
+
+describe("resolving who a room may be sealed to", () => {
+  const pinnedFrom = (members: readonly Member[]) => (handle: string) =>
+    members.find((candidate) => candidate.handle === handle)?.did;
+
+  it("returns everybody but the sender", () => {
+    // The sender is left out here and added by `toRoom`, so a room of three yields two keys.
+    const room = [member("mira"), member("otto"), member("nia")];
+
+    const resolved = recipientsFor(room, "mira", pinnedFrom(room));
+
+    expect(resolved.state).toBe("ready");
+    expect(resolved.state === "ready" && resolved.sealingDids).toEqual([
+      room[1]!.sealing!.sealingDid,
+      room[2]!.sealing!.sealingDid,
+    ]);
+  });
+
+  it("refuses the room rather than sealing to the members it can reach", () => {
+    // The failure this exists to prevent. Sealing to otto alone would produce a line nia
+    // reads as "written before I joined" — an ordinary sentence for a room that has silently
+    // split in two.
+    const room = [member("mira"), member("otto"), { handle: "nia", did: generateKeypair().did }];
+
+    const resolved = recipientsFor(room, "mira", pinnedFrom(room));
+
+    expect(resolved.state).toBe("refused");
+    expect(resolved.state === "refused" && resolved.why).toContain("@nia");
+  });
+
+  it("refuses a sealing key signed by a key other than the pinned one", () => {
+    // A hub substituting its own sealing key has to sign it with something, and the one thing
+    // it cannot sign with is the key this machine pinned for that handle. This is the check
+    // that turns "the hub relays it" into "the hub cannot forge it".
+    const impostor = generateKeypair();
+    const room = [member("mira"), member("otto", impostor)];
+    const pinnedElsewhere = generateKeypair().did;
+
+    const resolved = recipientsFor(room, "mira", (handle) =>
+      handle === "otto" ? pinnedElsewhere : room[0]!.did,
+    );
+
+    expect(resolved.state).toBe("refused");
+    expect(resolved.state === "refused" && resolved.why).toContain("@otto");
+  });
+
+  it("refuses a member whose key was never pinned here", () => {
+    // A proof checked against a did that arrived in the same frame proves only that the frame
+    // is self-consistent, which a hostile hub's frame also is.
+    const room = [member("mira"), member("otto")];
+
+    const resolved = recipientsFor(room, "mira", (handle) =>
+      handle === "otto" ? undefined : room[0]!.did,
+    );
+
+    expect(resolved.state).toBe("refused");
+    expect(resolved.state === "refused" && resolved.why).toContain("@otto");
+  });
+
+  it("has nobody to seal to in a room of one, and says so without refusing", () => {
+    const room = [member("mira")];
+
+    expect(recipientsFor(room, "mira", pinnedFrom(room))).toEqual({
+      state: "ready",
+      sealingDids: [],
+    });
+  });
+});
+
+describe("handing a line to an agent", () => {
+  const line = (text: string): Message => ({
+    id: "msg_1",
+    conversationId: ROOM,
+    authorHandle: "otto",
+    kind: "agent",
+    text,
+    at: "2026-02-02T10:00:00.000Z",
+  });
+
+  it("gives back the words when there are words", () => {
+    expect(withWords(line("sealed"), { state: "opened", text: "Thursday then" }).text).toBe(
+      "Thursday then",
+    );
+  });
+
+  it("never hands on the ciphertext as if it were speech", () => {
+    // The failure that would put an envelope into an agent's context as the other party's
+    // words — which it would then answer, at the owner's expense.
+    const stranger = generateSealingKeypair();
+    const theirs = packEnvelope(seal("the deposit is negotiable", [stranger.sealingDid], ROOM)!);
+
+    const shown = withWords(line(theirs), { state: "sealed-to-others" }).text;
+
+    expect(shown).not.toContain("epk");
+    expect(shown).not.toContain("recipients");
+    expect(shown).toContain("before you joined");
+  });
+
+  it("says a line is missing rather than leaving a hole", () => {
+    // Silence would have the agent answer a conversation with a gap in it as though the gap
+    // were not there, which is the one thing worse than saying so.
+    expect(withWords(line("sealed"), { state: "unopenable" }).text.length).toBeGreaterThan(0);
+    expect(withWords(line("sealed"), { state: "unopenable" }).text).toContain("would not open");
+  });
+
+  it("leaves everything else about the line alone", () => {
+    const shown = withWords(line("sealed"), { state: "opened", text: "hello" });
+
+    expect(shown.id).toBe("msg_1");
+    expect(shown.authorHandle).toBe("otto");
+    expect(shown.at).toBe("2026-02-02T10:00:00.000Z");
   });
 });
