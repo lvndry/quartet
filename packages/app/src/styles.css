@@ -242,6 +242,13 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
   display: flex; flex-direction: column; gap: 0.6rem;
 }
 .key-alarm code { font-family: var(--mono); font-size: 0.72rem; color: var(--cream); }
+.claim-form { display: flex; gap: 0.5rem; align-items: center; }
+.claim-form input {
+  padding: 0.25rem 0.5rem; font: inherit; font-size: 0.75rem; color: var(--cream);
+  background: transparent; border: 1px solid var(--vermilion); border-radius: 3px;
+}
+.claim-form button { margin-left: 0; }
+
 .key-alarm button {
   margin-left: 0.6rem; padding: 0.2rem 0.6rem;
   font: inherit; font-size: 0.72rem; color: var(--cream);

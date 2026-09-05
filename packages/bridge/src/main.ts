@@ -11,17 +11,39 @@
  * configuration; a tool that silently rewrites it has not earned the access.
  */
 
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { signClaim, tag, type Keypair } from "@quartet/identity";
 import { AgentAdmin } from "./agent-admin";
 import { Attestor } from "./attest";
 import { Bridge } from "./bridge";
-import { hardenSecretFiles, isQuickTunnel, loadConfig, saveConfig, type QuartetConfig } from "./config";
+import {
+  hardenSecretFiles,
+  DEFAULT_HUB_URL,
+  isQuickTunnel,
+  loadIdentityConfig,
+  loadMachineConfig,
+  rememberedHandle,
+  saveIdentityConfig,
+  saveMachineConfig,
+  withHandle,
+  type DaemonSettings,
+  type IdentityConfig,
+  type MachineConfig,
+} from "./config";
 import { checkHub, describeHub, explainHub } from "./hub-check";
-import { loadIdentity } from "./identity";
+import { loadIdentity, newIdentity, writeIdentity } from "./identity";
 import { loadSealingKeys } from "./sealing-keys";
 import { Sealer } from "./sealer";
-import { getDataDirectory, identityPath, setDataDirectory } from "./paths";
+import {
+  currentLabel,
+  getDataDirectory,
+  identitiesDirectory,
+  identityPath,
+  isUsableLabel,
+  listIdentityLabels,
+  setIdentityDirectory,
+  setIdentityLabel,
+} from "./paths";
 import {
   agentIdFor,
   daemonReachable,
@@ -100,27 +122,46 @@ async function prompt(question: string): Promise<string> {
   return next.done === true ? "" : next.value.trim();
 }
 
-async function claimHandle(
+/**
+ * What this hub calls a key — the question the config used to answer badly.
+ *
+ * A handle lives in the hub's database, so this is the only place the answer exists. Asked
+ * before the socket, because "you have never claimed a handle here" is a thing to say to
+ * somebody at a terminal, not something to discover in a reconnect loop.
+ *
+ * `undefined` means the hub does not know this key. `unreachable` means we do not know, which
+ * is a different thing and must not be mistaken for an unclaimed key — the caller would go on
+ * to offer a claim that cannot be made.
+ */
+async function lookupHandle(
+  hubUrl: string,
+  did: string,
+): Promise<{ handle: string } | undefined | "unreachable"> {
+  const response = await fetch(new URL(`/agents/${encodeURIComponent(did)}`, hubUrl), {
+    signal: AbortSignal.timeout(5_000),
+  }).catch(() => undefined);
+  if (response === undefined) return "unreachable";
+  if (response.status === 404) return undefined;
+  if (!response.ok) return "unreachable";
+  const body = (await response.json().catch(() => null)) as { handle?: unknown } | null;
+  return typeof body?.handle === "string" ? { handle: body.handle } : "unreachable";
+}
+
+/**
+ * Offer this key to a hub under a name, and report what it said.
+ *
+ * The signature is made here rather than by the hub, which is the whole point: the hub is
+ * being shown a key it cannot mint, so the name it hands back is bound to this machine.
+ *
+ * Shared by the terminal and by the app's claim button, so a handle claimed from a browser
+ * banner is the same act as one typed at first run, and neither can drift from the other.
+ */
+async function postClaim(
   hubUrl: string,
   keypair: Keypair,
-): Promise<{ handle: string } | undefined> {
-  const fromFlag = argValue("handle");
-  if (fromFlag === undefined) {
-    console.log("\nYou do not have a quartet identity on this hub yet.\n");
-  }
-  const handle = (fromFlag ?? (await prompt("Pick a handle (lowercase, e.g. mira): "))).trim();
-  if (handle.length < 2) {
-    console.error("\nA handle needs at least two characters.");
-    return undefined;
-  }
-  // Shows the handle it falls back to, the way the daemon question shows its default. An
-  // empty answer here is the common case, and a bare "Display name:" gave no clue whether
-  // that meant "no display name" or "the handle".
-  const nameAnswer = argValue("name") ?? (await prompt(`Display name: [${handle}] `));
-  const displayName = nameAnswer.trim().length > 0 ? nameAnswer.trim() : handle;
-
-  // The claim is signed here rather than by the hub, which is the whole point: the hub is
-  // being shown a key it cannot mint, so the name it hands back is bound to this machine.
+  handle: string,
+  displayName: string,
+): Promise<{ ok: true } | { error: string; status: number }> {
   const claim = { did: keypair.did, handle, at: new Date().toISOString() };
   const response = await fetch(new URL("/agents", hubUrl), {
     method: "POST",
@@ -133,15 +174,66 @@ async function claimHandle(
   }).catch(() => undefined);
 
   if (response === undefined) {
-    console.error(`\nCould not reach the hub at ${hubUrl}. Is it running?`);
-    return undefined;
+    return { error: `could not reach the hub at ${hubUrl} — is it running?`, status: 0 };
   }
+  if (response.ok) return { ok: true };
   const body = (await response.json().catch(() => null)) as { error?: string } | null;
-  if (!response.ok) {
-    console.error(`\n${body?.error ?? "the hub refused that handle"}`);
-    return undefined;
+  return { error: body?.error ?? "the hub refused that handle", status: response.status };
+}
+
+/**
+ * Claim a handle on this hub for this key, asking which name to use.
+ *
+ * The question is which handle, never whether: somebody who has run `connect` against a hub
+ * has already said they want to be there, and a yes/no whose answer is always yes is a
+ * keystroke charged for nothing. Which name is a real question, and it is the one the old
+ * flow answered on your behalf — a hub is a place you might rather be somebody else, and the
+ * name you use elsewhere is not automatically the name you want here.
+ *
+ * Loops on a 409 rather than exiting. Handles are not unique on a hub — two people who have
+ * never met are entitled to the same one, told apart by the fingerprint in the tag — so this
+ * is the narrow case of a tag that would collide outright, and the fix is another word.
+ */
+async function claimHandle(
+  hubUrl: string,
+  keypair: Keypair,
+  suggested: string | undefined,
+): Promise<{ handle: string } | undefined> {
+  const fromFlag = argValue("handle");
+  const interactive = process.stdin.isTTY === true && fromFlag === undefined;
+  if (interactive) console.log("\n  This hub has never seen your key.\n");
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const asked = interactive
+      ? await prompt(
+          suggested === undefined
+            ? "  Handle to claim here (lowercase, e.g. mira): "
+            : `  Handle to claim here [${suggested}]: `,
+        )
+      : "";
+    const handle = (fromFlag ?? (asked.length > 0 ? asked : (suggested ?? ""))).trim();
+    if (handle.length < 2) {
+      console.error("\n  A handle needs at least two characters.");
+      if (!interactive) return undefined;
+      continue;
+    }
+    // Shows the handle it falls back to, the way the daemon question shows its default. An
+    // empty answer here is the common case, and a bare "Display name:" gave no clue whether
+    // that meant "no display name" or "the handle".
+    const nameAnswer = argValue("name") ?? (interactive ? await prompt(`  Display name: [${handle}] `) : "");
+    const displayName = nameAnswer.trim().length > 0 ? nameAnswer.trim() : handle;
+
+    const claimed = await postClaim(hubUrl, keypair, handle, displayName);
+    if (!("error" in claimed)) return { handle };
+
+    console.error(`\n  ! ${claimed.error}`);
+    // A handle somebody else holds is answered by typing another one. Anything else — a
+    // clock out of step, a signature the hub would not take, a rate limit — is not, and
+    // asking again would just be the same refusal with more typing.
+    if (claimed.status !== 409 || !interactive) return undefined;
+    suggested = undefined;
   }
-  return { handle };
+  return undefined;
 }
 
 /**
@@ -236,8 +328,21 @@ function listAgents(agents: readonly JazzAgent[]): void {
   console.log("  trust to answer somebody else's agent while you are not watching.\n");
 }
 
-async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | undefined> {
-  if (config.daemon !== undefined) {
+/**
+ * Make sure jazz has a webhook pointed at the agent this identity speaks through.
+ *
+ * Reads from two levels and hands back one shape. The daemon's URL is the machine's — one
+ * jazz per host, and every identity on it talks to the same one. The webhook and its token
+ * belong to this identity, because a webhook is per persona and its token is keyed by the
+ * webhook's name in jazz's keyring.
+ */
+async function ensureDaemon(
+  machine: MachineConfig,
+  config: IdentityConfig,
+): Promise<{ machine: MachineConfig; config: IdentityConfig; daemon: DaemonSettings } | undefined> {
+  const daemonUrl = machine.daemonUrl;
+  const webhook = config.webhook;
+  if (daemonUrl !== undefined && webhook !== undefined) {
     // The prompt lives in jazz's config, written when the webhook was first set up. Quartet
     // owns that text and it changes with quartet, so it is rewritten whenever it has drifted
     // — otherwise an agent keeps answering under whatever wording it was created with.
@@ -248,7 +353,7 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
     // the name is what the keyring entry is keyed by, so nothing is stored under the new
     // one yet.
     const renamed = argValue("webhook");
-    const webhookName = renamed ?? config.daemon.webhook;
+    const webhookName = renamed ?? webhook.name;
     // This identity's own record, falling back to jazz's entry only for a setup written
     // before quartet kept one. An `--agent` flag goes through the same check as one typed
     // at setup: it names an agent this daemon has, or connect stops. Writing it unchecked
@@ -257,7 +362,7 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
     const recorded = config.agentId ?? (await agentIdFor(webhookName));
     const agentId =
       argValue("agent") !== undefined || recorded === undefined
-        ? await chooseAgent(config.daemon.url)
+        ? await chooseAgent(daemonUrl)
         : recorded;
     if (agentId === undefined) return undefined;
     const refreshed = await ensureJazzWebhook({ webhookName, agentId });
@@ -270,10 +375,10 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
     // no way to read the live one back — jazz prints a token once — so the only repair is to
     // mint another and save it, which is what this asks for.
     const needsToken = renamed !== undefined || hasFlag("new-token") || argValue("token") !== undefined;
-    if (!needsToken) return { ...config, agentId };
-    const token = await resolveOrMintToken(webhookName);
+    const token = needsToken ? await resolveOrMintToken(webhookName) : webhook.token;
     if (token === undefined) return undefined;
-    return { ...config, agentId, daemon: { ...config.daemon, webhook: webhookName, token } };
+    const updated: IdentityConfig = { ...config, agentId, webhook: { name: webhookName, token } };
+    return { machine, config: updated, daemon: { url: daemonUrl, webhook: webhookName, token } };
   }
 
   console.log("\nQuartet talks to your agent through a jazz webhook.\n");
@@ -281,14 +386,16 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
   // The daemon first, because it is what knows which agents exist. Asking for the agent
   // before knowing where to ask was why this used to be a free-text prompt.
   const daemonAnswer =
-    argValue("daemon") ?? (await prompt(`Where is your daemon? [${DEFAULT_DAEMON_URL}] `));
-  const daemonUrl = daemonAnswer.trim().length > 0 ? daemonAnswer.trim() : DEFAULT_DAEMON_URL;
+    argValue("daemon") ?? daemonUrl ?? (await prompt(`Where is your daemon? [${DEFAULT_DAEMON_URL}] `));
+  const chosenDaemon = daemonAnswer.trim().length > 0 ? daemonAnswer.trim() : DEFAULT_DAEMON_URL;
 
-  const agentId = await chooseAgent(daemonUrl);
+  const agentId = await chooseAgent(chosenDaemon);
   if (agentId === undefined) return undefined;
 
-  const webhookName =
-    argValue("webhook") ?? defaultWebhookName(config.handle);
+  // Named after this identity's label rather than a handle: a handle can differ from hub to
+  // hub, and the keyring entry holding this webhook's token is keyed by the name. A webhook
+  // that renamed itself when a hub called you something else would strand its own token.
+  const webhookName = argValue("webhook") ?? defaultWebhookName(config.label);
 
   const written = await ensureJazzWebhook({ webhookName, agentId });
   console.log(
@@ -300,7 +407,11 @@ async function ensureDaemon(config: QuartetConfig): Promise<QuartetConfig | unde
   const token = await resolveOrMintToken(webhookName);
   if (token === undefined) return undefined;
 
-  return { ...config, agentId, daemon: { url: daemonUrl, webhook: webhookName, token } };
+  return {
+    machine: { ...machine, daemonUrl: chosenDaemon },
+    config: { ...config, agentId, webhook: { name: webhookName, token } },
+    daemon: { url: chosenDaemon, webhook: webhookName, token },
+  };
 }
 
 /**
@@ -423,6 +534,119 @@ async function ensureJazzInstalled(): Promise<boolean> {
 }
 
 /**
+ * Which identity this run is — a folder under `~/.quartet/identities`, never the root.
+ *
+ * The root used to be an identity, which made this question invisible: a machine with one
+ * agent and a machine that had never been asked looked identical, and whatever key happened
+ * to be there was used. With one identity that is indistinguishable from working. With two it
+ * is a coin toss, and with a stale one it is the bug this rewrite exists to remove.
+ *
+ * `new` means nothing here can sign yet and the caller should make something. It carries a
+ * label only when `--identity` named one; otherwise the name is decided later, from the
+ * handle the hub accepts, because that is a name already chosen.
+ */
+type IdentityChoice =
+  | { kind: "existing"; label: string }
+  | { kind: "new"; label?: string }
+  | { kind: "stop" };
+
+/**
+ * A folder name for a new identity, from the handle it just claimed.
+ *
+ * Only a starting point. Two hubs can call two different keys the same thing, and the second
+ * one to arrive here must not land in the first one's directory — so a taken name gets a
+ * number rather than a collision.
+ */
+function uniqueLabel(handle: string, taken: readonly string[]): string {
+  const base = isUsableLabel(handle) ? handle : "identity";
+  if (!taken.includes(base)) return base;
+  for (let suffix = 2; suffix < 100; suffix += 1) {
+    const candidate = `${base}${String(suffix)}`;
+    if (!taken.includes(candidate)) return candidate;
+  }
+  return `${base}-${String(Date.now())}`;
+}
+
+/**
+ * Repair the modes on this identity's secret files, and say so when it cannot.
+ *
+ * Once the identity is chosen and before anything is read out of it — a config written by an
+ * older build sits at whatever the umask allowed, and it holds two bearer tokens.
+ */
+async function reportFilePermissions(): Promise<void> {
+  for (const problem of await hardenSecretFiles()) {
+    console.warn(`could not restrict permissions on a file holding secrets — ${problem}`);
+  }
+}
+
+async function chooseIdentity(options: { mayCreate: boolean }): Promise<IdentityChoice> {
+  // An explicit directory is the last word, wherever it points and whatever is in it. It is
+  // how a second bridge runs from a path outside `~/.quartet` at all.
+  const dataDir = argValue("data-dir");
+  if (dataDir !== undefined) {
+    return { kind: (await Bun.file(identityPath()).exists()) ? "existing" : "new", label: basename(dataDir) };
+  }
+
+  const known = await listIdentityLabels();
+  const wanted = argValue("identity");
+  if (wanted !== undefined) {
+    if (!isUsableLabel(wanted)) {
+      console.error(`\n  ! "${wanted}" is not a usable identity name.`);
+      console.error("    Letters, digits, dot, dash and underscore; 32 characters at most.\n");
+      return { kind: "stop" };
+    }
+    if (known.includes(wanted)) {
+      setIdentityLabel(wanted);
+      return { kind: "existing", label: wanted };
+    }
+    if (!options.mayCreate) {
+      console.error(`\n  ! this machine has no identity called "${wanted}".`);
+      console.error(`    ${known.length === 0 ? "It has none at all yet." : `It has: ${known.join(", ")}`}\n`);
+      return { kind: "stop" };
+    }
+    setIdentityLabel(wanted);
+    return { kind: "new", label: wanted };
+  }
+
+  if (known.length === 1) {
+    const only = known[0] as string;
+    setIdentityLabel(only);
+    return { kind: "existing", label: only };
+  }
+
+  if (known.length === 0) {
+    if (options.mayCreate) return { kind: "new" };
+    console.error(`\n  ! no identities in ${identitiesDirectory()}.`);
+    console.error("    Run `quartet connect` to make one.\n");
+    return { kind: "stop" };
+  }
+
+  // Several, and nothing said which. Not a thing to guess: every identity here is a separate
+  // key with its own rooms, and picking the wrong one answers somebody else's conversations.
+  if (process.stdin.isTTY !== true) {
+    console.error(`\n  ! this machine has several identities: ${known.join(", ")}`);
+    console.error("    Say which with --identity <name>.\n");
+    return { kind: "stop" };
+  }
+  console.log("\n  Which identity?\n");
+  for (const [index, name] of known.entries()) {
+    console.log(`    ${String(index + 1).padStart(2)}  ${name}`);
+  }
+  console.log("");
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const answer = (await prompt("  Number or name: ")).trim();
+    const byNumber = known[Number(answer) - 1];
+    const picked = byNumber ?? known.find((name) => name === answer);
+    if (picked !== undefined) {
+      setIdentityLabel(picked);
+      return { kind: "existing", label: picked };
+    }
+    console.log(`  That is not one of them. Pick 1-${String(known.length)}, or type a name.`);
+  }
+  return { kind: "stop" };
+}
+
+/**
  * Which hub this run joins, asked rather than assumed.
  *
  * Belonging to a hub is not a setting one configures once: a person has a hub for work and a
@@ -449,7 +673,18 @@ async function connect(): Promise<void> {
 
   if (!(await ensureJazzInstalled())) process.exit(1);
 
-  let config = await loadConfig();
+  const choice = await chooseIdentity({ mayCreate: true });
+  if (choice.kind === "stop") process.exit(1);
+  const fresh = choice.kind === "new";
+
+  // A new identity has no directory yet, so there is nothing to read and nothing to harden
+  // until its key is written — which happens once the hub has accepted a handle for it.
+  let machine = await loadMachineConfig();
+  let config: IdentityConfig = fresh
+    ? { label: choice.label ?? "", hubUrl: process.env["QUARTET_HUB"] ?? DEFAULT_HUB_URL }
+    : await loadIdentityConfig(choice.label);
+  if (!fresh) await reportFilePermissions();
+
   const requestedPort = argValue("port");
   const hubUrl = await chooseHub(config.hubUrl);
 
@@ -463,7 +698,10 @@ async function connect(): Promise<void> {
     process.exit(1);
   }
 
-  const keypair = await loadIdentity();
+  // Generated but not yet kept when this identity is new: the folder is named after the
+  // handle the hub accepts, so nothing is written until there is an accepted handle to name
+  // it after. An abandoned first run leaves no orphan directory behind.
+  const keypair = fresh ? newIdentity() : await loadIdentity();
   if ("error" in keypair) {
     console.error(`\n${keypair.error}`);
     process.exit(1);
@@ -487,23 +725,56 @@ async function connect(): Promise<void> {
     process.exit(1);
   }
 
-  if (config.handle === undefined) {
-    const claimed = await claimHandle(hubUrl, keypair);
+  // The hub is asked what it calls this key, rather than this machine being asked what it
+  // remembers. Only one of those two is the authority, and consulting the wrong one is how a
+  // handle claimed against a hub that no longer exists became a reason never to claim again.
+  const known = fresh ? undefined : await lookupHandle(hubUrl, keypair.did);
+  if (known === "unreachable") {
+    // Reachable enough to pass `checkHub` a moment ago, so this is a hub that answers some
+    // routes and not others — an older build, or something in front of it. Not knowing is
+    // not the same as knowing there is no claim, and offering to claim on a guess would put
+    // a second handle on a hub that already had one.
+    console.error(`\n  ! ${hubUrl} would not say whether it knows your key.`);
+    console.error("    It answers /health but not /agents/<did>, which an older hub will do.");
+    console.error("    Update the hub, or claim explicitly with --handle <name>.\n");
+    process.exit(1);
+  }
+
+  if (known === undefined) {
+    const suggested = argValue("handle") ?? choice.label ?? config.label ?? rememberedHandle(config, hubUrl);
+    const claimed = await claimHandle(hubUrl, keypair, suggested);
     if (claimed === undefined) process.exit(1);
-    config = { ...config, hubUrl, handle: claimed.handle };
-    await saveConfig(config);
+
+    // Only now does a new identity get a folder: the handle is accepted, so there is a name
+    // to give it that nothing else on this machine holds.
+    if (fresh) {
+      const label = choice.label ?? uniqueLabel(claimed.handle, await listIdentityLabels());
+      setIdentityLabel(label);
+      const written = await writeIdentity(keypair);
+      if (written !== undefined) {
+        console.error(`\n${written.error}`);
+        process.exit(1);
+      }
+      config = { ...config, label };
+    }
+    config = withHandle({ ...config, hubUrl }, hubUrl, claimed.handle);
+    await saveIdentityConfig(config);
     console.log(`\n  ✓ claimed ${tag(claimed.handle, keypair.did) ?? `@${claimed.handle}`}`);
     console.log("    Give that whole line to anyone inviting you — the part after # is what");
     console.log("    proves the handle is yours and not somebody wearing your name.");
+    if (fresh) console.log(`    Kept in ${getDataDirectory()}`);
+  } else {
+    config = withHandle({ ...config, hubUrl }, hubUrl, known.handle);
   }
+  const handle = rememberedHandle(config, hubUrl);
 
-  const withDaemon = await ensureDaemon({ ...config, hubUrl });
+  const withDaemon = await ensureDaemon(machine, { ...config, hubUrl });
   if (withDaemon === undefined) process.exit(1);
-  config = withDaemon;
-  await saveConfig(config);
-
-  const daemon = config.daemon;
-  if (daemon === undefined) process.exit(1);
+  machine = withDaemon.machine;
+  config = withDaemon.config;
+  const daemon = withDaemon.daemon;
+  await saveMachineConfig(machine);
+  await saveIdentityConfig(config);
 
   if (!(await webhookConfigured(daemon.webhook))) {
     console.warn(
@@ -540,7 +811,7 @@ async function connect(): Promise<void> {
   // keeps one thing to harden and one thing to back up.
   const devices = new DeviceRegistry(config.devices ?? [], async (updated: readonly StoredDevice[]) => {
     config = { ...config, devices: updated };
-    await saveConfig(config);
+    await saveIdentityConfig(config);
   });
   const preferredPort = Number(requestedPort ?? config.localPort ?? DEFAULT_LOCAL_PORT);
   const appRoot = join(dirname(Bun.fileURLToPath(import.meta.url)), "..", "..", "app", "dist");
@@ -556,6 +827,17 @@ async function connect(): Promise<void> {
     bridge,
     agents,
     devices,
+    // A hub can lose this key while the bridge is running — a replaced database, a restore
+    // from before this identity existed. `connect` finished long ago and its terminal has
+    // moved on, so the page is the only place left that can offer the repair.
+    claim: async (wanted: string) => {
+      const claimed = await postClaim(hubUrl, keypair, wanted, wanted);
+      if ("error" in claimed) return { error: claimed.error };
+      config = withHandle(config, hubUrl, wanted);
+      await saveIdentityConfig(config);
+      logger("bridge").info("claimed a handle", { handle: `@${wanted}`, hub: hubUrl });
+      return { ok: true as const };
+    },
     hostname: APP_HOST,
     ...(built ? { appRoot } : {}),
   });
@@ -567,7 +849,7 @@ async function connect(): Promise<void> {
   // Remember whichever port it settled on, so the next start comes back to the same URL
   // without a flag even when it had to move up from the preferred one.
   if (config.localPort !== local.port) config = { ...config, localPort: local.port };
-  await saveConfig(config);
+  await saveIdentityConfig(config);
 
   const appUrl = `http://localhost:${String(local.port)}/?token=${localToken}`;
   console.log(`\n  quartet is running\n\n    ${appUrl}\n`);
@@ -614,7 +896,7 @@ async function connect(): Promise<void> {
     }
   }
   logger("bridge").info("watching", {
-    agent: `@${config.handle ?? "?"}`,
+    agent: handle === undefined ? config.label : `@${handle}`,
     webhook: daemon.webhook,
     data: getDataDirectory(),
     level: currentLogLevel(),
@@ -647,17 +929,21 @@ async function connect(): Promise<void> {
  * device list only helps somebody who knows which list to look at.
  */
 async function pairDevice(): Promise<void> {
-  const config = await loadConfig();
+  const choice = await chooseIdentity({ mayCreate: false });
+  if (choice.kind !== "existing") process.exit(1);
+  await reportFilePermissions();
+  const config = await loadIdentityConfig(choice.label);
   if (config.localPort === undefined || config.localToken === undefined) {
     console.error(`\n  ! no app on file in ${getDataDirectory()}.`);
-    console.error("    That is the directory --agent/--data-dir picked, and nothing has run");
+    console.error("    That is the directory --identity/--data-dir picked, and nothing has run");
     console.error("    `quartet connect` there yet. A bridge started with `--data-dir <path>`");
-    console.error("    is paired with the same `--data-dir <path>`, not with `--agent`.\n");
+    console.error("    is paired with the same `--data-dir <path>`, not with `--identity`.\n");
     process.exit(1);
   }
 
+  const known = rememberedHandle(config, config.hubUrl);
   console.log(
-    `\n  pairing a device to ${config.handle === undefined ? "this identity" : `@${config.handle}`}` +
+    `\n  pairing a device to ${known === undefined ? config.label : `@${known}`}` +
       ` — ${getDataDirectory()}, port ${String(config.localPort)}`,
   );
 
@@ -673,7 +959,7 @@ async function pairDevice(): Promise<void> {
   if (response === undefined || !response.ok) {
     console.error(`\n  ! nothing is answering on port ${String(config.localPort)} for that identity.`);
     console.error("    Start it with `quartet connect`, then run this again — or pass");
-    console.error("    `--agent <id>` if you meant one of the other bridges on this machine.\n");
+    console.error("    `--identity <name>` if you meant one of the other bridges here.\n");
     process.exit(1);
   }
 
@@ -707,8 +993,8 @@ async function pairDevice(): Promise<void> {
 function identityFlags(): string {
   const dataDirFlag = argValue("data-dir");
   if (dataDirFlag !== undefined) return ` --data-dir ${dataDirFlag}`;
-  const agentFlag = argValue("agent");
-  return agentFlag === undefined ? "" : ` --agent ${agentFlag}`;
+  const label = currentLabel();
+  return label === undefined ? "" : ` --identity ${label}`;
 }
 
 function usage(): void {
@@ -717,17 +1003,18 @@ function usage(): void {
       "quartet — a place where jazz agents meet, get introduced, and talk",
       "",
       "  quartet connect            start the bridge and open the app",
+      "    --identity <name>        which identity on this machine to be — asked when there",
+      "                             are several, created when there are none",
       "    --hub <url>              which hub to join",
       "    --no-expose              skip the public https URL, so the app is reachable from",
       "                             this machine only and no phone can pair with it",
       "    --port <n>               local port for the app — served or nothing (default 7777,",
       "                             and only that default moves up when it is taken)",
-      "    --data-dir <path>        this agent's config and record (overrides $QUARTET_HOME)",
-      "    --agent <id>             which jazz agent represents you — also picks",
-      "                             ~/.quartet/<id> as the data dir when --data-dir is not given",
-      "    --webhook <name>         webhook name (default: quartet-<handle>)",
+      "    --data-dir <path>        this identity's folder, wherever it is",
+      "    --agent <id>             which jazz agent represents you",
+      "    --webhook <name>         webhook name (default: quartet-<identity>)",
       "    --daemon <url>           where jazz is listening (default :4747)",
-      "    --handle <name>          claim this handle without being asked",
+      "    --handle <name>          claim this handle on that hub without being asked",
       "    --name <text>            display name",
       "    --token <secret>         supply the webhook token instead of generating one",
       "    --new-token              mint a fresh webhook token and save it, for when jazz",
@@ -737,10 +1024,11 @@ function usage(): void {
       "    --yes                    install jazz without asking, if it's missing",
       "",
       "  quartet pair                offer a code for a phone or tablet to scan",
-      "    --agent <id>               pair to a second agent on this host, not the default one",
-      "    --data-dir <path>          the same, by directory (overrides $QUARTET_HOME)",
+      "    --identity <name>          pair to one of the identities on this host",
+      "    --data-dir <path>          the same, by directory",
       "",
       "  quartet info                what this identity actually is, right now",
+      "    --identity <name>          which identity to describe",
       "    --agent <id>               check a specific jazz agent instead of the one on file",
       "    --daemon <url>             where jazz is listening (default :4747, or the file's own)",
     ].join("\n"),
@@ -753,24 +1041,26 @@ function usage(): void {
  * else, which told you nothing about whether this identity actually works.
  */
 async function info(): Promise<void> {
-  const config = await loadConfig();
+  const choice = await chooseIdentity({ mayCreate: false });
+  if (choice.kind !== "existing") process.exit(1);
+  await reportFilePermissions();
+  const machine = await loadMachineConfig();
+  const config = await loadIdentityConfig(choice.label);
 
+  console.log(`identity   ${config.label}`);
   console.log(`data dir   ${getDataDirectory()}`);
 
   // `loadIdentity` generates a keypair when none exists — right for `connect`, wrong for a
   // command that only looks. Checking first means asking about a directory nothing has
   // touched yet leaves it exactly as untouched as it was.
   if (!(await Bun.file(identityPath()).exists())) {
-    console.log(`identity   none yet — generated on first connect`);
+    console.log(`key        none yet — generated on first connect`);
   } else {
     const identity = await loadIdentity();
     if ("error" in identity) {
-      console.log(`identity   ${identity.error}`);
-    } else if (config.handle === undefined) {
-      console.log(`identity   keypair exists, no handle claimed yet — claimed on first connect`);
+      console.log(`key        ${identity.error}`);
     } else {
-      const full = tag(config.handle, identity.did);
-      console.log(`identity   ${full ?? `@${config.handle}`}`);
+      console.log(`key        ${identity.did}`);
     }
   }
 
@@ -785,11 +1075,14 @@ async function info(): Promise<void> {
   console.log(`hub        ${hubUrl} — ${describeHub(check)}${naming}`);
   for (const line of explainHub(hubUrl, check)) console.log(`           ${line}`);
 
-  const daemonUrl = argValue("daemon") ?? config.daemon?.url ?? DEFAULT_DAEMON_URL;
+  const known = rememberedHandle(config, hubUrl);
+  console.log(`handle     ${known === undefined ? "none claimed on that hub yet" : `@${known}`}`);
+
+  const daemonUrl = argValue("daemon") ?? machine.daemonUrl ?? DEFAULT_DAEMON_URL;
   const agentFlag =
     argValue("agent") ??
     config.agentId ??
-    (config.daemon !== undefined ? await agentIdFor(config.daemon.webhook) : undefined);
+    (config.webhook !== undefined ? await agentIdFor(config.webhook.name) : undefined);
 
   if (agentFlag === undefined) {
     console.log(`jazz agent none on file — pass --agent, or run connect once to set one`);
@@ -807,37 +1100,19 @@ async function info(): Promise<void> {
     }
   }
 
-  if (config.daemon !== undefined) {
-    console.log(`webhook    ${config.daemon.webhook}`);
+  if (config.webhook !== undefined) {
+    console.log(`webhook    ${config.webhook.name}`);
   }
 }
 
-// Before anything reads a path. Mirrors `jazz --data-dir`, so running a second agent on one
-// host is a flag rather than an exported variable.
+// Before anything reads a path. Mirrors `jazz --data-dir`, so running a bridge from a
+// directory outside `~/.quartet` is a flag rather than an exported variable.
 //
-// `--data-dir` always wins when given. Otherwise, `--agent` picks the directory for you:
-// `~/.quartet/<agent>` — so starting a second persona is `--agent otto`, not `--agent otto
-// --data-dir ~/.quartet-otto` said twice for the same fact. No `--agent` at all keeps the
-// single flat `~/.quartet` this always defaulted to, so a one-persona setup is unaffected.
+// Only `--data-dir` is settled here, because it is the one answer that needs nothing else:
+// `--identity`, the single identity on a machine that has one, and the question asked when
+// there are several are all resolved per command, where there is somebody to ask.
 const dataDir = argValue("data-dir");
-if (dataDir !== undefined) {
-  setDataDirectory(dataDir);
-} else {
-  const agentFlag = argValue("agent");
-  // Only a bare name — anything that could climb out of `~/.quartet` is not a directory this
-  // picks for you, it is a mistake to report the ordinary way, later, when `--agent` is read
-  // again to resolve the agent itself.
-  if (agentFlag !== undefined && /^[\w.-]+$/.test(agentFlag)) {
-    setDataDirectory(`~/.quartet/${agentFlag}`);
-  }
-}
-
-// Once the data directory is settled and before anything is read out of it. A config
-// written by an older build sits at whatever the umask allowed, and it holds two bearer
-// tokens — so the mode is repaired at every start rather than only on the next write.
-for (const problem of await hardenSecretFiles()) {
-  console.warn(`could not restrict permissions on a file holding secrets — ${problem}`);
-}
+if (dataDir !== undefined) setIdentityDirectory(dataDir);
 
 const command = process.argv[2] ?? "connect";
 if (hasFlag("help") || command === "help") {

@@ -1,7 +1,7 @@
 import type React from "react";
 import Pairing from "./Pairing";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Conversation, Message } from "@quartet/protocol/app";
+import type { BridgeState, Conversation, Message } from "@quartet/protocol/app";
 import { Dashboard } from "./Dashboard";
 import {
   DEFAULT_TURN_BUDGET,
@@ -689,11 +689,66 @@ function Quartet(): React.JSX.Element {
       {state.keyStoreProblem !== undefined && (
         <div className="key-alarm">{state.keyStoreProblem}</div>
       )}
+      {state.hubRefusal !== undefined && <HubRefused refusal={state.hubRefusal} />}
       <KeyAlarm conflicts={state.keyConflicts} fingerprints={state.fingerprints} onAct={act} />
 
       {(error ?? state.lastError) !== undefined && (
         <div className="error">{error ?? state.lastError}</div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The hub turned this bridge away, and nothing is retrying.
+ *
+ * Louder than `lastError` on purpose: everything else in this app is still rendering the last
+ * snapshot it had, which looks exactly like a working agent that happens to be quiet. This is
+ * the only thing on screen saying that no message will arrive until somebody acts.
+ *
+ * The claim form is here rather than only in the terminal because a hub can forget a key
+ * while the bridge is running — its database replaced, or restored from before this identity
+ * existed — and by then the terminal that ran `connect` is gone.
+ */
+function HubRefused({ refusal }: { refusal: NonNullable<BridgeState["hubRefusal"]> }): React.ReactElement {
+  const [handle, setHandle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | undefined>(undefined);
+
+  const claim = async (): Promise<void> => {
+    setBusy(true);
+    setFailed(undefined);
+    const error = await call("claim", { handle: handle.trim() });
+    setBusy(false);
+    if (error !== undefined) setFailed(error);
+  };
+
+  return (
+    <div className="key-alarm">
+      <div>
+        <strong>The hub turned this agent away.</strong> {refusal.detail}
+      </div>
+      <div>{refusal.remedy}</div>
+      {refusal.claimable && (
+        <form
+          className="claim-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!busy && handle.trim().length >= 2) void claim();
+          }}
+        >
+          <input
+            value={handle}
+            onChange={(event) => setHandle(event.currentTarget.value)}
+            placeholder="handle to claim here"
+            aria-label="handle to claim on this hub"
+          />
+          <button type="submit" disabled={busy || handle.trim().length < 2}>
+            {busy ? "claiming…" : "claim it"}
+          </button>
+        </form>
+      )}
+      {failed !== undefined && <div>{failed}</div>}
     </div>
   );
 }

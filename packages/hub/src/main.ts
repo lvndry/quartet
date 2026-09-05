@@ -14,10 +14,12 @@ import {
   HISTORY_PAGE_SIZE,
   MAX_ROOM_MEMBERS,
   parseClientFrame,
+  REFUSED_CLOSE_CODE,
   type Agent,
   type Authorship,
   type DirectoryEntry,
   type MessageKind,
+  type RefusalReason,
   type ServerFrame,
   type Signature,
 } from "@quartet/protocol";
@@ -306,6 +308,26 @@ app.get("/join", (context) => {
 });
 
 /**
+ * What this hub calls a key, or nothing.
+ *
+ * The one question a bridge cannot answer from its own disk: a handle is a row in *this*
+ * database, and a machine that has been pointed at a second hub holds a name that means
+ * nothing here. Asked before the socket rather than after, so the answer arrives while
+ * somebody is still at the terminal to act on it.
+ *
+ * Nothing is disclosed that a tag does not already publish: `@mira#4f2a` pairs a handle with
+ * a key fingerprint in every invitation, so a lookup by full did tells a caller who already
+ * has the did what they could have confirmed by trying to claim it.
+ */
+app.get("/agents/:did", (context) => {
+  const did = context.req.param("did");
+  if (!isDid(did)) return context.json({ error: "that did is not an Ed25519 did:key" }, 400);
+  const row = store.agentByDid(did);
+  if (row === undefined) return context.json({ error: "no agent has claimed that key" }, 404);
+  return context.json({ handle: row.handle, displayName: row.display_name });
+});
+
+/**
  * How far out of step a claiming machine's clock may be.
  *
  * Stops a claim overheard on the wire being replayed at leisure. Minutes rather than seconds
@@ -495,6 +517,22 @@ function report(agentId: string, accepted: Accepted): void {
   if (!accepted.ok) send(agentId, { t: "error", detail: accepted.detail });
 }
 
+/**
+ * Turn a socket away at the handshake, in a form the far end can act on.
+ *
+ * The sentence and the machine-readable reason travel together, and the close code says the
+ * ending was a decision rather than a hub going down. All three matter to a bridge that has
+ * to choose between retrying and stopping — and only one of those choices is ever right here.
+ */
+function refuse(
+  socket: ServerWebSocket<SocketData>,
+  reason: RefusalReason,
+  detail: string,
+): void {
+  socket.send(JSON.stringify({ t: "refused", reason, detail } satisfies ServerFrame));
+  socket.close(REFUSED_CLOSE_CODE, reason);
+}
+
 function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
   const frame = parseClientFrame(raw);
   if (frame === undefined) {
@@ -508,25 +546,16 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
   if (frame.t === "hello") {
     const challenge = socket.data.challenge;
     if (challenge === undefined || frame.challenge !== challenge) {
-      socket.send(
-        JSON.stringify({ t: "error", detail: "answer the challenge for this socket" } satisfies ServerFrame),
-      );
-      socket.close();
+      refuse(socket, "bad-challenge", "answer the challenge for this socket");
       return;
     }
     if (!verifyChallenge(frame.did, challenge, frame.signature)) {
-      socket.send(
-        JSON.stringify({ t: "error", detail: "that signature does not match that did" } satisfies ServerFrame),
-      );
-      socket.close();
+      refuse(socket, "bad-signature", "that signature does not match that did");
       return;
     }
     const row = store.agentByDid(frame.did);
     if (row === undefined) {
-      socket.send(
-        JSON.stringify({ t: "error", detail: "no agent has claimed that key" } satisfies ServerFrame),
-      );
-      socket.close();
+      refuse(socket, "unclaimed-key", "no agent has claimed that key");
       return;
     }
     // Checked here rather than trusted and relayed. The hub cannot read what it will hand
@@ -540,13 +569,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       at: frame.sealing.at,
     };
     if (!verifySealingKey(binding, frame.sealing.proof)) {
-      socket.send(
-        JSON.stringify({
-          t: "error",
-          detail: "that sealing key is not signed by that did",
-        } satisfies ServerFrame),
-      );
-      socket.close();
+      refuse(socket, "bad-sealing-key", "that sealing key is not signed by that did");
       return;
     }
     store.recordSealingKey(row.id, frame.sealing);

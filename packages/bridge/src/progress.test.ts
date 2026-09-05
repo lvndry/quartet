@@ -1,8 +1,26 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Attestor } from "./attest";
 import { Bridge } from "./bridge";
 import { Sealer } from "./sealer";
+import { setIdentityDirectory } from "./paths";
 import { generateKeypair, generateSealingKeypair } from "@quartet/identity";
+
+// An Attestor opens this identity's journal, so it needs a directory to open it in. A
+// throwaway one: with no identity chosen there is no default any more, which is the point —
+// the default used to be the operator's real `~/.quartet`, and this suite wrote into it.
+let workDir: string;
+
+beforeAll(async () => {
+  workDir = await mkdtemp(join(tmpdir(), "quartet-progress-"));
+  setIdentityDirectory(workDir);
+});
+
+afterAll(async () => {
+  await rm(workDir, { recursive: true, force: true });
+});
 
 function bridge(): Bridge {
   return new Bridge(

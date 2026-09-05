@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { REFUSED_CLOSE_CODE } from "@quartet/protocol";
 import {
   generateKeypair,
   generateSealingKeypair,
@@ -117,7 +118,9 @@ class Party {
     });
   }
 
-  async connect(options: { sayHello?: boolean; forgeSealingKey?: boolean } = {}): Promise<void> {
+  async connect(
+    options: { sayHello?: boolean; forgeSealingKey?: boolean; expectWelcome?: boolean } = {},
+  ): Promise<void> {
     this.socket = new WebSocket(`${socketOrigin}/socket`);
     this.socket.addEventListener("close", (event) => {
       this.closedWith = event.code;
@@ -161,8 +164,9 @@ class Party {
       this.socket.addEventListener("error", () => reject(new Error(`@${this.handle} could not connect`)));
     });
     await greeted;
-    // A forged sealing key is refused at the door, so there is no welcome to wait for.
-    if (options.sayHello !== false && options.forgeSealingKey !== true) {
+    // Anything refused at the door — a forged sealing key, a key no agent has claimed —
+    // gets no welcome, so there is nothing to wait for.
+    if (options.sayHello !== false && options.forgeSealingKey !== true && options.expectWelcome !== false) {
       await this.waitForFrame("welcome");
     }
   }
@@ -214,6 +218,14 @@ class Party {
 
   errors(): string[] {
     return this.seen("error").map((frame) => String(frame["detail"]));
+  }
+
+  /** Refusals at the door, which are a different frame from an error on a live socket. */
+  refusals(): { reason: string; detail: string }[] {
+    return this.seen("refused").map((frame) => ({
+      reason: String(frame["reason"]),
+      detail: String(frame["detail"]),
+    }));
   }
 }
 
@@ -433,6 +445,43 @@ describe("a socket with nothing to say", () => {
   });
 });
 
+describe("a key this hub has never seen", () => {
+  it("is refused with a reason, and a close code that is not a goodbye", async () => {
+    // The exact shape of a wiped database, a restored backup, or a bridge pointed at a
+    // second hub: the signature is perfect, the key is simply not on this hub's list. It used
+    // to be answered with a generic error and a 1000 close — indistinguishable, from the
+    // bridge's side, from a hub restarting — so the bridge reconnected into it once a second
+    // for as long as it was left running.
+    const nobody = new Party("nobody");
+    await nobody.connect({ sayHello: true, expectWelcome: false });
+
+    await waitFor("the unclaimed key to be refused", () => nobody.closedWith !== undefined);
+    expect(nobody.refusals()).toEqual([
+      { reason: "unclaimed-key", detail: "no agent has claimed that key" },
+    ]);
+    expect(nobody.closedWith).toBe(REFUSED_CLOSE_CODE);
+    expect(nobody.closedWith).not.toBe(1000);
+  });
+
+  it("can be asked about before a socket is opened at all", async () => {
+    const known = new Party("asked-about");
+    expect((await known.claim()).status).toBe(201);
+
+    const found = await fetch(`${origin}/agents/${known.keypair.did}`);
+    expect(found.status).toBe(200);
+    expect(await found.json()).toMatchObject({ handle: "asked-about" });
+
+    // The question `connect` needs answered, and the answer that used to be taken from a
+    // config file written against a different hub.
+    const stranger = generateKeypair();
+    const missing = await fetch(`${origin}/agents/${stranger.did}`);
+    expect(missing.status).toBe(404);
+
+    const nonsense = await fetch(`${origin}/agents/not-a-did`);
+    expect(nonsense.status).toBe(400);
+  });
+});
+
 describe("a socket that misbehaves", () => {
   it("is closed when its sealing key is not signed by the did it just proved", async () => {
     // Answering the challenge proves a signing key. It says nothing about the *sealing* key
@@ -443,7 +492,12 @@ describe("a socket that misbehaves", () => {
     await forger.connect({ forgeSealingKey: true });
 
     await waitFor("the forged sealing key to close the socket", () => forger.closedWith !== undefined);
-    expect(forger.errors().join(" ")).toContain("sealing key");
+    // Refused rather than errored, and with a close code that says so: a bridge has to be
+    // able to tell "this hub has made up its mind" from "this hub went away", because only
+    // one of the two is worth reconnecting after.
+    expect(forger.refusals().map((refusal) => refusal.reason)).toEqual(["bad-sealing-key"]);
+    expect(forger.refusals()[0]?.detail).toContain("sealing key");
+    expect(forger.closedWith).toBe(REFUSED_CLOSE_CODE);
     // Refused at the door: no welcome, so nothing was relayed to it either.
     expect(forger.frames.some((frame) => frame.t === "welcome")).toBe(false);
   });

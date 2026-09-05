@@ -92,6 +92,7 @@ describe("the wire still has the frames it had", () => {
         "invite",
         "presence",
         "pong",
+        "refused",
         "turn",
         "welcome",
       ].sort(),

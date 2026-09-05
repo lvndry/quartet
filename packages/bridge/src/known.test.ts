@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fingerprint, generateKeypair, parseTag, tag } from "@quartet/identity";
 import { KnownKeys } from "./known";
-import { setDataDirectory } from "./paths";
+import { setIdentityDirectory } from "./paths";
 
 let workDir: string;
 
 beforeEach(async () => {
   workDir = await mkdtemp(join(tmpdir(), "quartet-known-"));
-  setDataDirectory(workDir);
+  setIdentityDirectory(workDir);
 });
 
 afterEach(async () => {

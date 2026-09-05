@@ -339,5 +339,25 @@ export interface BridgeState {
   readonly fingerprints: Readonly<Record<string, string>>;
   /** Set when this machine's pin file could not be read, so no key here is vouched for. */
   readonly keyStoreProblem?: string;
+  /**
+   * The hub turned this bridge away, and the bridge has stopped trying.
+   *
+   * Distinct from `lastError`, which is a thing that went wrong on a connection still worth
+   * having. This is the connection being over until somebody acts — so the page has to say
+   * something other than the spinner it shows while a hub is merely slow.
+   */
+  readonly hubRefusal?: HubRefusal;
   readonly lastError?: string;
+}
+
+/** Why the hub refused this bridge, and the one thing that would change its mind. */
+export interface HubRefusal {
+  /** Matches `RefusalReason` on the hub wire. Kept as a string: the app renders, it does not parse. */
+  readonly reason: string;
+  /** The hub's own sentence. */
+  readonly detail: string;
+  /** What to do about it, in words somebody at a keyboard can act on. */
+  readonly remedy: string;
+  /** True when a claim on this hub would fix it — the one case with a button rather than a note. */
+  readonly claimable: boolean;
 }

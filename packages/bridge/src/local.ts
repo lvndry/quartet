@@ -53,6 +53,15 @@ export interface LocalServerOptions {
   readonly agents: AgentAdmin;
   /** Which devices may drive this agent from somewhere other than here. */
   readonly devices: DeviceRegistry;
+  /**
+   * Claim a handle for this identity on the hub it is pointed at.
+   *
+   * Here because a hub can forget a key while the bridge is running — its database replaced,
+   * or restored from before this identity existed — and by then `connect` has long finished
+   * and there is no terminal left to ask in. The page is the only surface still in front of
+   * somebody, so it is the one that has to be able to offer the repair.
+   */
+  readonly claim?: (handle: string) => Promise<{ ok: true } | { error: string }>;
   /** Directory holding the built web app. Absent in development, where Vite serves it. */
   readonly appRoot?: string;
   /**
@@ -255,6 +264,7 @@ export function startLocalServer(options: LocalServerOptions): {
           // when one is up, and loopback otherwise — which still pairs a second browser on
           // this machine, and is the only honest answer when there is no public address.
           () => publicOrigin ?? `http://localhost:${String(boundPort)}`,
+          options.claim,
         );
       }
 
@@ -404,6 +414,7 @@ async function handleApi(
   agents: AgentAdmin,
   devices: DeviceRegistry,
   pairingOrigin: () => string,
+  claim: LocalServerOptions["claim"],
 ): Promise<Response> {
   if (request.method !== "POST") return json({ error: "not found" }, 404);
   const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
@@ -463,6 +474,18 @@ async function handleApi(
         purpose,
         ...(parsedOpenLimit?.data !== undefined ? { limit: parsedOpenLimit.data } : {}),
       });
+      return json({ ok: true });
+    }
+
+    case "/api/claim": {
+      if (claim === undefined) return json({ error: "this bridge cannot claim a handle" }, 400);
+      const handle = text("handle");
+      if (handle.length < 2) return json({ error: "a handle needs at least two characters" }, 400);
+      const claimed = await claim(handle);
+      if ("error" in claimed) return json({ error: claimed.error }, 400);
+      // The refusal is what stopped the socket, so clearing it is the other half of the
+      // repair: a claim nobody reconnects after has fixed nothing anybody can see.
+      bridge.resume();
       return json({ ok: true });
     }
 

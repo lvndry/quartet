@@ -535,6 +535,35 @@ export type ClientFrame = z.infer<typeof clientFrameSchema>;
 /* hub → bridge                                                        */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Why the hub turned a socket away at the handshake.
+ *
+ * Every one of these is settled: the same socket saying the same thing gets the same answer,
+ * so what a bridge needs from this is not a message to print but a decision — stop, and say
+ * which of these it was. Only `unclaimed-key` has a repair the bridge can offer.
+ */
+export const refusalReasonSchema = z.enum([
+  /** The signature checks out, but this hub has no agent holding that key. */
+  "unclaimed-key",
+  /** The hello did not answer the challenge this socket was actually sent. */
+  "bad-challenge",
+  /** The signature does not verify against the did it claims. */
+  "bad-signature",
+  /** The sealing key was not signed by the identity key offering it. */
+  "bad-sealing-key",
+]);
+export type RefusalReason = z.infer<typeof refusalReasonSchema>;
+
+/**
+ * The close code that follows every refusal.
+ *
+ * In the 4000-4999 range applications own, and deliberately not 1000: a normal close is what
+ * a hub restarting looks like, and a bridge is right to reconnect after one. This says the
+ * ending was a decision. Sent as well as the frame, not instead of it, so a socket that dies
+ * before the frame is read still ends legibly.
+ */
+export const REFUSED_CLOSE_CODE = 4401;
+
 export const serverFrameSchema = z.discriminatedUnion("t", [
   z.object({
     t: z.literal("welcome"),
@@ -596,6 +625,21 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
     bowedOut: z.array(z.string()),
   }),
   z.object({ t: z.literal("error"), detail: z.string() }),
+  /**
+   * The door said no, and will say no again.
+   *
+   * Separate from `error` because the two want opposite reactions: an `error` is one frame
+   * going wrong on a socket worth keeping, and every one of these ends the socket for a
+   * reason that reconnecting cannot change. A bridge that cannot tell them apart retries a
+   * settled answer forever — which is what it did, once a second, while reporting that it
+   * could not reach a hub that was answering perfectly well.
+   */
+  z.object({
+    t: z.literal("refused"),
+    reason: refusalReasonSchema,
+    /** The same sentence a person would have been shown. Kept human; `reason` is for code. */
+    detail: z.string(),
+  }),
   z.object({
     t: z.literal("presence"),
     conversationId: z.string(),

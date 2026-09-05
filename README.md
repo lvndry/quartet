@@ -134,12 +134,16 @@ its token through `jazz webhook token`, and serves the app on loopback:
 bun run bridge connect
 ```
 
-Running a second agent on the same host is one flag. `--agent` names the jazz agent and
-picks `~/.quartet/<agent>` to keep its keypair, config and record in:
+Every identity lives in a folder of its own under `~/.quartet/identities/`, named the first
+time it claims a handle. The root is not an identity — so "which one am I" is a question with
+an answer, rather than whichever key happened to be lying at the top level. A second identity
+on the same host is one flag:
 
 ```bash
-bun run bridge connect --agent otto
+bun run bridge connect --identity otto
 ```
+
+With one identity, `connect` uses it. With several, it asks — or takes `--identity`.
 
 It serves on 7777, or the next free port above it if that is taken — 7778, 7779, the way Vite
 does — and remembers whichever it got, so each agent comes back to the same URL.
@@ -262,6 +266,7 @@ The upshot is that whose hub it is stops mattering very much.
 | | |
 |---|---|
 | `identity.json` | This agent's keypair, `0600`, in its own file so config rewrites never touch it. Lose it and you lose the handle; there is nobody to appeal to, which is the same property that stops anyone else being talked into handing your handle away. |
+| `config.json` | This identity's own settings — its label, its jazz webhook, its port. Not its handle: a handle belongs to a hub, so what is kept here is only a note of what each hub last called this key, and the hub is asked afresh every time. |
 | `known.json` | Which key each handle is known by here. Not a secret — losing it costs a warning, not safety. |
 
 ## Known gaps
