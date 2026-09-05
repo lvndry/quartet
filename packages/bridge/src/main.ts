@@ -580,7 +580,7 @@ async function connect(): Promise<void> {
       stopTunnel = tunnel.stop;
       console.log(`\n  ✓ also reachable at ${tunnel.url}`);
       console.log("    Nothing can get in with that URL alone. To let a device in, run");
-      console.log("    `bun run bridge pair` and scan the code.\n");
+      console.log(`    \`bun run bridge pair${identityFlags()}\` and scan the code.\n`);
     } else {
       console.warn(`\n  ! no tunnel (${tunnel.kind}) — the app is still on ${appUrl}\n`);
     }
@@ -612,13 +612,26 @@ async function connect(): Promise<void> {
  * itself: the offer has to live in the bridge that will honour it, and that bridge is
  * already up. Reaching it needs the port and token this identity's config remembers, which
  * is also what makes this refuse to pair against somebody else's agent.
+ *
+ * Which identity that is comes from `--agent`/`--data-dir` like everywhere else, so with
+ * several bridges running this pairs the default one unless told otherwise. It says which,
+ * out loud: a device paired to the wrong agent is a door you did not mean to open, and the
+ * device list only helps somebody who knows which list to look at.
  */
 async function pairDevice(): Promise<void> {
   const config = await loadConfig();
   if (config.localPort === undefined || config.localToken === undefined) {
-    console.error("\n  ! no app on file for this identity yet. Run `quartet connect` first.\n");
+    console.error(`\n  ! no app on file in ${getDataDirectory()}.`);
+    console.error("    That is the directory --agent/--data-dir picked, and nothing has run");
+    console.error("    `quartet connect` there yet. A bridge started with `--data-dir <path>`");
+    console.error("    is paired with the same `--data-dir <path>`, not with `--agent`.\n");
     process.exit(1);
   }
+
+  console.log(
+    `\n  pairing a device to ${config.handle === undefined ? "this identity" : `@${config.handle}`}` +
+      ` — ${getDataDirectory()}, port ${String(config.localPort)}`,
+  );
 
   const response = await fetch(`http://localhost:${String(config.localPort)}/api/devices/offer`, {
     method: "POST",
@@ -630,8 +643,9 @@ async function pairDevice(): Promise<void> {
   }).catch(() => undefined);
 
   if (response === undefined || !response.ok) {
-    console.error(`\n  ! quartet is not running on port ${String(config.localPort)}.`);
-    console.error("    Start it with `quartet connect --expose`, then run this again.\n");
+    console.error(`\n  ! nothing is answering on port ${String(config.localPort)} for that identity.`);
+    console.error("    Start it with `quartet connect --expose`, then run this again — or pass");
+    console.error("    `--agent <id>` if you meant one of the other bridges on this machine.\n");
     process.exit(1);
   }
 
@@ -652,6 +666,21 @@ async function pairDevice(): Promise<void> {
   } else {
     console.log("  Revoke it any time from Your agents → Devices.\n");
   }
+}
+
+/**
+ * The identity flags this invocation was started with, to repeat back in any command we tell
+ * somebody to run next.
+ *
+ * Printing a bare `quartet pair` to a bridge started with `--data-dir` names a *different*
+ * identity — the default one — and pairing a device to the wrong agent is a door opened by
+ * accident. Whatever selected this data directory has to travel with the advice.
+ */
+function identityFlags(): string {
+  const dataDirFlag = argValue("data-dir");
+  if (dataDirFlag !== undefined) return ` --data-dir ${dataDirFlag}`;
+  const agentFlag = argValue("agent");
+  return agentFlag === undefined ? "" : ` --agent ${agentFlag}`;
 }
 
 function usage(): void {
@@ -680,6 +709,8 @@ function usage(): void {
       "    --yes                    install jazz without asking, if it's missing",
       "",
       "  quartet pair                offer a code for a phone or tablet to scan",
+      "    --agent <id>               pair to a second agent on this host, not the default one",
+      "    --data-dir <path>          the same, by directory (overrides $QUARTET_HOME)",
       "",
       "  quartet info                what this identity actually is, right now",
       "    --agent <id>               check a specific jazz agent instead of the one on file",
