@@ -69,18 +69,13 @@ whole of the access control.
 
 **Pair a device** shows a QR and an eight-character code, good for two minutes and for one
 device. Scan it, type the code, name the device. `bun run bridge pair` does the same thing
-from the terminal — and when a bridge with nothing paired yet starts with `--expose`, it
+from the terminal — and a bridge with nothing paired yet
 prints that QR at startup rather than telling you to run a second command.
 
-For a phone to reach any of this, the bridge needs an address that is not loopback:
-
-```bash
-bun run bridge connect --expose
-```
-
-That gets a cloudflare quick tunnel — a real certificate, nothing to generate, and it dies
-with the process. **The URL alone gets nobody in.** Pairing is the only door, and it only
-opens from this machine.
+The bridge gets an address a phone can reach on its own — a cloudflare quick tunnel, a real
+certificate, nothing to generate, and it dies with the process. **The URL alone gets nobody
+in.** Pairing is the only door, and it only opens from this machine. `bun run bridge connect
+--no-expose` skips the address entirely.
 
 A paired device can do everything this screen can, including changing which agent is on
 stage. So **Revoke** matters: it takes effect immediately, closing whatever that device

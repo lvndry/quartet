@@ -49,7 +49,7 @@ const DEFAULT_DAEMON_URL = "http://localhost:4747";
 /**
  * Interface the app binds to.
  *
- * Loopback, and `--expose` is the intended way to be reachable from anywhere else —
+ * Loopback, and the tunnel is how it is reachable from anywhere else —
  * cloudflared terminates TLS and reaches this over loopback, so the bind never has to widen.
  * Anything else needs TLS in front of it; see the refusal in `connect`.
  */
@@ -474,8 +474,8 @@ async function connect(): Promise<void> {
         "  Every request would cross the network readable — your conversations, and the\n" +
         "  steers you type to your own agent.\n" +
         "  Pick one:\n" +
-        "    • run `bun run bridge connect --expose` and leave QUARTET_APP_HOST alone\n" +
-        "      (cloudflared terminates TLS and reaches this over loopback)\n" +
+        "    • leave QUARTET_APP_HOST alone and let the tunnel do it (cloudflared\n" +
+        "      terminates TLS and reaches this over loopback)\n" +
         "    • set QUARTET_ALLOW_PLAINTEXT=1 if a reverse proxy in front already\n" +
         "      terminates TLS and only it can reach this port\n",
     );
@@ -572,8 +572,8 @@ async function connect(): Promise<void> {
   // works either way, and losing it because a phone could not be reached would be the wrong
   // trade.
   let stopTunnel: (() => void) | undefined;
-  if (hasFlag("expose")) {
-    console.log("  reaching this app from a phone — starting a cloudflare quick tunnel…");
+  if (!hasFlag("no-expose")) {
+    console.log("  getting an address a phone can reach — cloudflare quick tunnel…");
     const tunnel = await startTunnel(local.port);
     if (tunnel.kind === "ok") {
       local.setPublicOrigin(tunnel.url);
@@ -592,7 +592,8 @@ async function connect(): Promise<void> {
           small: true,
         }));
         console.log(`  scan that to pair a device — the code is ${offer.code}`);
-        console.log(`  good for two minutes. \`bun run bridge pair${identityFlags()}\` for another.\n`);
+        console.log(`  good for two minutes. \`bun run bridge pair${identityFlags()}\` for another,`);
+        console.log("  or `--no-expose` if you would rather this machine were the only way in.\n");
       } else {
         const paired = devices.list();
         const names = paired.map((device) => device.name).join(", ");
@@ -600,7 +601,11 @@ async function connect(): Promise<void> {
         console.log(`  \`bun run bridge pair${identityFlags()}\` to add another.\n`);
       }
     } else {
-      console.warn(`\n  ! no tunnel (${tunnel.kind}) — the app is still on ${appUrl}\n`);
+      // Not fatal, and deliberately so: the app on this machine works either way, and a
+      // connect that fails because a phone could not be reached would be the wrong trade —
+      // especially now that nobody asked for the tunnel by name.
+      console.warn(`\n  ! no tunnel (${tunnel.kind}) — the app is still on ${appUrl}`);
+      console.warn("    That is only the phone address; your agent is connected and working.\n");
     }
   }
   logger("bridge").info("watching", {
@@ -662,7 +667,7 @@ async function pairDevice(): Promise<void> {
 
   if (response === undefined || !response.ok) {
     console.error(`\n  ! nothing is answering on port ${String(config.localPort)} for that identity.`);
-    console.error("    Start it with `quartet connect --expose`, then run this again — or pass");
+    console.error("    Start it with `quartet connect`, then run this again — or pass");
     console.error("    `--agent <id>` if you meant one of the other bridges on this machine.\n");
     process.exit(1);
   }
@@ -679,7 +684,7 @@ async function pairDevice(): Promise<void> {
   if (!isTunnelled) {
     console.warn(
       "\n  ! this address only works on this machine. For a phone, restart the bridge" +
-        "\n    with `--expose` so there is an address it can reach.\n",
+        "\n    without `--no-expose` so there is an address it can reach.\n",
     );
   } else {
     console.log("  Revoke it any time from Your agents → Devices.\n");
@@ -708,8 +713,8 @@ function usage(): void {
       "",
       "  quartet connect            start the bridge and open the app",
       "    --hub <url>              which hub to join",
-      "    --expose                 also serve the app on a public https URL, so a paired",
-      "                             phone can reach it. Pairing is what lets anything in.",
+      "    --no-expose              skip the public https URL, so the app is reachable from",
+      "                             this machine only and no phone can pair with it",
       "    --port <n>               local port for the app — served or nothing (default 7777,",
       "                             and only that default moves up when it is taken)",
       "    --data-dir <path>        this agent's config and record (overrides $QUARTET_HOME)",
