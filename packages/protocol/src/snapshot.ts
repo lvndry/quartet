@@ -1,8 +1,12 @@
 /**
- * @fileoverview What the bridge shows the browser.
+ * @fileoverview What the bridge shows the browser — and the app's only door into this package.
  *
  * The other wire. `index.ts` is bridge↔hub; this is bridge↔app, and it is a wire for exactly
  * the same reason: two processes, one pushing whole snapshots and the other rendering them.
+ *
+ * Reached as `@quartet/protocol/app`, which is the whole of what the browser may import. The
+ * hub wire is a separate entry point the app does not have, so a frame can be changed for the
+ * hub's benefit without the page silently following it. See `docs/design/packages.md`.
  *
  * It exists because the two ends had a copy each. The bridge's types lived across half a
  * dozen of its own modules and the app re-declared each of them by hand, mutable where the
@@ -11,9 +15,11 @@
  * anywhere would have failed if a field had been renamed on one side only. A snapshot is a
  * contract; contracts get one definition.
  *
- * Types only, and no zod. The app talks to a process on its own machine over loopback, so
- * unlike a hub frame this does not cross a trust boundary and there is nothing here worth
- * parsing defensively.
+ * Shapes only, and nothing that parses. The app talks to a process on its own machine over
+ * loopback, so unlike a hub frame this does not cross a trust boundary and there is nothing
+ * here worth checking defensively. The handful of values below come from `./limits`, which
+ * has no zod in it — so importing this door does not drag a parser into the page's bundle,
+ * and the shapes taken from `./index` are type-only and erased at build.
  */
 
 import type {
@@ -25,6 +31,37 @@ import type {
   Message,
   PeerPresence,
 } from "./index";
+
+/**
+ * The hub's shapes that a snapshot genuinely carries, passed through on purpose.
+ *
+ * These are the seam. A snapshot is mostly this machine's own reading of things — verdicts,
+ * openings, activity — but the rooms and lines it describes are the hub's, and re-declaring
+ * them here would be the hand-mirroring this file exists to abolish.
+ *
+ * Passed through rather than re-stated, so there is one definition; listed explicitly rather
+ * than re-exported wholesale, so that the list is short enough to be an argument. Anything
+ * added here is the app learning one more thing about the hub, which is the direction the
+ * boundary is meant to resist.
+ */
+export type { Agent, Connection, Conversation, DirectoryEntry, Invite, Message, PeerPresence };
+
+/**
+ * The bounds a form has to know to refuse an input before the hub does.
+ *
+ * A field that accepts what the wire will reject is a field that lies. These are the only
+ * values — as opposed to types — the app takes from this package.
+ */
+export {
+  DEFAULT_TURN_BUDGET,
+  MAX_ROOM_MEMBERS,
+  MAX_SPEND_USD,
+  MAX_TURN_BUDGET,
+  UNLIMITED_TURN_BUDGET,
+  MAX_MESSAGE_LENGTH,
+  DEFAULT_LIMIT,
+} from "./limits";
+export type { Limit } from "./limits";
 
 /** A question jazz has parked a run on, waiting for a person to answer it. */
 export interface HumanQuestion {

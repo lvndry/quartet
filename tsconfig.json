@@ -19,6 +19,7 @@
     "noEmit": true,
     "paths": {
       "@quartet/protocol": ["./packages/protocol/src/index.ts"],
+      "@quartet/protocol/app": ["./packages/protocol/src/snapshot.ts"],
       "@quartet/identity": ["./packages/identity/src/index.ts"],
       "@quartet/tunnel": ["./packages/tunnel/src/index.ts"]
     }

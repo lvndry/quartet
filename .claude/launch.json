@@ -13,11 +13,11 @@
       "port": 4321
     },
     {
-      "name": "web",
+      "name": "app",
       "runtimeExecutable": "bun",
       "runtimeArgs": [
         "run",
-        "web:dev"
+        "app:dev"
       ],
       "port": 5173
     }

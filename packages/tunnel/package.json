@@ -2,7 +2,11 @@
   "name": "@quartet/tunnel",
   "version": "0.1.0",
   "private": true,
+  "description": "A public URL for a loopback port, via cloudflared. One function; not a transport layer.",
   "type": "module",
   "main": "./src/index.ts",
-  "exports": { ".": "./src/index.ts" }
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "cloudflared": "^0.7.3"
+  }
 }

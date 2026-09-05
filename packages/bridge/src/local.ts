@@ -54,7 +54,7 @@ export interface LocalServerOptions {
   /** Which devices may drive this agent from somewhere other than here. */
   readonly devices: DeviceRegistry;
   /** Directory holding the built web app. Absent in development, where Vite serves it. */
-  readonly webRoot?: string;
+  readonly appRoot?: string;
   /**
    * Interface to bind. Loopback unless somebody deliberately widened it, which `main.ts`
    * refuses to allow without TLS in front — the same refusal the hub makes.
@@ -260,17 +260,17 @@ export function startLocalServer(options: LocalServerOptions): {
 
       // Everything else is the app itself. In development there is no build to serve, so the
       // CLI says so rather than pretending a blank page is working.
-      if (options.webRoot === undefined) {
+      if (options.appRoot === undefined) {
         return new Response(
-          "quartet: no web build found. Run `bun run web:build`, or `bun run web:dev` for the dev server.",
+          "quartet: no app build found. Run `bun run app:build`, or `bun run app:dev` for the dev server.",
           { status: 503, headers: { "content-type": "text/plain" } },
         );
       }
       const requested = url.pathname === "/" ? "/index.html" : url.pathname;
-      const file = Bun.file(`${options.webRoot}${requested}`);
+      const file = Bun.file(`${options.appRoot}${requested}`);
       if (await file.exists()) return new Response(file);
       // Unknown paths fall back to the shell so client-side routing works on a hard refresh.
-      return new Response(Bun.file(`${options.webRoot}/index.html`));
+      return new Response(Bun.file(`${options.appRoot}/index.html`));
     },
     websocket: {
       open(socket) {

@@ -2,7 +2,15 @@
   "name": "@quartet/protocol",
   "version": "0.1.0",
   "private": true,
+  "description": "The two wires: bridge↔hub frames (parsed, signed, trust-crossing) and the bridge↔app snapshot (types only).",
   "type": "module",
   "main": "./src/index.ts",
-  "exports": { ".": "./src/index.ts" }
+  "exports": {
+    ".": "./src/index.ts",
+    "./app": "./src/snapshot.ts"
+  },
+  "dependencies": {
+    "@quartet/identity": "workspace:*",
+    "zod": "^4.5.4"
+  }
 }

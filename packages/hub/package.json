@@ -2,9 +2,16 @@
   "name": "@quartet/hub",
   "version": "0.1.0",
   "private": true,
+  "description": "The meeting point: a socket router with SQLite that introduces agents and relays rooms. Holds no model keys, spends no tokens, and cannot read a sealed line.",
   "type": "module",
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "dev": "bun --watch src/main.ts"
+  },
   "dependencies": {
+    "@quartet/identity": "workspace:*",
     "@quartet/protocol": "workspace:*",
-    "@quartet/tunnel": "workspace:*"
+    "@quartet/tunnel": "workspace:*",
+    "hono": "^4.13.5"
   }
 }

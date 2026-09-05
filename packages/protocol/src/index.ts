@@ -14,64 +14,24 @@
 
 import { z } from "zod";
 
+import {
+  MAX_PURPOSE_LENGTH,
+  MAX_SEALED_LENGTH,
+  MAX_SPEND_USD,
+  MAX_TURN_BUDGET,
+  type Limit,
+} from "./limits";
+
 // The bridge↔app snapshot. Types only, and no trust boundary, so it lives apart.
 export * from "./snapshot";
 
-/** How many agent turns one conversation may spend before a human has to speak again. */
-export const DEFAULT_TURN_BUDGET = 50;
-
-/** A sanity bound on a typed number. Anyone who wants no ceiling picks `none` instead. */
-export const MAX_TURN_BUDGET = 500;
-
-/** Zero rather than null, so "unlimited" survives SQLite and JSON without a special case. */
-export const UNLIMITED_TURN_BUDGET = 0;
-
-export const MAX_SPEND_USD = 1000;
-
 /**
- * How a conversation is allowed to spend. See `docs/design/spending.md`.
+ * The bounds, and the shape of a limit.
  *
- * `cost` is never the only bound: reported spend comes from participants' own bridges and
- * the hub cannot check it, so a turn count runs underneath every money ceiling.
+ * Defined in `./limits` with no zod, so the app can import a ceiling without importing a
+ * parser, and re-exported here so the hub wire's own callers see one module as before.
  */
-export const limitSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("turns"), turns: z.number().int().min(1).max(MAX_TURN_BUDGET) }),
-  z.object({ kind: z.literal("cost"), usd: z.number().positive().max(MAX_SPEND_USD) }),
-  z.object({ kind: z.literal("none") }),
-]);
-export type Limit = z.infer<typeof limitSchema>;
-
-export const DEFAULT_LIMIT: Limit = { kind: "turns", turns: DEFAULT_TURN_BUDGET };
-
-/** Nothing worth adding. A sentinel, because an empty reply also means "the model failed". */
-export const PASS_SENTINEL = "<pass>";
-
-/** A goodbye: delivered, and then the room closes with it. Distinct from a pass. */
-export const CLOSE_SENTINEL = "<end>";
-
-/**
- * A sanity ceiling for the room, not for the daemon.
- *
- * `composeTurnPayload` already trims a dispatch to whatever the local jazz will accept, so a
- * long message degrades a context window rather than failing a turn.
- */
-export const MAX_MESSAGE_LENGTH = 10_000;
-export const MAX_PURPOSE_LENGTH = MAX_MESSAGE_LENGTH;
-
-/**
- * The same ceiling, measured after sealing.
- *
- * A sealed line travels as the JSON of an envelope, so the bound the hub can actually check
- * is on the ciphertext rather than the words. Base64 costs a third, GCM adds a nonce and a
- * tag, and every member of the room carries a wrapped key and a did of their own — so a
- * full room's worth of overhead on a maximum-length message is roughly
- * `4/3 × MAX_MESSAGE_LENGTH` plus a kilobyte of structure. Rounded up generously, because
- * the cost of guessing low is a legitimate message the hub refuses to relay.
- *
- * It bounds a blob the hub cannot read, which is the point: the hub keeps a size limit
- * without regaining a content one.
- */
-export const MAX_SEALED_LENGTH = 16_000;
+export * from "./limits";
 
 /**
  * Text that survives being turned into bytes and back.
@@ -91,32 +51,32 @@ function signable(max: number) {
 }
 
 /**
- * How much transcript a welcome carries, and how much one page adds.
+ * How a conversation is allowed to spend, as the wire checks it. See `docs/design/spending.md`.
  *
- * Welcome hydrates every room this agent is in and runs on every reconnect, so an unwindowed
- * number here is the hub's worst query multiplied by however many people you know. Above the
- * window an agent answers from, so what you can see is never less than what it worked from.
+ * `cost` is never the only bound: reported spend comes from participants' own bridges and
+ * the hub cannot check it, so a turn count runs underneath every money ceiling.
  */
-export const WELCOME_TRANSCRIPT_WINDOW = 60;
-export const HISTORY_PAGE_SIZE = 60;
+export const limitSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("turns"), turns: z.number().int().min(1).max(MAX_TURN_BUDGET) }),
+  z.object({ kind: z.literal("cost"), usd: z.number().positive().max(MAX_SPEND_USD) }),
+  z.object({ kind: z.literal("none") }),
+]);
 
 /**
- * How much of a room one dispatched turn carries. See `docs/design/turns.md`.
+ * The schema and the type say the same thing, checked by the compiler.
  *
- * A turn carries the increment, not a fixed window: the agent resumes a jazz thread that
- * already holds the rest. `TURN_OVERLAP` is insurance for the one turn where that thread is
- * genuinely cold; `TURN_SLICE_MAX` bounds somebody who comes back owed hundreds of messages.
+ * `Limit` used to be `z.infer<typeof limitSchema>`, which made drift impossible by
+ * construction. It cannot be, now that the type has to exist on the zod-free side of the
+ * boundary — so this stands in its place: add a variant to one and not the other, and this
+ * stops compiling. Types only, so it costs nothing at runtime.
  */
-export const TURN_OVERLAP = 6;
-export const TURN_SLICE_MAX = 100;
-
-/**
- * How many agents one room may hold. A cost bound, not a schema one.
- *
- * Every spoken message wakes every other member, so a message in a room of six is five model
- * runs on five people's own keys.
- */
-export const MAX_ROOM_MEMBERS = 6;
+type LimitsAgree = [Limit] extends [z.infer<typeof limitSchema>]
+  ? [z.infer<typeof limitSchema>] extends [Limit]
+    ? true
+    : never
+  : never;
+const _limitsAgree: LimitsAgree = true;
+void _limitsAgree;
 
 /**
  * The hub's name for one dispatched turn. See `docs/design/turns.md`.

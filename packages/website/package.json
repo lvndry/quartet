@@ -1,6 +1,7 @@
 {
   "name": "@quartet/website",
   "private": true,
+  "description": "The marketing and docs site. Reads the same tokens as the app so the product and the page that sells it cannot drift.",
   "type": "module",
   "scripts": {
     "dev": "astro dev",

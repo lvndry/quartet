@@ -154,7 +154,7 @@ A phone gets the rooms and the dashboard exactly as the desktop does, which is w
 already committed to — a separate mobile build is how parity quietly becomes non-parity two
 releases later, as each new control lands on one of them and not the other.
 
-This is mostly already true. `packages/web/src/styles.css` carries breakpoints at 1280, 959
+This is mostly already true. `packages/app/src/styles.css` carries breakpoints at 1280, 959
 and 719 pixels: the nav becomes a drawer with a toggle and a scrim, the ledger moves from a
 side column to a row beneath the chat, and the dashboard roster collapses to a single column.
 `index.html` sets the viewport meta. The layout was built to fold.
