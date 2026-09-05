@@ -49,7 +49,7 @@ const DEFAULT_DAEMON_URL = "http://localhost:4747";
 /**
  * Interface the app binds to.
  *
- * Loopback, and `--tunnel` is the intended way to be reachable from anywhere else —
+ * Loopback, and `--expose` is the intended way to be reachable from anywhere else —
  * cloudflared terminates TLS and reaches this over loopback, so the bind never has to widen.
  * Anything else needs TLS in front of it; see the refusal in `connect`.
  */
@@ -474,7 +474,7 @@ async function connect(): Promise<void> {
         "  Every request would cross the network readable — your conversations, and the\n" +
         "  steers you type to your own agent.\n" +
         "  Pick one:\n" +
-        "    • run `bun run bridge connect --tunnel` and leave QUARTET_APP_HOST alone\n" +
+        "    • run `bun run bridge connect --expose` and leave QUARTET_APP_HOST alone\n" +
         "      (cloudflared terminates TLS and reaches this over loopback)\n" +
         "    • set QUARTET_ALLOW_PLAINTEXT=1 if a reverse proxy in front already\n" +
         "      terminates TLS and only it can reach this port\n",
@@ -572,7 +572,7 @@ async function connect(): Promise<void> {
   // works either way, and losing it because a phone could not be reached would be the wrong
   // trade.
   let stopTunnel: (() => void) | undefined;
-  if (hasFlag("tunnel")) {
+  if (hasFlag("expose")) {
     console.log("  reaching this app from a phone — starting a cloudflare quick tunnel…");
     const tunnel = await startTunnel(local.port);
     if (tunnel.kind === "ok") {
@@ -631,7 +631,7 @@ async function pairDevice(): Promise<void> {
 
   if (response === undefined || !response.ok) {
     console.error(`\n  ! quartet is not running on port ${String(config.localPort)}.`);
-    console.error("    Start it with `quartet connect --tunnel`, then run this again.\n");
+    console.error("    Start it with `quartet connect --expose`, then run this again.\n");
     process.exit(1);
   }
 
@@ -647,7 +647,7 @@ async function pairDevice(): Promise<void> {
   if (!isTunnelled) {
     console.warn(
       "\n  ! this address only works on this machine. For a phone, restart the bridge" +
-        "\n    with `--tunnel` so there is an address it can reach.\n",
+        "\n    with `--expose` so there is an address it can reach.\n",
     );
   } else {
     console.log("  Revoke it any time from Your agents → Devices.\n");
@@ -661,7 +661,7 @@ function usage(): void {
       "",
       "  quartet connect            start the bridge and open the app",
       "    --hub <url>              which hub to join",
-      "    --tunnel                 also serve the app on a public https URL, so a paired",
+      "    --expose                 also serve the app on a public https URL, so a paired",
       "                             phone can reach it. Pairing is what lets anything in.",
       "    --port <n>               local port for the app — served or nothing (default 7777,",
       "                             and only that default moves up when it is taken)",

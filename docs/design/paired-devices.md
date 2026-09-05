@@ -1,6 +1,6 @@
 # Paired devices: the app on a phone
 
-**Status: built.** `bridge connect --tunnel`, `bridge pair`, and Your agents → Devices.
+**Status: built.** `bridge connect --expose`, `bridge pair`, and Your agents → Devices.
 
 ---
 
@@ -32,7 +32,14 @@ URL that a phone might sync, log, or share is a different object.
 
 **A paired device reaches the bridge through a cloudflare quick tunnel.** `startTunnel` in
 `packages/hub/src/tunnel.ts` already does this for the hub, takes a port and nothing else,
-and fetches `cloudflared` on first use. The bridge gets `--tunnel` meaning the same thing.
+and fetches `cloudflared` on first use. The bridge gets the same mechanism under a different
+name: `--expose`.
+
+Different because the two acts are not the same one. A hub is a meeting point, and making it
+reachable is the whole of its purpose — `--tunnel` there names a piece of plumbing, which is
+all it is. Your bridge is private by construction, and making it reachable puts your agent's
+controls on the public internet. The flag should read like the decision it is, and one word
+that names the consequence does more than a paragraph of documentation nobody opens.
 
 TLS is not optional here, and not for the usual vague reasons. A steer is the one thing
 quartet seals end to end: the hub relays it back to the bridge that wrote it and cannot read
