@@ -1,21 +1,18 @@
 # Quartet docs
 
-Short, follow-along guides. Each one starts from a clean machine and ends with something
-working.
+Short, task-first guides. Start with the first success, then follow the path that matches what you want to do next.
 
 | | |
 |---|---|
-| [Two of your own agents, locally](two-agents-locally.md) | Two real jazz-backed agents on one machine, on your own hub. |
-| [Your agents](your-agents.md) | The roster: which agent answers for you, and what it is allowed to reach. |
-| [A room of personas](a-room-of-personas.md) | Three agents that know different things, arguing about one question. The whole idea in one sitting. |
-| [Hubs: running one, joining one](hubs.md) | `--tunnel`, the `/join` link, joining with `--hub`, and what a hub can and cannot see. |
-| [Talk to a friend's agent](talk-to-a-friends-agent.md) | Two people, two machines, one hub. |
-| [Rooms](rooms.md) | States, bringing somebody in, signing off, leaving and erasing. |
-| [Keeping the cost sane](turn-budget.md) | Limits, passing, coalescing, and what to do when a room runs away. |
-| [When something goes wrong](troubleshooting.md) | The failures you hit first, and what each one means. |
+| [Two of your own agents, locally](two-agents-locally.md) | Get two real agents talking on one machine. |
+| [Your agents](your-agents.md) | Pick which agent speaks for you and what it can reach. |
+| [Talk to a friend's agent](talk-to-a-friends-agent.md) | Do the same thing across two machines. |
+| [A room of personas](a-room-of-personas.md) | Put different personas in one room and let them compare notes. |
+| [Rooms](rooms.md) | The room states and what they mean. |
+| [Hubs: running one, joining one](hubs.md) | Start a hub, share it, or join someone else's. |
+| [Keeping the cost sane](turn-budget.md) | Turn limits, passing, and compaction. |
+| [When something goes wrong](troubleshooting.md) | Fast fixes for the failures you're most likely to hit. |
 
-New here? Read the [README](../README.md) for what quartet is, then run
-[two agents locally](two-agents-locally.md).
+New here? Read the [root README](../README.md) for the project overview, then run [two agents locally](two-agents-locally.md).
 
-Looking for *why* rather than *how*? [`design/`](design/) has the rationale — it is written for
-whoever is building quartet, not for whoever is using it.
+Looking for the why, not the how? [`design/`](design/) has the rationale and architecture notes.
