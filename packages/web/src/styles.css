@@ -5,6 +5,22 @@
  * carries the rationale — ink ground, cream as the type colour, and the rule that hue means
  * state rather than identity.
  */
+/*
+ * Widths. Fixed rem tracks at every breakpoint gave a 2560px display laptop proportions —
+ * the chat column absorbed the whole surplus while the text inside it stayed clamped, so the
+ * widest screens got the worst reading line and the ledger, the column that gains most from
+ * room, gained none.
+ *
+ * The tracks are fluid because a pane is furniture and should grow with the wall. The measure
+ * is fixed because a line of prose does not get more readable at 1400px, and the discrete
+ * breakpoints below now only fold the layout, which is the thing they are good at.
+ */
+:root {
+  --track-nav: clamp(16rem, 13rem + 5vw, 21rem);
+  --track-ledger: clamp(14rem, 9.5rem + 11.9vw, 26rem);
+  --measure-thread: 62rem;
+}
+
 * { box-sizing: border-box; }
 
 html, body, #root { height: 100%; }
@@ -55,9 +71,12 @@ button, input, textarea { font: inherit; color: inherit; }
 .columns {
   display: grid;
   grid-template-areas: "nav chat ledger";
-  grid-template-columns: 16rem minmax(0, 1fr) 16rem;
+  grid-template-columns: var(--track-nav) minmax(0, 1fr) var(--track-ledger);
   min-height: 0;
   overflow: hidden;
+  /* The anchor for the overlay drawer below: the top of this row is the bottom of the
+     topbar, by construction rather than by measurement. */
+  position: relative;
 }
 .pane.nav { grid-area: nav; }
 .pane.chat { grid-area: chat; border-right: none; }
@@ -76,33 +95,44 @@ button, input, textarea { font: inherit; color: inherit; }
 .nav-toggle:hover { border-color: var(--signal); color: var(--signal); }
 .nav-scrim { display: none; }
 
-@media (min-width: 1280px) {
-  .columns { grid-template-columns: 17rem minmax(0, 1fr) 19rem; }
+/* A wide screen's dividend is more of the record visible, not more margin. */
+@media (min-width: 1600px) {
+  .led-text { -webkit-line-clamp: 5; }
 }
 
 @media (max-width: 959px) {
+  /* Fixed here, not fluid: the tablet band has one column of chat to protect, and a ledger
+     that grew with the viewport would take it from the conversation. */
   .columns { grid-template-areas: "chat ledger"; grid-template-columns: minmax(0, 1fr) 14rem; }
   .nav-toggle { display: inline-flex; }
+  /* Absolute inside `.columns` rather than fixed against the viewport, so the drawer starts
+     where the topbar ends without anyone having to know how tall the topbar is — which
+     changes with the safe-area inset on a notched phone, and would change again if the bar
+     ever wrapped. The scrim stops at the topbar too, leaving the toggle that opened the
+     drawer available to close it. */
   .pane.nav {
     display: none;
-    position: fixed; top: 3.05rem; left: 0; bottom: 0; width: 17rem;
+    position: absolute; top: 0; left: 0; bottom: 0; width: 17rem;
     z-index: 30; background: var(--ink); border-right: 1px solid var(--rule);
     box-shadow: 8px 0 28px rgb(0 0 0 / 45%);
   }
   .pane.nav.open { display: flex; }
   .nav-scrim.open {
-    display: block; position: fixed; inset: 0; z-index: 25;
+    display: block; position: absolute; inset: 0; z-index: 25;
     background: rgb(0 0 0 / 45%);
   }
 }
 
+/* The ledger is `state.ledger` filtered to this room — your own agent's outbound lines,
+   every one of which is already in the thread above it. On a handset that is a third of the
+   screen spent reading the same messages twice, so the phone gets the conversation whole. */
 @media (max-width: 719px) {
   .columns {
-    grid-template-areas: "chat" "ledger";
+    grid-template-areas: "chat";
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) minmax(11rem, 34vh);
+    grid-template-rows: minmax(0, 1fr);
   }
-  .pane.ledger { border-left: none; border-top: 1px solid var(--rule); }
+  .pane.ledger { display: none; }
 }
 
 .pane { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--rule); }
@@ -211,7 +241,22 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
   cursor: pointer;
 }
 
-/* ---------- chat ---------- */
+/* ---------- chat ----------
+
+   The conversation is a column, not a track. `.md` has always held prose to ~68 characters,
+   but the pane it sits in grew without limit, so past about 1400px the transcript became a
+   ribbon of type pinned to the left edge with the surplus as dead ink beside it. Capping and
+   centring the four pieces of the conversation — its header, its cast, the transcript and
+   the composer — keeps them stacked in one column at any width. The rules that separate them
+   belong to that column, so they stop with it. */
+.chat-head,
+.cast,
+.thread,
+.composer {
+  width: 100%;
+  max-width: var(--measure-thread);
+  margin-inline: auto;
+}
 
 .chat-head {
   padding: 0.8rem 1.2rem; border-bottom: 1px solid var(--rule);

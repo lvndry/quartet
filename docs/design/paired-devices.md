@@ -95,6 +95,17 @@ Pairing is initiated from the machine, never from the phone. There is no "reques
 flow, because approving one is a decision made under exactly the social pressure that makes
 people approve things they should not.
 
+`--expose` on a bridge with nothing paired prints the first code itself, because exposing the
+app and then being told to run a second command to use it is a two-step for what is one
+intention. On a bridge that already has devices it does not: a code nobody asked for is a
+credential sitting on a screen.
+
+**Exposure stays opt-in.** Not for the sake of a flag, but because the README's first
+architectural claim is that quartet needs no inbound port and does not put a
+filesystem-capable agent on the internet. Making `--expose` the default would make that claim
+false for everybody who never asked for a phone, and would widen every future bug in the local
+server from "reachable from this machine" to "reachable by anyone who finds the URL".
+
 ## 3. The credential
 
 A per-device token in an `HttpOnly; Secure; SameSite=Strict` cookie. Not a query parameter:

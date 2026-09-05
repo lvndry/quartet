@@ -68,6 +68,34 @@ const PROGRESS_EVERY_MS = 45_000;
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 
+/**
+ * How often to tell the hub this socket is still wanted.
+ *
+ * Between turns a quartet socket carries nothing, and everything in the path treats a silent
+ * connection as an abandoned one — the hub's own idle timeout first, then whatever tunnel or
+ * NAT table sits in between. `PROGRESS_EVERY_MS` does not cover this: it beats only while a
+ * turn is running, which was never the case at risk.
+ */
+const KEEPALIVE_EVERY_MS = 30_000;
+
+/**
+ * How long the hub may say nothing at all before this end stops believing in the socket.
+ *
+ * Three missed pongs. A socket that can still be written to but never answers is exactly what
+ * a dropped tunnel leaves behind: the bridge sees an open connection, the hub has no such
+ * connection, and nothing resolves it until something is expected back and does not arrive.
+ */
+const SILENCE_LIMIT_MS = KEEPALIVE_EVERY_MS * 3;
+
+/**
+ * How long to wait for a socket that never finishes connecting.
+ *
+ * A tunnel that has stopped routing does not refuse the connection, it swallows it, and the
+ * handshake then sits there until the OS gives up — which took a quarter of an hour and
+ * looked, in the log, like nothing happening at all.
+ */
+const CONNECT_TIMEOUT_MS = 15_000;
+
 export class Bridge {
   private socket?: WebSocket;
   private reconnectDelay = RECONNECT_MIN_MS;
@@ -98,6 +126,10 @@ export class Bridge {
   private readonly outbound: ClientFrame[] = [];
   /** Heartbeat timers for turns currently running, one per conversation. */
   private readonly beating = new Map<string, ReturnType<typeof setInterval>>();
+  /** The keepalive for the current socket. One at a time, cleared with the socket it belongs to. */
+  private keepalive?: ReturnType<typeof setInterval>;
+  /** When the hub last said anything. Any frame counts, not just a pong. */
+  private lastHeard = 0;
   /**
    * One-time secrets that let this machine's daemon report into a running turn.
    *
@@ -159,6 +191,7 @@ export class Bridge {
   stop(): void {
     this.closing = true;
     for (const conversationId of [...this.beating.keys()]) this.stopBeating(conversationId);
+    this.stopKeepalive();
     this.socket?.close();
   }
 
@@ -396,10 +429,43 @@ export class Bridge {
     const socket = new WebSocket(url.toString());
     this.socket = socket;
 
+    // Every way this socket can end funnels through here, so the reconnect is scheduled once
+    // however it died: closed by the hub, timed out connecting, or given up on for silence.
+    // Three paths that each scheduled their own retry would race into two live sockets.
+    let retired = false;
+    const retire = (why: string): void => {
+      if (retired) return;
+      retired = true;
+      clearTimeout(connecting);
+      socket.close();
+      // Already replaced, so its ending is not news and the socket that supplanted it owns
+      // the reconnect.
+      if (this.socket !== socket) return;
+      this.stopKeepalive();
+      this.connectedToHub = false;
+      // Not on a deliberate shutdown: that is not a failure, and the app is about to close
+      // anyway. Cleared automatically the moment `open` succeeds again.
+      if (!this.closing) this.lastError = `can't reach the hub at ${this.hubUrl} — retrying`;
+      this.publish();
+      if (this.closing) return;
+      // Backoff, because a hub that is down stays down for a while and hammering it helps
+      // nobody. Capped so a laptop that slept overnight still rejoins within half a minute.
+      hubLog.warn(`${why}, retrying`, { in: `${String(this.reconnectDelay)}ms` });
+      setTimeout(() => this.open(), this.reconnectDelay);
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS);
+    };
+
+    const connecting = setTimeout(() => {
+      retire(`no answer from ${this.hubUrl} within ${String(CONNECT_TIMEOUT_MS / 1000)}s`);
+    }, CONNECT_TIMEOUT_MS);
+
     socket.addEventListener("open", () => {
+      clearTimeout(connecting);
       this.reconnectDelay = RECONNECT_MIN_MS;
       this.connectedToHub = true;
       this.lastError = undefined;
+      this.lastHeard = Date.now();
+      this.startKeepalive(socket, retire);
       hubLog.info("connected", { url: this.hubUrl });
       // Nothing is said until the hub asks. The introduction is a signature over the
       // challenge it is about to send, so there is no secret to present and none to steal.
@@ -407,6 +473,9 @@ export class Bridge {
     });
 
     socket.addEventListener("message", (event) => {
+      // Before parsing, and for every frame rather than only for a pong: what the keepalive
+      // is asking is whether anything at all is still coming back.
+      this.lastHeard = Date.now();
       let raw: unknown;
       try {
         raw = JSON.parse(typeof event.data === "string" ? event.data : "");
@@ -422,25 +491,42 @@ export class Bridge {
       void this.onFrame(frame);
     });
 
-    socket.addEventListener("close", () => {
-      if (this.socket !== socket) return;
-      this.connectedToHub = false;
-      // Not on a deliberate shutdown: that is not a failure, and the app is about to close
-      // anyway. Cleared automatically the moment `open` succeeds again.
-      if (!this.closing) this.lastError = `can't reach the hub at ${this.hubUrl} — retrying`;
-      this.publish();
-      if (this.closing) return;
-      // Backoff, because a hub that is down stays down for a while and hammering it helps
-      // nobody. Capped so a laptop that slept overnight still rejoins within half a minute.
-      hubLog.warn("disconnected, retrying", { in: `${String(this.reconnectDelay)}ms` });
-      setTimeout(() => this.open(), this.reconnectDelay);
-      this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS);
+    socket.addEventListener("close", (event) => {
+      const code = "code" in event ? String((event as CloseEvent).code) : "?";
+      const reason = "reason" in event ? (event as CloseEvent).reason : "";
+      retire(`disconnected by the hub (code ${code}${reason ? `: ${reason}` : ""})`);
     });
 
     socket.addEventListener("error", () => {
       // `close` always follows, and that is where reconnection is handled. Swallowing here
       // keeps one reconnect path rather than two that can race.
     });
+  }
+
+  /**
+   * Ping the hub on a timer, and give up on a socket that stops answering.
+   *
+   * Both halves matter and neither is enough alone: the ping is what stops an idle socket
+   * being reaped as abandoned, and the silence check is what notices when it was reaped
+   * anyway somewhere this end cannot see.
+   */
+  private startKeepalive(socket: WebSocket, retire: (why: string) => void): void {
+    this.stopKeepalive();
+    this.keepalive = setInterval(() => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      const silent = Date.now() - this.lastHeard;
+      if (silent > SILENCE_LIMIT_MS) {
+        retire(`nothing from the hub for ${String(Math.round(silent / 1000))}s`);
+        return;
+      }
+      socket.send(JSON.stringify({ t: "ping" } satisfies ClientFrame));
+    }, KEEPALIVE_EVERY_MS);
+  }
+
+  private stopKeepalive(): void {
+    if (this.keepalive === undefined) return;
+    clearInterval(this.keepalive);
+    delete this.keepalive;
   }
 
   private async onFrame(frame: ReturnType<typeof parseServerFrame> & object): Promise<void> {

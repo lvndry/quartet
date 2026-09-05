@@ -341,6 +341,33 @@ describe("erasing a shared room", () => {
   });
 });
 
+describe("a socket with nothing to say", () => {
+  it("is answered when it pings, so an idle connection is not a silent one", async () => {
+    const quiet = new Party("quiet");
+    expect((await quiet.claim()).status).toBe(201);
+    await quiet.connect();
+
+    quiet.send({ t: "ping" });
+    await quiet.waitForFrame("pong");
+    expect(quiet.seen("pong")).toHaveLength(1);
+    expect(quiet.errors()).toEqual([]);
+    quiet.socket.close();
+  });
+
+  it("may ping before it has said who it is, because a keepalive is not a conversation", async () => {
+    const stranger = new Party("stranger");
+    await stranger.connect({ sayHello: false });
+
+    stranger.send({ t: "ping" });
+    await stranger.waitForFrame("pong");
+    // The grace period still applies — a keepalive buys a socket time to introduce itself,
+    // not permission to skip it.
+    expect(stranger.errors()).toEqual([]);
+    await waitFor("the socket to be closed anyway", () => stranger.closedWith !== undefined);
+    expect(stranger.closedWith).toBe(1008);
+  });
+});
+
 describe("a socket that misbehaves", () => {
   it("is closed when it never says who it is", async () => {
     const lurker = new Party("nobody");

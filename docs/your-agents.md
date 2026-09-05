@@ -69,7 +69,8 @@ whole of the access control.
 
 **Pair a device** shows a QR and an eight-character code, good for two minutes and for one
 device. Scan it, type the code, name the device. `bun run bridge pair` does the same thing
-from the terminal.
+from the terminal — and when a bridge with nothing paired yet starts with `--expose`, it
+prints that QR at startup rather than telling you to run a second command.
 
 For a phone to reach any of this, the bridge needs an address that is not loopback:
 
