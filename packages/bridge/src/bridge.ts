@@ -48,6 +48,7 @@ import {
   recordSent,
   type LedgerEntry,
 } from "./ledger";
+import { checkHub, describeHub, explainHub, summariseHub } from "./hub-check";
 import { logger } from "./log";
 import { composeTurnPayload } from "./prompt";
 import {
@@ -133,6 +134,13 @@ export class Bridge {
   private keepalive?: ReturnType<typeof setInterval>;
   /** When the hub last said anything. Any frame counts, not just a pong. */
   private lastHeard = 0;
+  /**
+   * Whether this run of failures has already been explained.
+   *
+   * Once per outage, not once per attempt: the reconnect loop is deliberately patient, and a
+   * patient loop that repeats its diagnosis every thirty seconds is just noise with a reason.
+   */
+  private diagnosed = false;
   /**
    * One-time secrets that let this machine's daemon report into a running turn.
    *
@@ -508,7 +516,13 @@ export class Bridge {
       this.connectedToHub = false;
       // Not on a deliberate shutdown: that is not a failure, and the app is about to close
       // anyway. Cleared automatically the moment `open` succeeds again.
-      if (!this.closing) this.lastError = `can't reach the hub at ${this.hubUrl} — retrying`;
+      //
+      // Nor once this outage has been diagnosed: the retry line is generic by necessity, and
+      // letting it land every thirty seconds would paper over the one message that says what
+      // to actually do about it.
+      if (!this.closing && !this.diagnosed) {
+        this.lastError = `can't reach the hub at ${this.hubUrl} — retrying`;
+      }
       this.publish();
       if (this.closing) return;
       // Backoff, because a hub that is down stays down for a while and hammering it helps
@@ -516,6 +530,10 @@ export class Bridge {
       hubLog.warn(`${why}, retrying`, { in: `${String(this.reconnectDelay)}ms` });
       setTimeout(() => this.open(), this.reconnectDelay);
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS);
+      // Only once the backoff has topped out, which is about a minute of failing: before that
+      // this is most likely a hub being restarted, and saying "it is gone" of a hub that is
+      // three seconds from coming back would be worse than saying nothing.
+      if (!this.diagnosed && this.reconnectDelay >= RECONNECT_MAX_MS) void this.diagnose();
     };
 
     const connecting = setTimeout(() => {
@@ -528,6 +546,7 @@ export class Bridge {
       this.connectedToHub = true;
       this.lastError = undefined;
       this.lastHeard = Date.now();
+      this.diagnosed = false;
       this.startKeepalive(socket, retire);
       hubLog.info("connected", { url: this.hubUrl });
       // Nothing is said until the hub asks. The introduction is a signature over the
@@ -564,6 +583,24 @@ export class Bridge {
       // `close` always follows, and that is where reconnection is handled. Swallowing here
       // keeps one reconnect path rather than two that can race.
     });
+  }
+
+  /**
+   * Work out why the hub has stopped answering, and say so.
+   *
+   * The reconnect loop keeps running either way — a name that has stopped resolving may just
+   * be DNS having a bad minute, and this end is in no position to be certain. What changes is
+   * what the person is told: "retrying" is true but useless when the URL is never going to
+   * work again, and the fix for that case is one flag they cannot guess.
+   */
+  private async diagnose(): Promise<void> {
+    this.diagnosed = true;
+    const check = await checkHub(this.hubUrl);
+    if (check.kind === "ok" || this.closing) return;
+    hubLog.warn(`${this.hubUrl} — ${describeHub(check)}`);
+    for (const line of explainHub(this.hubUrl, check)) hubLog.warn(line);
+    this.lastError = summariseHub(this.hubUrl, check);
+    this.publish();
   }
 
   /**
