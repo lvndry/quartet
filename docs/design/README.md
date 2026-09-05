@@ -2,7 +2,7 @@
 
 Reference for the decisions behind the code, kept here rather than narrated inside the
 modules that implement them. Source comments say what is non-obvious *at that line*; these
-say why the design is what it is.
+pages say why the design is what it is.
 
 Written for somebody about to change something. If a change contradicts a page here, either
 the page is out of date or the change is wrong, and it is worth knowing which.
