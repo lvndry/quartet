@@ -1157,7 +1157,7 @@ export class Bridge {
     const readable = transcript.map((message) => this.wordsFor(message));
 
     const startedAt = Date.now();
-    daemonLog.info(`turn in a room with ${room.map((handle) => `@${handle}`).join(", ") || "nobody"}`, {
+    daemonLog.info(`turn in a room with ${room.join(", ") || "nobody"}`, {
       conversation: conversationId,
       steered: steer !== undefined ? "yes" : undefined,
     });

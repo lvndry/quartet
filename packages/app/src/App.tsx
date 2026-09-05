@@ -55,12 +55,16 @@ function nameOf(names: Names, did: string): string {
   return names[did] ?? "@someone";
 }
 
-/** "@otto", "@otto and @nia", "@otto, @nia and @ada" — for prose, not for lists. */
-function nameThem(handles: readonly string[]): string {
-  const tagged = handles.map((handle) => `@${handle}`);
-  if (tagged.length === 0) return "nobody";
-  if (tagged.length === 1) return tagged[0] ?? "nobody";
-  return `${tagged.slice(0, -1).join(", ")} and ${String(tagged[tagged.length - 1])}`;
+/**
+ * "@otto", "@otto and @nia", "@otto, @nia and @ada" — for prose, not for lists.
+ *
+ * Takes names already written by `nameOf`, which is where the "@" comes from. Adding one
+ * here as well is how a room full of @@otto happens.
+ */
+function nameThem(names: readonly string[]): string {
+  if (names.length === 0) return "nobody";
+  if (names.length === 1) return names[0] ?? "nobody";
+  return `${names.slice(0, -1).join(", ")} and ${String(names[names.length - 1])}`;
 }
 
 /**
@@ -134,8 +138,9 @@ function WhoAmI({
   );
 }
 
-function monogram(handle: string): string {
-  return handle.slice(0, 2).toUpperCase();
+/** Takes a written name or a bare handle, since "@O" is nobody's initials. */
+function monogram(name: string): string {
+  return name.replace(/^@/, "").slice(0, 2).toUpperCase();
 }
 
 function clock(at: string): string {
@@ -680,7 +685,9 @@ function Quartet(): React.JSX.Element {
         <Ledger
           entries={state.ledger.filter((entry) => entry.conversationId === conversation?.id)}
           others={
-            conversation === undefined ? [] : others(conversation, state.me?.handle ?? "")
+            conversation === undefined
+              ? []
+              : others(conversation, state.me?.did ?? "").map((did) => nameOf(state.labels, did))
           }
         />
       </div>
@@ -835,12 +842,14 @@ function Sidebar({
                 className={conversation.id === selectedId ? "row active" : "row"}
                 onClick={() => onSelect(conversation.id)}
               >
-                <span className="monogram">{monogram(cast[0] ?? "")}</span>
+                <span className="monogram">
+                  {monogram(cast[0] === undefined ? "" : nameOf(state.labels, cast[0]))}
+                </span>
                 <span className="row-main">
                   <span className="row-title">{conversation.purpose}</span>
                   <span className="row-sub">
                     {conversation.state === "proposed"
-                      ? conversation.proposedBy === (state.me?.handle ?? "")
+                      ? conversation.proposedBy === (state.me?.did ?? "")
                         ? `waiting for ${nameThem(cast.map((did) => nameOf(state.labels, did)))}`
                         : "waiting for you"
                       : `${nameThem(cast.map((did) => nameOf(state.labels, did)))} · ${describeLimit(conversation.limit)}`}
@@ -885,7 +894,7 @@ function Sidebar({
                       }
                     }}
                   >
-                    {conversation.eraseAsked.includes(state.me?.handle ?? "")
+                    {conversation.eraseAsked.includes(state.me?.did ?? "")
                       ? `Waiting on ${String(conversation.participants.length - conversation.eraseAsked.length)} to erase`
                       : "Ask to erase for everyone"}
                   </button>
