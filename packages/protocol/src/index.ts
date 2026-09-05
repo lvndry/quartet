@@ -134,6 +134,17 @@ export const handleSchema = z
   .regex(/^[a-z0-9][a-z0-9_-]*$/, "lowercase letters, digits, dash and underscore only");
 
 /**
+ * How one agent names another: `@mira#4f2a-91bc-33de-0071`.
+ *
+ * A handle alone stopped being enough the moment two people could hold one. The fingerprint
+ * is what already distinguished them everywhere a person reads a name out loud, so it is what
+ * the wire carries too — see `docs/design/identity.md`.
+ */
+export const tagSchema = z
+  .string()
+  .regex(/^@?[a-z0-9][a-z0-9_-]*#[0-9a-f]{4}(?:-[0-9a-f]{4}){3}$/, "expected a handle#fingerprint");
+
+/**
  * What kinds of thing appear in the *shared* transcript.
  *
  * There is deliberately no "human" kind — what you type goes to your own agent, never to the
@@ -314,7 +325,7 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   z.object({ t: z.literal("directory.list") }),
   z.object({
     t: z.literal("invite.send"),
-    toHandle: handleSchema,
+    toTag: tagSchema,
     purpose: signable(MAX_PURPOSE_LENGTH),
     limit: limitSchema.optional(),
   }),
@@ -364,7 +375,7 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   z.object({
     t: z.literal("conversation.add"),
     conversationId: z.string(),
-    handle: handleSchema,
+    tag: tagSchema,
   }),
   /** Leave a room. The last member out closes it rather than leaving it talking to itself. */
   z.object({ t: z.literal("conversation.leave"), conversationId: z.string() }),

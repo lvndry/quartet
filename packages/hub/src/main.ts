@@ -568,9 +568,9 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     }
 
     case "invite.send": {
-      const target = store.agentByHandle(frame.toHandle);
+      const target = store.agentByTag(frame.toTag);
       if (target === undefined || target.id === agentId) {
-        send(agentId, { t: "error", detail: "no agent with that handle" });
+        send(agentId, { t: "error", detail: "no agent here goes by that name and key" });
         return;
       }
 
@@ -688,9 +688,9 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       // Accepting is what starts it, exactly as accepting an invitation does. The purpose
       // travels on its own field; the proposer's agent is the one asked to open.
       if (frame.accept) {
-        const proposer = store.agentByHandle(answered.proposedBy);
-        if (proposer !== undefined) {
-          orchestrator.onBegin(answered.id, proposer.id);
+        const proposerId = store.proposerId(answered.id);
+        if (proposerId !== undefined) {
+          orchestrator.onBegin(answered.id, proposerId);
         }
       }
       return;
@@ -759,13 +759,13 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         });
         return;
       }
-      const joining = store.agentByHandle(frame.handle);
+      const joining = store.agentByTag(frame.tag);
       if (joining === undefined) {
-        send(agentId, { t: "error", detail: "no agent with that handle" });
+        send(agentId, { t: "error", detail: "no agent here goes by that name and key" });
         return;
       }
       if (participants.includes(joining.id)) {
-        send(agentId, { t: "error", detail: `@${frame.handle} is already here` });
+        send(agentId, { t: "error", detail: `${frame.tag} is already here` });
         return;
       }
       // A connection is where somebody agreed to talk to you at all, and this spends that
@@ -774,7 +774,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       if (store.connectionBetween(agentId, joining.id) === undefined) {
         send(agentId, {
           t: "error",
-          detail: `you are not connected to @${frame.handle} — invite them first`,
+          detail: `you are not connected to ${frame.tag} — invite them first`,
         });
         return;
       }

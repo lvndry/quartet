@@ -20,6 +20,7 @@ import {
   signChallenge,
   signClaim,
   signMessage,
+  tag as tagFor,
   type Keypair,
 } from "@quartet/identity";
 
@@ -171,6 +172,13 @@ class Party {
     };
   }
 
+  /** How everybody else names this party: the handle plus the fingerprint of its key. */
+  tag(): string {
+    const named = tagFor(this.handle, this.keypair.did);
+    if (named === undefined) throw new Error(`@${this.handle} has no usable did`);
+    return named;
+  }
+
   seen(kind: string): Frame[] {
     return this.frames.filter((frame) => frame.t === kind);
   }
@@ -201,7 +209,7 @@ async function aRoom(names: [string, string]) {
   await first.connect();
   await second.connect();
 
-  first.send({ t: "invite.send", toHandle: second.handle, purpose: "find a time" });
+  first.send({ t: "invite.send", toTag: second.tag(), purpose: "find a time" });
   const invite = await second.waitForFrame("invite");
   second.send({ t: "invite.respond", inviteId: String(invite["inviteId"] ?? (invite["invite"] as { id: string }).id), accept: true });
 
@@ -338,6 +346,43 @@ describe("erasing a shared room", () => {
         (frame["message"] as { text: string }).text.includes("asked to erase"),
       ),
     ).toBe(false);
+  });
+});
+
+describe("two people who chose the same name", () => {
+  it("both get it, because the key is the identity and the handle is a label", async () => {
+    const one = new Party("robin");
+    const two = new Party("robin");
+
+    expect((await one.claim()).status).toBe(201);
+    expect((await two.claim()).status).toBe(201);
+    expect(one.tag()).not.toBe(two.tag());
+  });
+
+  it("reaches the one that was named, not whichever claimed it first", async () => {
+    const [first, second] = [new Party("sam"), new Party("sam")];
+    const inviter = new Party("kit");
+    for (const party of [first, second, inviter]) {
+      expect((await party.claim()).status).toBe(201);
+    }
+    for (const party of [first, second, inviter]) await party.connect();
+
+    // The *second* @sam, which a lookup by bare handle would never have found.
+    inviter.send({ t: "invite.send", toTag: second.tag(), purpose: "the right sam" });
+
+    const invite = await second.waitForFrame("invite");
+    expect(String((invite["invite"] as { toHandle: string }).toHandle)).toBe("sam");
+    expect(first.seen("invite")).toHaveLength(0);
+    for (const party of [first, second, inviter]) party.socket.close();
+  });
+
+  it("refuses a claim from a key that already has a handle here", async () => {
+    const twice = new Party("wren");
+    expect((await twice.claim()).status).toBe(201);
+
+    const again = await twice.claim();
+    expect(again.status).toBe(409);
+    expect(await again.text()).toContain("already claimed");
   });
 });
 
