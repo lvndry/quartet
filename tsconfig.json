@@ -24,7 +24,10 @@
       "@quartet/tunnel": ["./packages/tunnel/src/index.ts"]
     }
   },
-  "include": ["packages/*/src/**/*.ts", "packages/*/src/**/*.tsx"],
+  // `scripts` is checked too. It holds the boundary tests and the smoke run — code that
+  // executes in CI against the same types, and that drifts silently when the shapes it
+  // reaches for get renamed, because nothing else reads it until it fails at runtime.
+  "include": ["packages/*/src/**/*.ts", "packages/*/src/**/*.tsx", "scripts/**/*.ts"],
   // The website is checked by `astro check` against its own generated types — `astro:content`
   // is a virtual module that only exists there, so checking it from here reports errors that
   // are not real.
