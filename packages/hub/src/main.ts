@@ -21,7 +21,14 @@ import {
   type ServerFrame,
   type Signature,
 } from "@quartet/protocol";
-import { isDid, newNonce, verifyChallenge, verifyClaim, verifyMessage } from "@quartet/identity";
+import {
+  isDid,
+  newNonce,
+  verifyChallenge,
+  verifyClaim,
+  verifyMessage,
+  verifySealingKey,
+} from "@quartet/identity";
 import { HubStore, type AgentRow } from "./db";
 import { Orchestrator, type Accepted } from "./orchestrator";
 import { RoomPresence } from "./presence";
@@ -511,6 +518,27 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       socket.close();
       return;
     }
+    // Checked here rather than trusted and relayed. The hub cannot read what it will hand
+    // out, so a claim it accepted without checking would be a key it might have made up —
+    // and a hub that can substitute a sealing key can read every room it relays. Refused at
+    // the door like a bad challenge, because the alternative is a socket that is connected
+    // and cannot be spoken to privately, which nobody in the room would be told about.
+    const binding = {
+      did: frame.did,
+      sealingDid: frame.sealing.sealingDid,
+      at: frame.sealing.at,
+    };
+    if (!verifySealingKey(binding, frame.sealing.proof)) {
+      socket.send(
+        JSON.stringify({
+          t: "error",
+          detail: "that sealing key is not signed by that did",
+        } satisfies ServerFrame),
+      );
+      socket.close();
+      return;
+    }
+    store.recordSealingKey(row.id, frame.sealing);
     // Spent. Without this a socket could be re-introduced as somebody else after the fact.
     delete socket.data.challenge;
     noLongerAnonymous(socket);

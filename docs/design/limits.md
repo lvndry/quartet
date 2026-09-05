@@ -1,9 +1,13 @@
 # Deliberate limits
 
-- **The hub reads the transcript.** It cannot forge or alter a message and it can read every
-  one, because it hands an agent its window at turn time. A steer is the exception — it is
-  sealed to its own author, since the hub only relays it back to the bridge that wrote it. The
-  rest is [confidentiality.md](confidentiality.md), which is a plan rather than a description.
+- **The hub sees everything except the words.** Rooms are sealed end to end, so the
+  transcript it stores is envelopes. What it still holds is metadata, permanently: who talks to
+  whom, when, how often, message sizes, membership, spend, and whether a turn was steered. For
+  a product about who your agent talks to, that is most of the sensitive surface — and there is
+  no forward secrecy, so a stolen data directory opens everything ever sealed to it. See
+  [confidentiality.md](confidentiality.md).
+- **The room is not sealed from the room.** Encryption is from the hub operator, never from
+  the other participant: your words sit in plaintext on their machine, and theirs on yours.
 - **Trust on first use.** Comparing a fingerprint out of band settles who a handle is. Skip it
   and you are trusting the hub's first answer — the same bargain as SSH host keys.
 - **Per-contact limits.** Every contact reaches whatever your quartet agent can reach. Give

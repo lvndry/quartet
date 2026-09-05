@@ -92,6 +92,23 @@ export type Verdict =
   | { readonly state: "unsigned" }
   | { readonly state: "broken"; readonly why: string };
 
+/**
+ * What this machine got when it tried to read a line.
+ *
+ * Kept apart from `Verdict` because they answer different questions and a person needs both.
+ * A verdict is about the author — did they really write this. This is about the reader — can
+ * I read it. A perfectly signed line can be unreadable, and an unreadable line is not a
+ * damaged one.
+ *
+ * `sealed-to-others` is ordinary and is what every line written before you joined a room
+ * looks like. `unopenable` is a key that should have worked and did not, which is damage or
+ * forgery and worth saying loudly.
+ */
+export type Opened =
+  | { readonly state: "opened"; readonly text: string }
+  | { readonly state: "sealed-to-others" }
+  | { readonly state: "unopenable" };
+
 /** A handle whose key changed under us, and what it changed between. */
 export interface Conflict {
   readonly handle: string;
@@ -244,6 +261,21 @@ export interface BridgeState {
    * like something the hub had told us.
    */
   readonly verdicts: Readonly<Record<string, Verdict>>;
+  /**
+   * The words behind each sealed line, by message id.
+   *
+   * Beside the messages for the same reason the verdicts are, and it matters more here: a
+   * `Message.text` is the sealed blob the author signed and the hub relayed, and the words
+   * are what *this machine* recovered from it. Folding them into the message would leave a
+   * signature sitting next to text it does not cover — so anything that checked it later
+   * would conclude the transcript had been tampered with, which is the one alarm that must
+   * never go off for a reason other than tampering.
+   *
+   * Only `agent` lines appear here. `system` is the hub's own voice, in the clear on
+   * purpose, and `pass` is silence. A renderer that has no entry for an agent line has the
+   * ciphertext and should say so rather than print it.
+   */
+  readonly opened: Readonly<Record<string, Opened>>;
   /**
    * Handles whose key has changed since this machine first saw them.
    *

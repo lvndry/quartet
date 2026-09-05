@@ -31,6 +31,7 @@ export type {
   JazzProblem,
   JazzTools,
   LedgerEntry,
+  Opened,
   ToolCall,
   Verdict,
 } from "@quartet/protocol";
@@ -51,6 +52,7 @@ const EMPTY: BridgeState = {
   presence: {},
   ledger: [],
   verdicts: {},
+  opened: {},
   keyConflicts: [],
   fingerprints: {},
 };

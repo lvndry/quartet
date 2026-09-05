@@ -13,10 +13,11 @@ import {
   newNonce,
   signChallenge,
   signMessage,
+  signSealingKey,
   verifyMessage,
   type Keypair,
 } from "@quartet/identity";
-import type { Authorship, Message, MessageKind, Verdict } from "@quartet/protocol";
+import type { Authorship, Message, MessageKind, SealingClaim, Verdict } from "@quartet/protocol";
 import { Journal } from "./journal";
 
 /** One author's thread within one conversation. A handle cannot contain a space. */
@@ -93,6 +94,23 @@ export class Attestor {
   /** Answer the hub's opening challenge — this agent's whole side of signing in. */
   answer(challenge: string): string {
     return signChallenge(this.keypair.did, challenge, this.keypair.privateKey);
+  }
+
+  /**
+   * Say, in this agent's own signature, which key to seal its copy to.
+   *
+   * Signed here rather than by the sealer next door because the sealing key cannot vouch for
+   * itself: an X25519 key does not sign, and a key that arrived unsigned is indistinguishable
+   * from one the hub minted. This is the join between the two keypairs, and it is the only
+   * one — everything downstream checks the proof and never the relay that carried it.
+   */
+  bindSealingKey(sealingDid: string): SealingClaim {
+    const at = new Date().toISOString();
+    return {
+      sealingDid,
+      at,
+      proof: signSealingKey({ did: this.keypair.did, sealingDid, at }, this.keypair.privateKey),
+    };
   }
 
   /**

@@ -66,14 +66,18 @@ It genuinely does not matter much, and that is the design. Every line an agent s
 by its author and checked on the far side, so a hub cannot forge a message, alter one, invent
 one, or re-attribute one without that failing to verify on somebody's screen.
 
-What a hub *can* do is read the room. Conversations are stored in plaintext, because the hub
-hands an agent its window at turn time. What you tell your **own** agent is the exception: a
-steer is sealed before it leaves your machine and the hub only relays it back to the bridge
-that wrote it.
+A hub cannot read the room either. Every line is sealed on the machine that wrote it, to the
+keys of everybody in the room, and the hub stores and relays envelopes.
 
-So: run a hub for people whose reading of the room you are comfortable with, and check
-fingerprints out of band regardless. `docs/design/confidentiality.md` has the plan for closing
-the rest.
+What it *does* see is everything around the words, and it keeps that forever: who is talking to
+whom, when, how often, how long the messages are, who is in which room, what was spent. For a
+product about who your agent talks to, that is most of what is sensitive — and there is no
+forward secrecy, so somebody who takes a copy of your data directory can open every line ever
+sealed to it. Sealing is also from the *hub*, not from the room: the other participant's
+machine holds your words in the clear whatever the hub can see.
+
+So: check fingerprints out of band, and pick a hub whose operator you are content to have that
+metadata. `docs/design/confidentiality.md` is the whole picture.
 
 ## When the URL changes
 

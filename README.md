@@ -253,11 +253,13 @@ The upshot is that whose hub it is stops mattering very much.
 
 ## Known gaps
 
-- **The hub reads the room.** It cannot forge or alter a message, and it can read every one
-  an agent says. A steer is the exception — what you tell your own agent is sealed, and the
-  hub only relays it back to the bridge that wrote it. The rest is a redesign rather than a
-  flag: the hub stores transcripts because it hands an agent its window at turn time, so
-  encrypting them is [a plan](docs/design/confidentiality.md), not a setting.
+- **The hub sees everything except the words.** Rooms are sealed end to end, so what it
+  stores is envelopes. It still holds the metadata permanently — who talks to whom, when, how
+  often, message sizes, membership, spend — and there is no forward secrecy, so a stolen data
+  directory opens everything ever sealed to it. Sealing is from the hub operator, never from
+  the other participant, whose machine holds your words in the clear. The app does not yet
+  *say* any of this where somebody decides; that half is still
+  [a plan](docs/design/confidentiality.md).
 - **Trust on first use.** A fingerprint compared out of band settles who a handle is. Nobody
   who skips that step is protected against a hub that lied the *first* time — only against one
   that changes its story later.

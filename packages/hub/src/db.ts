@@ -25,8 +25,10 @@ import {
   type Connection,
   type Conversation,
   type Invite,
+  type Member,
   type Message,
   type MessageKind,
+  type SealingClaim,
   type Signature,
 } from "@quartet/protocol";
 
@@ -39,6 +41,15 @@ export interface AgentRow {
   token: string;
   /** Null on agents claimed before keys existed. They still work; they just prove nothing. */
   did: string | null;
+  /**
+   * The sealing key this agent published, and its own signature over it.
+   *
+   * All three or none: a claim is only worth relaying whole, and the hub verified it once on
+   * the handshake precisely so it never has to reason about a half of one.
+   */
+  sealing_did: string | null;
+  sealing_at: string | null;
+  sealing_proof: string | null;
   created_at: string;
 }
 
@@ -155,6 +166,14 @@ export class HubStore {
         -- app says which. Unique through a partial index below, since NULLs must stay free
         -- to collide.
         did           TEXT,
+        -- The X25519 key other agents seal this one's copy to, with the Ed25519 signature
+        -- over it by did above. Stored, relayed, and never minted here: the hub does not
+        -- hold the key that signs one, which is what stops it substituting its own and
+        -- reading the room. Nullable together, for a row that exists before any bridge has
+        -- connected.
+        sealing_did   TEXT,
+        sealing_at    TEXT,
+        sealing_proof TEXT,
         created_at    TEXT NOT NULL
       );
 
@@ -339,6 +358,23 @@ export class HubStore {
 
   agentById(id: string): AgentRow | undefined {
     return this.db.query<AgentRow, [string]>("SELECT * FROM agents WHERE id = ?").get(id) ?? undefined;
+  }
+
+  /**
+   * Remember the sealing key an agent just proved on the handshake.
+   *
+   * Overwrites rather than appends: rotation is publishing a new signed key, and the hub
+   * holds only what to seal to *next*. Everything already sealed to the old key stays sealed
+   * to it, and the only copy of that key lives on the bridge that made it — which is why the
+   * hub losing this row costs a reconnect and nothing more.
+   */
+  recordSealingKey(agentId: string, claim: SealingClaim): void {
+    this.db.run("UPDATE agents SET sealing_did = ?, sealing_at = ?, sealing_proof = ? WHERE id = ?", [
+      claim.sealingDid,
+      claim.at,
+      claim.proof,
+      agentId,
+    ]);
   }
 
   updateProfile(agentId: string, displayName: string, bio: string | undefined): void {
@@ -563,7 +599,9 @@ export class HubStore {
 
     const responder = this.agentById(agentId);
     if (responder === undefined || responder.handle === conversation.proposedBy) return undefined;
-    if (!conversation.participants.includes(responder.handle)) return undefined;
+    if (!conversation.participants.some((member) => member.handle === responder.handle)) {
+      return undefined;
+    }
 
     // Declined rooms close rather than vanish: the proposer is owed the answer, and a room
     // that disappeared would read as a bug on their side.
@@ -593,20 +631,30 @@ export class HubStore {
       )
       .get(id);
     if (row === null || row === undefined) return undefined;
-    const handles = this.db
-      .query<{ handle: string }, [string]>(
-        `SELECT a.handle FROM conversation_members m
+    const members = this.db
+      .query<
+        {
+          handle: string;
+          did: string | null;
+          sealing_did: string | null;
+          sealing_at: string | null;
+          sealing_proof: string | null;
+        },
+        [string]
+      >(
+        `SELECT a.handle, a.did, a.sealing_did, a.sealing_at, a.sealing_proof
+         FROM conversation_members m
          JOIN agents a ON a.id = m.agent_id
          WHERE m.conversation_id = ?
          ORDER BY m.joined_at, m.rowid`,
       )
       .all(id)
-      .map((member) => member.handle);
+      .map(HubStore.toMember);
     return {
       id: row.id,
       connectionId: row.connection_id,
       purpose: row.purpose,
-      participants: handles,
+      participants: members,
       budgetRemaining: row.budget,
       limit: HubStore.parseLimit(row.limit_json),
       spentUSD: row.spent_usd,
@@ -1190,6 +1238,41 @@ export class HubStore {
   }
 
   /* ---------------- projections ---------------- */
+
+  /**
+   * A room member as the rest of the room needs them: a name and two keys.
+   *
+   * Static because it takes the projection the membership join produces rather than a whole
+   * `AgentRow` — every field here has to travel for a bridge to check the sealing proof, and
+   * nothing else does.
+   *
+   * The claim is passed through whole or dropped whole. A half-stored one would reach a
+   * bridge as a key with no proof, and a key with no proof is exactly what a hub minting its
+   * own would look like.
+   */
+  static toMember(row: {
+    handle: string;
+    did: string | null;
+    sealing_did: string | null;
+    sealing_at: string | null;
+    sealing_proof: string | null;
+  }): Member {
+    const complete =
+      row.sealing_did !== null && row.sealing_at !== null && row.sealing_proof !== null;
+    return {
+      handle: row.handle,
+      ...(row.did !== null ? { did: row.did } : {}),
+      ...(complete
+        ? {
+            sealing: {
+              sealingDid: row.sealing_did as string,
+              at: row.sealing_at as string,
+              proof: row.sealing_proof as string,
+            },
+          }
+        : {}),
+    };
+  }
 
   toAgent(row: AgentRow, online: boolean): Agent {
     return {

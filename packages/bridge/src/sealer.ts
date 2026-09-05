@@ -13,21 +13,104 @@
  * and quiet is what a person stops asking about.
  */
 
-import { open, packEnvelope, seal, unpackEnvelope } from "@quartet/identity";
+import { open, packEnvelope, seal, unpackEnvelope, verifySealingKey } from "@quartet/identity";
+import type { Member, Message, Opened } from "@quartet/protocol";
 import { everyKey, type SealingKeys } from "./sealing-keys";
 
 /**
  * Why there is nothing to read.
  *
  * Three states rather than `undefined`, because a person needs different words for each and
- * the app cannot tell them apart from a missing value. `sealed-to-others` is ordinary — it is
- * what every line written before you joined a room looks like. `unopenable` is a key that
- * should have worked and did not, which is damage or forgery and worth saying loudly.
+ * the app cannot tell them apart from a missing value. Defined with the snapshot rather than
+ * here: what a bridge could read is something the app has to render, so it is part of the
+ * contract between them rather than a detail of this file.
  */
-export type Opened =
-  | { readonly state: "opened"; readonly text: string }
-  | { readonly state: "sealed-to-others" }
-  | { readonly state: "unopenable" };
+export type { Opened };
+
+/**
+ * Who a line may be sealed to, or why it may not be sent at all.
+ *
+ * Refusal is a state rather than a shorter list, because the failure this exists to prevent
+ * is silent: sealing to four members of a room of five produces a line the fifth sees as
+ * ordinary — "written before I joined" — and nobody is told the room has quietly split. A
+ * message that cannot reach everybody is not sent, and the person is told which member and
+ * why.
+ */
+export type Recipients =
+  | { readonly state: "ready"; readonly sealingDids: readonly string[] }
+  | { readonly state: "refused"; readonly why: string };
+
+/**
+ * Resolve a room's roster into the keys to seal to.
+ *
+ * `didFor` is the pin, not the hub's claim. A member arrives carrying both a signing did and
+ * a sealing key signed by it, and checking one against the other would only prove the hub
+ * was internally consistent — which a hub substituting both of them is. The proof has to be
+ * checked against the key this machine already decided belonged to that handle, which is the
+ * whole reason `known.ts` exists.
+ *
+ * The caller is left out: `Sealer.toRoom` adds the sender, and adding them here as well
+ * would put the decision in two places.
+ */
+export function recipientsFor(
+  members: readonly Member[],
+  me: string,
+  didFor: (handle: string) => string | undefined,
+): Recipients {
+  const sealingDids: string[] = [];
+  for (const member of members) {
+    if (member.handle === me) continue;
+
+    if (member.sealing === undefined) {
+      return {
+        state: "refused",
+        why: `@${member.handle} has not published a key to seal to, so this room cannot be written to privately yet. It appears once their bridge connects.`,
+      };
+    }
+
+    const did = didFor(member.handle);
+    if (did === undefined) {
+      return {
+        state: "refused",
+        why: `no key is pinned here for @${member.handle}, so their sealing key cannot be checked against anything.`,
+      };
+    }
+
+    const binding = { did, sealingDid: member.sealing.sealingDid, at: member.sealing.at };
+    if (!verifySealingKey(binding, member.sealing.proof)) {
+      return {
+        state: "refused",
+        why: `the sealing key offered for @${member.handle} is not signed by the key pinned here for them. Compare fingerprints before saying anything else in this room.`,
+      };
+    }
+
+    sealingDids.push(member.sealing.sealingDid);
+  }
+  return { state: "ready", sealingDids };
+}
+
+/**
+ * One line as an agent should read it: its words, or a sentence saying it missed one.
+ *
+ * Never the ciphertext, and never silence. An agent handed an envelope reads the JSON as the
+ * other party's words; an agent handed nothing answers a conversation with a hole in it as
+ * though the hole were not there. Both are worse than being told plainly that a line is
+ * there and cannot be read.
+ *
+ * Deliberately not what the *app* shows. A person gets styling, a link to the fingerprints,
+ * and the option to go and check; an agent gets one sentence in its context window. Sharing
+ * the wording would mean writing it for neither.
+ */
+export function withWords(message: Message, opened: Opened): Message {
+  if (opened.state === "opened") return { ...message, text: opened.text };
+  return {
+    ...message,
+    text:
+      opened.state === "sealed-to-others"
+        ? "(a line you have no key for — it was written before you joined this room)"
+        : "(a line that would not open — say so rather than guessing what it held)",
+  };
+}
 
 export class Sealer {
   private readonly keys: SealingKeys;

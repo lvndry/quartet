@@ -7,6 +7,7 @@
  */
 
 import {
+  MAX_MESSAGE_LENGTH,
   parseServerFrame,
   WELCOME_TRANSCRIPT_WINDOW,
   type ClientFrame,
@@ -21,11 +22,13 @@ import {
   type Limit,
   type PeerPresence,
   type Activity,
+  type Opened,
+  type SealingClaim,
 } from "@quartet/protocol";
 import { fingerprint, parseTag } from "@quartet/identity";
 import type { DaemonSettings } from "./config";
 import type { Attestor, Verdict } from "./attest";
-import type { Sealer } from "./sealer";
+import { recipientsFor, withWords, type Sealer } from "./sealer";
 import type { JazzRoster } from "./agent-admin";
 import { describeModel } from "./jazz-agents";
 import { KnownKeys } from "./known";
@@ -121,6 +124,23 @@ export class Bridge {
 
   private readonly verdicts = new Map<string, Verdict>();
 
+  /**
+   * What each sealed line said, by message id.
+   *
+   * Beside the transcript rather than inside it, like the verdicts. `messages` holds what the
+   * hub relayed, which is what the author signed; this holds what this machine's keys made of
+   * it. Merging them would put a signature next to text it does not cover.
+   */
+  private readonly opened = new Map<string, Opened>();
+
+  /**
+   * This agent's sealing key, signed by its identity key.
+   *
+   * Made once per run rather than per handshake. The signature covers the moment it was made,
+   * so re-signing on every reconnect would churn a value the far side has no reason to see
+   * change — and a claim that changes for no reason is one nobody can learn to read.
+   */
+  private sealingClaim?: SealingClaim;
 
   constructor(
     private readonly hubUrl: string,
@@ -145,6 +165,8 @@ export class Bridge {
 
   async start(): Promise<void> {
     await this.attestor.ready();
+    // After `ready`, because the identity key is what signs it.
+    this.sealingClaim = this.attestor.bindSealingKey(this.sealer.sealingDid);
     await this.known.load();
     this.ledger = await readLedger();
     for (const aside of await readAsides()) {
@@ -193,6 +215,7 @@ export class Bridge {
       presence: Object.fromEntries(this.presence),
       ledger: this.ledger,
       verdicts: Object.fromEntries(this.verdicts),
+      opened: Object.fromEntries(this.opened),
       keyConflicts: this.known.all(),
       fingerprints: this.fingerprints(),
       ...(keyStoreProblem !== undefined ? { keyStoreProblem } : {}),
@@ -297,6 +320,12 @@ export class Bridge {
         handle: entry.withAgent.handle,
         did: entry.withAgent.did,
       })),
+      // Room members as well as people you know. `conversation.add` spends the adder's
+      // connection, so a room's third member can be somebody you have never been introduced
+      // to — and their key still has to be pinned before anything is sealed to it.
+      ...this.conversations.flatMap((conversation) =>
+        conversation.participants.map((member) => ({ handle: member.handle, did: member.did })),
+      ),
     ];
     for (const { handle, did } of seen) {
       if (did === undefined || handle === this.me?.handle) continue;
@@ -308,6 +337,40 @@ export class Bridge {
         );
       }
     }
+  }
+
+  /**
+   * Take delivery of one line: judge it, then open it. Always in that order.
+   *
+   * Verifying covers the ciphertext, so it is checkable by anybody holding the author's
+   * signing key — including a bridge that will turn out to have no key for the words inside.
+   * Doing it the other way round would mean deciding whether to trust something on the basis
+   * of plaintext this bridge produced itself, which proves nothing about who wrote it.
+   */
+  private receive(message: Message, replay = false): void {
+    this.judge(message, replay);
+    // Only an agent's own words are sealed. `system` is the hub talking about the room in
+    // its own voice, with no key and nothing private to say; `pass` is silence.
+    if (message.kind !== "agent") return;
+    this.opened.set(message.id, this.sealer.open(message.text, message.conversationId));
+  }
+
+  /**
+   * One line as the agent should read it: its words, or a sentence saying it missed one.
+   *
+   * Never the ciphertext, and never silence. An agent handed an envelope would read the JSON
+   * as the other party's words; an agent handed nothing would answer a conversation with a
+   * hole in it as though the hole were not there.
+   */
+  private wordsFor(message: Message): Message {
+    if (message.kind !== "agent") return message;
+
+    // The fallback covers a line arriving with the turn that dispatched it, before the
+    // `appended` that would have opened it. Opening twice is cheap; handing over an envelope
+    // is not.
+    const opened =
+      this.opened.get(message.id) ?? this.sealer.open(message.text, message.conversationId);
+    return withWords(message, opened);
   }
 
   /** Judge one message and remember the verdict for the app. */
@@ -456,6 +519,7 @@ export class Bridge {
         this.invites = frame.invites;
         this.presence.clear();
         this.messages.clear();
+        this.opened.clear();
         this.atStart.clear();
         this.attestor.startWindow();
         // Keys first: judging a transcript before knowing which key each handle signs with
@@ -470,7 +534,7 @@ export class Bridge {
           // make reconnecting the way to launder a line that could not survive being checked
           // when it was new. Its chain is read against the window rather than against where
           // the live conversation had got to; see Attestor.startWindow.
-          this.judge(message, true);
+          this.receive(message, true);
         }
         // Welcome carries a window, not a whole history. A room that came back short of
         // that window has nothing older; anything else has to be asked about. Guessing
@@ -486,14 +550,18 @@ export class Bridge {
         this.publish();
         return;
 
-      case "challenge":
+      case "challenge": {
+        const sealing = this.sealingClaim ?? this.attestor.bindSealingKey(this.sealer.sealingDid);
+        this.sealingClaim = sealing;
         this.send({
           t: "hello",
           did: this.attestor.did,
           challenge: frame.nonce,
           signature: this.attestor.answer(frame.nonce),
+          sealing,
         });
         return;
+      }
 
       case "directory":
         this.directory = frame.people;
@@ -534,6 +602,9 @@ export class Bridge {
 
       case "conversation.removed":
         this.conversations = this.conversations.filter((c) => c.id !== frame.conversationId);
+        for (const message of this.messages.get(frame.conversationId) ?? []) {
+          this.opened.delete(message.id);
+        }
         this.messages.delete(frame.conversationId);
         this.presence.delete(frame.conversationId);
         this.activity.delete(frame.conversationId);
@@ -543,16 +614,17 @@ export class Bridge {
         return;
 
       case "appended": {
-        const list = this.messages.get(frame.message.conversationId) ?? [];
-        if (!list.some((message) => message.id === frame.message.id)) {
-          this.messages.set(frame.message.conversationId, [...list, frame.message]);
+        const arrived = frame.message;
+        const list = this.messages.get(arrived.conversationId) ?? [];
+        if (!list.some((message) => message.id === arrived.id)) {
+          this.messages.set(arrived.conversationId, [...list, arrived]);
         }
-        this.judge(frame.message);
+        this.receive(arrived);
         // Our own message landing means our turn is over; anything else leaves us as we were.
-        if (frame.message.authorHandle === this.me?.handle) {
-          this.attestor.confirmOwn(frame.message);
-          this.activity.set(frame.message.conversationId, { state: "idle" });
-          await this.recordOutgoing(frame.message);
+        if (arrived.authorHandle === this.me?.handle) {
+          this.attestor.confirmOwn(arrived);
+          this.activity.set(arrived.conversationId, { state: "idle" });
+          await this.recordOutgoing(arrived);
         }
         this.publish();
         return;
@@ -603,11 +675,11 @@ export class Bridge {
         // every message in the room.
         const held = this.messages.get(frame.conversationId) ?? [];
         const known = new Set(held.map((message) => message.id));
-        const older = frame.messages.filter((message) => !known.has(message.id));
         // Checked like everything else, judged against itself, and not settled: these are
         // older than the running position and must not move it backwards.
         this.attestor.startWindow();
-        for (const message of frame.messages) this.judge(message, true);
+        for (const message of frame.messages) this.receive(message, true);
+        const older = frame.messages.filter((message) => !known.has(message.id));
         this.messages.set(frame.conversationId, [...older, ...held]);
         this.atStart.set(frame.conversationId, frame.reachedStart);
         this.publish();
@@ -650,11 +722,31 @@ export class Bridge {
     if (message.kind !== "agent") return;
     if (this.ledger.some((entry) => entry.id === message.id)) return;
 
+    // The words, not the envelope. This file is the durable local record of what this agent
+    // said — the copy that survives the hub erasing the room — and a record of ciphertext
+    // this machine happened to be able to read once is not a record of anything.
+    //
+    // A line of our own that will not open should be impossible: `toRoom` seals to the sender
+    // before anybody else, precisely so there is one read path. If it ever happens it is a
+    // key that has gone missing under a running bridge, which is worth stopping over rather
+    // than filing a placeholder and moving on.
+    const opened = this.opened.get(message.id);
+    if (opened?.state !== "opened") {
+      this.lastError =
+        "a line this agent just sent could not be read back, so it was not written to the local record. Your sealing keys may be damaged.";
+      log.error("own message did not open", { id: message.id, why: opened?.state ?? "missing" });
+      // The steer belongs to this line. Leaving it parked would file it against whatever this
+      // agent says next, in some later turn, as the thing that prompted it.
+      this.pendingSteer.delete(message.conversationId);
+      return;
+    }
+
     const conversation = this.conversations.find(
       (candidate) => candidate.id === message.conversationId,
     );
     const other =
-      conversation?.participants.find((handle) => handle !== this.me?.handle) ?? "them";
+      conversation?.participants.find((member) => member.handle !== this.me?.handle)?.handle ??
+      "them";
     const steer = this.pendingSteer.get(message.conversationId);
     this.pendingSteer.delete(message.conversationId);
 
@@ -663,7 +755,7 @@ export class Bridge {
       at: message.at,
       conversationId: message.conversationId,
       to: other,
-      text: message.text,
+      text: opened.text,
       ...(steer !== undefined ? { steer } : {}),
     };
     this.ledger = [...this.ledger, entry];
@@ -672,6 +764,44 @@ export class Bridge {
       this.lastError = `the room has this line; the local record could not save it: ${error}`;
       log.error("ledger write failed", { id: entry.id, error });
     }
+  }
+
+  /**
+   * Seal one line to everybody in a room, or say why it cannot be.
+   *
+   * Every reason to refuse is a reason the *other side* would never have learned about: a
+   * member with no published key, a key signed by something other than what is pinned, an
+   * envelope that would not build. Each of those, sent anyway, produces a room that looks
+   * ordinary to everybody except the person who cannot read it.
+   *
+   * The plaintext ceiling is enforced here because this is the last place it can be. The hub
+   * bounds the blob and has no way to bound the words, which is the trade the whole change
+   * makes: it keeps a size limit and gives up a content one.
+   */
+  private sealForRoom(
+    conversationId: string,
+    text: string,
+  ): { envelope: string } | { error: string } {
+    const me = this.me;
+    if (me === undefined) return { error: "this bridge does not know who it is yet" };
+
+    if (text.length > MAX_MESSAGE_LENGTH) {
+      return {
+        error: `your agent wrote ${String(text.length)} characters and the limit is ${String(MAX_MESSAGE_LENGTH)}`,
+      };
+    }
+
+    const conversation = this.conversations.find((candidate) => candidate.id === conversationId);
+    if (conversation === undefined) return { error: "this room is not one this bridge is in" };
+
+    const recipients = recipientsFor(conversation.participants, me.handle, (handle) =>
+      this.didFor(handle),
+    );
+    if (recipients.state === "refused") return { error: recipients.why };
+
+    const envelope = this.sealer.toRoom(text, recipients.sealingDids, conversationId);
+    if (envelope === undefined) return { error: "the envelope could not be built" };
+    return { envelope };
   }
 
   /**
@@ -716,7 +846,13 @@ export class Bridge {
     if (this.activity.get(conversationId)?.state === "thinking") return;
 
     const conversation = this.conversations.find((candidate) => candidate.id === conversationId);
-    const room = conversation?.participants.filter((handle) => handle !== me.handle) ?? [];
+    const room =
+      conversation?.participants
+        .filter((member) => member.handle !== me.handle)
+        .map((member) => member.handle) ?? [];
+    // Opened, not judged: these arrived as `appended` and were checked then. What the agent
+    // must never be handed is the ciphertext, which it would read as the words.
+    const readable = transcript.map((message) => this.wordsFor(message));
 
     const startedAt = Date.now();
     daemonLog.info(`turn in a room with ${room.map((handle) => `@${handle}`).join(", ") || "nobody"}`, {
@@ -738,7 +874,7 @@ export class Bridge {
         you: me.handle,
         speakingWith: room,
         purpose,
-        transcript,
+        transcript: readable,
         earlier,
         ...(steer !== undefined ? { steer } : {}),
         ...(notice !== undefined ? { notice } : {}),
@@ -916,6 +1052,31 @@ export class Bridge {
           cost: result.cost.costUSD !== undefined ? `$${result.cost.costUSD.toFixed(4)}` : "unpriced",
           chars: result.text.length,
         });
+        // Sealed before anything is committed to, for the reason the steer is: a line that
+        // cannot be sealed must never fall back to being sent in the clear. The hub is the
+        // party this is sealed against, and it is also the party a fallback would hand the
+        // words to.
+        const sealed = this.sealForRoom(conversationId, result.text);
+        if ("error" in sealed) {
+          daemonLog.error("refused to send an unsealable line", {
+            conversation: conversationId,
+            why: sealed.error,
+          });
+          this.lastError = `your agent answered, and the line was not sent: ${sealed.error}`;
+          this.activity.set(conversationId, { state: "idle" });
+          this.dispatches.delete(conversationId);
+          // The room is told the turn failed rather than left waiting out the deadline. What
+          // it is told is that sealing failed, never the words that could not be sealed.
+          this.send({
+            t: "trouble",
+            conversationId,
+            dispatch,
+            reason: `could not seal this line to everyone in the room: ${sealed.error}`.slice(0, 300),
+          });
+          this.publish();
+          return;
+        }
+
         // The ledger is written when the hub confirms — see `recordOutgoing`. The steer is
         // parked so that confirmation can say what prompted it.
         if (steer !== undefined) this.pendingSteer.set(conversationId, steer);
@@ -926,8 +1087,8 @@ export class Bridge {
           t: "say",
           conversationId,
           dispatch,
-          text: result.text,
-          authorship: this.attestor.speak(conversationId, "agent", dispatch, result.text),
+          text: sealed.envelope,
+          authorship: this.attestor.speak(conversationId, "agent", dispatch, sealed.envelope),
           ...(result.closing ? { closing: true } : {}),
           ...(result.cost.costUSD !== undefined ? { costUSD: result.cost.costUSD } : {}),
           ...(result.cost.incomplete ? { costIncomplete: true } : {}),

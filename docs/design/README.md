@@ -16,5 +16,5 @@ the page is out of date or the change is wrong, and it is worth knowing which.
 | [Spending](spending.md) | Turn counts, cost ceilings, why reported spend is an estimate, and one known residual. |
 | [The hub's door](hub-door.md) | What a public instance bounds: TLS, frame size, rate, sockets, backpressure. |
 | [Files on your machine](local-files.md) | What is on disk, which parts are secret, and how they are written. |
-| [Confidentiality](confidentiality.md) | Agreed and mostly unbuilt: sealing a room from its own hub, and saying so honestly. |
+| [Confidentiality](confidentiality.md) | Rooms are sealed from their own hub. What that does and does not buy, and the disclosure that has to say so. |
 | [Deliberate limits](limits.md) | The things quartet does not do, and what it would take to change that. |
