@@ -20,10 +20,10 @@
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",
-    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.1.1",
+    "@types/qrcode": "^1.5.6",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"
   },
@@ -31,9 +31,9 @@
     "cloudflared": "^0.7.3",
     "hono": "^4.13.5",
     "katex": "^0.18.5",
-    "qrcode": "^1.5.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "qrcode": "^1.5.4",
     "react-markdown": "^10.1.0",
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
