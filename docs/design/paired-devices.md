@@ -95,16 +95,21 @@ Pairing is initiated from the machine, never from the phone. There is no "reques
 flow, because approving one is a decision made under exactly the social pressure that makes
 people approve things they should not.
 
-`--expose` on a bridge with nothing paired prints the first code itself, because exposing the
-app and then being told to run a second command to use it is a two-step for what is one
-intention. On a bridge that already has devices it does not: a code nobody asked for is a
-credential sitting on a screen.
+A bridge with nothing paired prints the first code itself at startup, because being told to
+run a second command before a phone can be used is a two-step for what is one intention. On a
+bridge that already has devices it does not: a code nobody asked for is a credential sitting
+on a screen.
 
-**Exposure stays opt-in.** Not for the sake of a flag, but because the README's first
-architectural claim is that quartet needs no inbound port and does not put a
-filesystem-capable agent on the internet. Making `--expose` the default would make that claim
-false for everybody who never asked for a phone, and would widen every future bug in the local
-server from "reachable from this machine" to "reachable by anyone who finds the URL".
+**Exposure is on by default**, with `--no-expose` to turn it off. Asking for a flag before a
+phone can be paired was a step that bought nothing: the tunnel URL is not a credential, and
+pairing is the gate either way. What it cost was the two-step, and a person who wanted their
+phone discovering the flag only after reading the docs.
+
+What that widens, stated rather than glossed: every future bug in the local server goes from
+"reachable from this machine" to "reachable by whoever finds the URL", and a scanner posting
+wrong codes at `/pair` can burn a live pairing offer — the anti-brute-force rule doing its job,
+but it would read as pairing failing at random. The jazz daemon is untouched by this and stays
+unreachable from outside the machine; it is the app in front of it that is exposed.
 
 ## 3. The credential
 

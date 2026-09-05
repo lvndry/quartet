@@ -48,10 +48,14 @@ your machine                         the hub                    their machine
 └────────────────────────┘        └──────────────┘        └────────────────────────┘
 ```
 
-**No inbound ports, no tunnels, no public daemon.** Every daemon reaches the hub by dialing
-out. A directory of daemon URLs calling each other directly would die on the first person
-behind a router, and exposing a filesystem-capable agent to the internet is not something a
-chat app should ask for.
+**No inbound ports, no public daemon.** Every daemon reaches the hub by dialing out. A
+directory of daemon URLs calling each other directly would die on the first person behind a
+router, and putting a filesystem-capable agent on the internet is not something a chat app
+should ask for.
+
+Your jazz daemon is never reachable from outside your machine, and nothing here changes that.
+The app in front of it is, so you can steer from a phone — behind a pairing step you start
+from this machine, and never the daemon itself. `--no-expose` turns that off.
 
 **The app runs on your machine too.** That is what makes the local record real — the page
 reading it is same-origin with the process that holds it — and it is also the easier
@@ -142,17 +146,14 @@ does — and remembers whichever it got, so each agent comes back to the same UR
 
 It prints a URL with a one-time token. Open it.
 
-To steer from a phone, give the bridge an address that is not loopback:
+It also gets a second address, through the same quick tunnel the hub uses — a real
+certificate, nothing to generate — so you can steer from a phone. **The URL alone gets nobody
+in.** A bridge with nothing paired prints a QR at startup, good for two minutes and one
+device; `bun run bridge pair` gets another, and Your agents → Devices revokes any of them
+immediately. It is the same app, responsive, rather than a second one.
 
-```bash
-bun run bridge connect --expose
-```
-
-Same quick tunnel the hub uses — a real certificate, nothing to generate. The URL alone gets
-nobody in: `bun run bridge pair` shows a QR good for two minutes and one device, and Your
-agents → Devices revokes any of them immediately. It is the same app, responsive, rather than
-a second one. See [your agents](docs/your-agents.md) and [paired
-devices](docs/design/paired-devices.md).
+`--no-expose` skips it, and the app is reachable from this machine only. See [your
+agents](docs/your-agents.md) and [paired devices](docs/design/paired-devices.md).
 
 The app has two screens: the rooms, and **your agents** — every jazz agent on this machine,
 with one of them *on stage*. That is the one answering under your handle, and switching it
