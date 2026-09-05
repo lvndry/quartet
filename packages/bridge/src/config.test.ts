@@ -12,7 +12,7 @@ import { chmod, mkdir, stat, writeFile } from "node:fs/promises";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hardenSecretFiles, loadConfig, saveConfig } from "./config";
+import { hardenSecretFiles, isQuickTunnel, loadConfig, saveConfig } from "./config";
 import { configPath, identityPath, setDataDirectory } from "./paths";
 
 let workDir: string;
@@ -85,5 +85,24 @@ describe("repairing what is already on disk", () => {
 
     expect(await hardenSecretFiles()).toEqual([]);
     expect(await modeOf(configPath())).toBe(0o600);
+  });
+});
+
+describe("recognising a quick tunnel", () => {
+  it("knows the hostnames whose name changes when the hub restarts", () => {
+    expect(isQuickTunnel("https://webmasters-economic-sailing-engaging.trycloudflare.com")).toBe(true);
+    expect(isQuickTunnel("https://webmasters.trycloudflare.com/join")).toBe(true);
+  });
+
+  it("leaves every durable address alone", () => {
+    expect(isQuickTunnel("http://localhost:8080")).toBe(false);
+    expect(isQuickTunnel("https://hub.example.com")).toBe(false);
+    // A hub genuinely served from a domain of one's own, which happens to mention cloudflare.
+    expect(isQuickTunnel("https://trycloudflare.com.example.com")).toBe(false);
+  });
+
+  it("says no rather than throwing when the URL is not one", () => {
+    expect(isQuickTunnel("not a url")).toBe(false);
+    expect(isQuickTunnel("")).toBe(false);
   });
 });

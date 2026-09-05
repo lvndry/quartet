@@ -16,7 +16,8 @@ import { signClaim, tag, type Keypair } from "@quartet/identity";
 import { AgentAdmin } from "./agent-admin";
 import { Attestor } from "./attest";
 import { Bridge } from "./bridge";
-import { hardenSecretFiles, loadConfig, saveConfig, type QuartetConfig } from "./config";
+import { hardenSecretFiles, isQuickTunnel, loadConfig, saveConfig, type QuartetConfig } from "./config";
+import { checkHub, describeHub, explainHub } from "./hub-check";
 import { loadIdentity } from "./identity";
 import { loadSealingKeys } from "./sealing-keys";
 import { Sealer } from "./sealer";
@@ -343,26 +344,6 @@ async function resolveOrMintToken(webhookName: string): Promise<string | undefin
 
 
 /**
- * Whether the hub is answering right now.
- *
- * Checked up front rather than left to the reconnect loop, which treats a hub restarting and
- * a URL that will never resolve identically — so a typo used to survive indefinitely.
- *
- * A 200 alone is not enough: a mistyped domain can land on a parked page that answers every
- * path with its own HTML. The exact `/health` body is what tells the two apart.
- */
-async function hubReachable(hubUrl: string): Promise<boolean> {
-  try {
-    const response = await fetch(new URL("/health", hubUrl), { signal: AbortSignal.timeout(5000) });
-    if (!response.ok) return false;
-    const body = (await response.json().catch(() => undefined)) as { ok?: boolean } | undefined;
-    return body?.ok === true;
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Start the app server, or say which port is taken and stop.
  *
  * Only reached with `mayMoveUp` false, where the port was named on the command line: there
@@ -441,6 +422,27 @@ async function ensureJazzInstalled(): Promise<boolean> {
   return true;
 }
 
+/**
+ * Which hub this run joins, asked rather than assumed.
+ *
+ * Belonging to a hub is not a setting one configures once: a person has a hub for work and a
+ * hub for friends, and picking between them should not mean remembering a flag. So the
+ * question is asked every time, with the last hub as the default — one keypress to carry on
+ * where you were, and a paste to go somewhere else.
+ *
+ * Skipped when `--hub` says which, and when there is nobody there to answer: a bridge started
+ * by a script or a service manager must not stop on a question, and the stored URL is a
+ * better answer than a hang.
+ */
+async function chooseHub(stored: string): Promise<string> {
+  const fromFlag = argValue("hub");
+  if (fromFlag !== undefined) return fromFlag;
+  if (process.stdin.isTTY !== true) return stored;
+
+  const answer = await prompt(`\n  hub URL [${stored}]: `);
+  return answer === "" ? stored : answer;
+}
+
 async function connect(): Promise<void> {
   const level = parseLogLevel(argValue("log-level"));
   if (level !== undefined) setLogLevel(level);
@@ -449,12 +451,15 @@ async function connect(): Promise<void> {
 
   let config = await loadConfig();
   const requestedPort = argValue("port");
-  const hubUrl = argValue("hub") ?? config.hubUrl;
+  const hubUrl = await chooseHub(config.hubUrl);
 
-  if (!(await hubReachable(hubUrl))) {
-    console.error(`\n  ! ${hubUrl} is not answering.`);
-    console.error("    Check the URL for typos, or start the hub if it just isn't up yet —");
-    console.error("    `bun run hub` (add `--tunnel` if it needs to be reachable from outside).\n");
+  // Checked up front rather than left to the reconnect loop, which cannot tell a hub that is
+  // restarting from a name that is never coming back — and only one of those is worth waiting for.
+  const check = await checkHub(hubUrl);
+  if (check.kind !== "ok") {
+    console.error(`\n  ! ${hubUrl} — ${describeHub(check)}`);
+    for (const line of explainHub(hubUrl, check)) console.error(`    ${line}`);
+    console.error("");
     process.exit(1);
   }
 
@@ -770,8 +775,15 @@ async function info(): Promise<void> {
   }
 
   const hubUrl = argValue("hub") ?? config.hubUrl;
-  const reachable = await hubReachable(hubUrl);
-  console.log(`hub        ${hubUrl} — ${reachable ? "reachable" : "not answering"}`);
+  const check = await checkHub(hubUrl);
+  // Only while it is still working, which is when the warning is worth anything. Once the name
+  // has already moved, `explainHub` says the same thing at more length and to more purpose.
+  const naming =
+    check.kind === "ok" && isQuickTunnel(hubUrl)
+      ? " (quick tunnel — this name changes when the hub restarts)"
+      : "";
+  console.log(`hub        ${hubUrl} — ${describeHub(check)}${naming}`);
+  for (const line of explainHub(hubUrl, check)) console.log(`           ${line}`);
 
   const daemonUrl = argValue("daemon") ?? config.daemon?.url ?? DEFAULT_DAEMON_URL;
   const agentFlag =

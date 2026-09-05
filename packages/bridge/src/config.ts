@@ -58,6 +58,26 @@ export interface QuartetConfig {
 
 export const DEFAULT_HUB_URL = "http://localhost:8080";
 
+/**
+ * Whether a hub URL is a cloudflare quick tunnel — the kind `hub --tunnel` prints.
+ *
+ * Not a judgement about whether to use one: a quick tunnel is a perfectly good way to keep a
+ * hub up for other people, and plenty of them run for weeks. It is about one property those
+ * hostnames have and no others do — they are handed out anonymously, so cloudflare owes
+ * nobody the same name twice, and a hub that restarts comes back at a different address.
+ *
+ * Worth naming specifically because of what that failure looks like from the other end: a URL
+ * that worked yesterday and answers nothing today is indistinguishable from a typo, and the
+ * advice for a typo is useless here.
+ */
+export function isQuickTunnel(hubUrl: string): boolean {
+  try {
+    return new URL(hubUrl).hostname.endsWith(".trycloudflare.com");
+  } catch {
+    return false;
+  }
+}
+
 export { configPath };
 
 export async function loadConfig(): Promise<QuartetConfig> {
