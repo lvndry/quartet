@@ -1,7 +1,9 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "ES2022",
+    // ESNext rather than a year, because `moduleResolution: bundler` is what Bun does and
+    // import attributes — the text imports the hub uses for the shared tokens — need it.
+    "module": "ESNext",
     "moduleResolution": "bundler",
     "lib": ["ES2022", "ES2024.String", "DOM", "DOM.Iterable"],
     "types": ["bun"],

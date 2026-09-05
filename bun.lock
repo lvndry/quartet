@@ -54,6 +54,7 @@
       "dependencies": {
         "@quartet/identity": "workspace:*",
         "@quartet/protocol": "workspace:*",
+        "@quartet/theme": "workspace:*",
         "@quartet/tunnel": "workspace:*",
         "hono": "^4.13.5",
       },
