@@ -43,23 +43,25 @@ export type Recipients =
 /**
  * Resolve a room's roster into the keys to seal to.
  *
- * `didFor` is the pin, not the hub's claim. A member arrives carrying both a signing did and
- * a sealing key signed by it, and checking one against the other would only prove the hub
- * was internally consistent — which a hub substituting both of them is. The proof has to be
- * checked against the key this machine already decided belonged to that handle, which is the
- * whole reason `known.ts` exists.
+ * A member arrives carrying a signing key and a sealing key signed by it. Checking the second
+ * against the first proves only that whoever built the pair holds both — which a hub
+ * substituting both of them does. So the signing key itself has to be one this machine has
+ * seen before, which is what `known.ts` records and what `isKnown` asks.
+ *
+ * Names play no part. Two members may share a handle, and a roster resolved by name would
+ * seal to whichever of them the lookup happened to find — silently, to the wrong person.
  *
  * The caller is left out: `Sealer.toRoom` adds the sender, and adding them here as well
  * would put the decision in two places.
  */
 export function recipientsFor(
   members: readonly Member[],
-  me: string,
-  didFor: (handle: string) => string | undefined,
+  meDid: string,
+  isKnown: (did: string) => boolean,
 ): Recipients {
   const sealingDids: string[] = [];
   for (const member of members) {
-    if (member.handle === me) continue;
+    if (member.did === meDid) continue;
 
     if (member.sealing === undefined) {
       return {
@@ -68,15 +70,18 @@ export function recipientsFor(
       };
     }
 
-    const did = didFor(member.handle);
-    if (did === undefined) {
+    if (!isKnown(member.did)) {
       return {
         state: "refused",
-        why: `no key is pinned here for @${member.handle}, so their sealing key cannot be checked against anything.`,
+        why: `this machine has never seen the key @${member.handle} is signing with, so nothing about their sealing key can be checked. Compare fingerprints before saying anything in this room.`,
       };
     }
 
-    const binding = { did, sealingDid: member.sealing.sealingDid, at: member.sealing.at };
+    const binding = {
+      did: member.did,
+      sealingDid: member.sealing.sealingDid,
+      at: member.sealing.at,
+    };
     if (!verifySealingKey(binding, member.sealing.proof)) {
       return {
         state: "refused",

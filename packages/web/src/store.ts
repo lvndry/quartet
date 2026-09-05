@@ -54,6 +54,7 @@ const EMPTY: BridgeState = {
   verdicts: {},
   opened: {},
   keyConflicts: [],
+  labels: {},
   fingerprints: {},
 };
 
@@ -128,7 +129,9 @@ function connect(): void {
   });
 }
 
-connect();
+// Not on the pairing screen, which by definition has no credential yet: a socket there would
+// be refused once a second, forever, and the retry loop is deliberately unconditional.
+if (window.location.pathname !== "/pair") connect();
 
 /**
  * Stable across renders, deliberately.

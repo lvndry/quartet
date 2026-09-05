@@ -182,8 +182,14 @@ export type RoomState = z.infer<typeof roomStateSchema>;
 export const messageSchema = z.object({
   id: z.string(),
   conversationId: z.string(),
-  /** The agent this message is attributed to. A human aside is attributed to their agent. */
-  authorHandle: z.string(),
+  /**
+   * The key this message is attributed to. A human aside is attributed to their agent.
+   *
+   * The key rather than the name, because a name is not an identifier: two agents may share
+   * a handle, and a chain keyed by one would braid their signatures together. What a reader
+   * *sees* is resolved from this did — see `displayTag`.
+   */
+  authorDid: z.string(),
   kind: messageKindSchema,
   text: z.string(),
   at: z.string(),
@@ -220,8 +226,8 @@ export const inviteStatusSchema = z.enum(["pending", "accepted", "declined"]);
 
 export const inviteSchema = z.object({
   id: z.string(),
-  fromHandle: z.string(),
-  toHandle: z.string(),
+  fromDid: z.string(),
+  toDid: z.string(),
   /** Doubles as the first conversation's purpose — nobody invites a stranger for no reason. */
   purpose: z.string(),
   limit: limitSchema,
@@ -237,7 +243,7 @@ export type Invite = z.infer<typeof inviteSchema>;
  * flight on their machine — the thing you otherwise sit through as unexplained silence.
  */
 export const peerPresenceSchema = z.object({
-  handle: z.string(),
+  did: z.string(),
   online: z.boolean(),
   watching: z.boolean(),
   thinking: z.boolean(),
@@ -278,14 +284,19 @@ export type SealingClaim = z.infer<typeof sealingClaimSchema>;
  * to a subset of the room without noticing. Sealing to a subset fails silently on the side
  * that was left out, which is the one direction this must never fail in.
  *
- * Both keys are optional for the same reason `agentSchema.did` is: a row can exist before a
- * bridge has ever connected. A member without a sealing key cannot be sealed to, and the
- * bridge refuses to speak rather than writing a line somebody in the room cannot open.
+ * The sealing key is optional because a row can exist before a bridge has ever connected. A
+ * member without one cannot be sealed to, and the bridge refuses to speak rather than writing
+ * a line somebody in the room cannot open. The signing key is not optional — see below.
  */
 export const memberSchema = z.object({
   handle: z.string(),
-  /** What they sign with. Checked against the pin, never taken from here on trust. */
-  did: z.string().optional(),
+  /**
+   * What they sign with, and what identifies them.
+   *
+   * Required, not optional: a member without a key is one nobody can name unambiguously,
+   * seal to, or check a word from — and the store no longer holds an agent without one.
+   */
+  did: z.string(),
   sealing: sealingClaimSchema.optional(),
 });
 export type Member = z.infer<typeof memberSchema>;
@@ -314,15 +325,15 @@ export const conversationSchema = z.object({
   spendIncomplete: z.boolean(),
   state: roomStateSchema,
   /**
-   * The handle that opened this room.
+   * The key that opened this room.
    *
    * Stored rather than read off `participants[0]`: whose turn it is to accept is a question
    * about consent, and reading it off an array's order would let adding a member change it.
    */
   proposedBy: z.string(),
-  /** Handles whose agents have said goodbye and will not be woken by the room again. */
+  /** Keys whose agents have said goodbye and will not be woken by the room again. */
   bowedOut: z.array(z.string()),
-  /** Handles who have asked to erase this room for everyone. It goes when all of them have. */
+  /** Keys who have asked to erase this room for everyone. It goes when all of them have. */
   eraseAsked: z.array(z.string()),
   lastAt: z.string(),
 });
@@ -372,7 +383,12 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   z.object({ t: z.literal("directory.list") }),
   z.object({
     t: z.literal("invite.send"),
-    toHandle: handleSchema,
+    /**
+     * The key, not the name. A handle is what a person types; by the time a frame is built
+     * the sender has already decided which key they meant, and sending anything else would
+     * hand that decision back to the hub.
+     */
+    toDid: z.string(),
     purpose: signable(MAX_PURPOSE_LENGTH),
     limit: limitSchema.optional(),
   }),
@@ -422,7 +438,8 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   z.object({
     t: z.literal("conversation.add"),
     conversationId: z.string(),
-    handle: handleSchema,
+    /** The key, for the same reason `invite.send` names one. */
+    did: z.string(),
   }),
   /** Leave a room. The last member out closes it rather than leaving it talking to itself. */
   z.object({ t: z.literal("conversation.leave"), conversationId: z.string() }),
@@ -542,6 +559,15 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     /** Load the page immediately older than this message. */
     beforeId: z.string(),
   }),
+  /**
+   * Still here. Sent on a timer whenever the socket is up, whether or not a turn is running.
+   *
+   * An idle quartet socket used to carry nothing at all between turns, and everything in the
+   * path — the hub's own idle timeout, a tunnel, a NAT table — treats a silent connection as
+   * an abandoned one. The `progress` beat does not cover this: it only runs mid-turn, which
+   * is the case that was never at risk.
+   */
+  z.object({ t: z.literal("ping") }),
 ]);
 export type ClientFrame = z.infer<typeof clientFrameSchema>;
 
@@ -616,6 +642,13 @@ export const serverFrameSchema = z.discriminatedUnion("t", [
     /** Everyone in the room but you. Sent whole, so a member leaving is just a shorter list. */
     others: z.array(peerPresenceSchema),
   }),
+  /**
+   * Answer to a `ping`.
+   *
+   * The reply is the point, not the ping: a socket that can be written to but never answers
+   * is exactly what a dropped tunnel leaves behind, and only a round trip tells them apart.
+   */
+  z.object({ t: z.literal("pong") }),
   /** One page of older messages, oldest first, in answer to `history.load`. */
   z.object({
     t: z.literal("history"),

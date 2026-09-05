@@ -33,7 +33,7 @@ import { HubStore, type AgentRow } from "./db";
 import { Orchestrator, type Accepted } from "./orchestrator";
 import { RoomPresence } from "./presence";
 import { RateLimiter } from "./rate-limit";
-import { startTunnel } from "./tunnel";
+import { startTunnel } from "@quartet/tunnel";
 
 const PORT = Number(process.env["PORT"] ?? 8080);
 const DB_PATH = process.env["QUARTET_DB"] ?? "quartet.sqlite";
@@ -104,6 +104,13 @@ const HELLO_GRACE_MS = Number(process.env["QUARTET_HELLO_GRACE_MS"] ?? 10_000);
 const MAX_SOCKETS = Number(process.env["QUARTET_MAX_SOCKETS"] ?? 512);
 const MAX_ANONYMOUS_PER_ADDRESS = 8;
 const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
+/**
+ * How long a socket may say nothing before the hub treats it as gone.
+ *
+ * Four times the bridge's keepalive interval, so three lost pings in a row is survivable and
+ * a network hiccup does not read as a departure.
+ */
+const SOCKET_IDLE_TIMEOUT_S = 120;
 /** A label for `/join`, so an invite link says what somebody is joining rather than just a URL. */
 const HUB_NAME = (() => {
   const index = process.argv.indexOf("--name");
@@ -156,6 +163,12 @@ function isOnline(agentId: string): boolean {
   return sockets.has(agentId);
 }
 
+/** A handle for the logs, falling back to the id for an agent the store no longer has. */
+function describeAgent(agentId: string): string {
+  const handle = store.agentById(agentId)?.handle;
+  return handle === undefined ? agentId : `@${handle}`;
+}
+
 /**
  * Send one frame, or drop a socket that has stopped reading.
  *
@@ -197,14 +210,12 @@ function agentView(agentId: string): Agent | undefined {
 function directoryFor(agentId: string): DirectoryEntry[] {
   const connected = new Set(store.connectionsFor(agentId).map((connection) => connection.other));
   const pending = new Set(
-    store
-      .pendingInvitesFor(agentId)
-      .flatMap((invite) => [invite.fromHandle, invite.toHandle]),
+    store.pendingInvitesFor(agentId).flatMap((invite) => [invite.fromDid, invite.toDid]),
   );
   return store
     .allAgents()
     .filter((row) => row.id !== agentId)
-    .filter((row) => isOnline(row.id) || connected.has(row.id) || pending.has(row.handle))
+    .filter((row) => isOnline(row.id) || connected.has(row.id) || (row.did !== null && pending.has(row.did)))
     .map((row) => ({
       agent: store.toAgent(row, isOnline(row.id)),
       connected: connected.has(row.id),
@@ -557,6 +568,13 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     return;
   }
 
+  // Answered before identity is checked: a keepalive is transport, not conversation, and a
+  // socket still inside its hello grace has as much reason to stay warm as any other.
+  if (frame.t === "ping") {
+    socket.send(JSON.stringify({ t: "pong" } satisfies ServerFrame));
+    return;
+  }
+
   const agentId = socket.data.agentId;
   if (agentId === undefined) {
     socket.send(JSON.stringify({ t: "error", detail: "say hello first" } satisfies ServerFrame));
@@ -576,9 +594,9 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     }
 
     case "invite.send": {
-      const target = store.agentByHandle(frame.toHandle);
+      const target = store.agentByDid(frame.toDid);
       if (target === undefined || target.id === agentId) {
-        send(agentId, { t: "error", detail: "no agent with that handle" });
+        send(agentId, { t: "error", detail: "no agent here holds that key" });
         return;
       }
 
@@ -696,9 +714,9 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       // Accepting is what starts it, exactly as accepting an invitation does. The purpose
       // travels on its own field; the proposer's agent is the one asked to open.
       if (frame.accept) {
-        const proposer = store.agentByHandle(answered.proposedBy);
-        if (proposer !== undefined) {
-          orchestrator.onBegin(answered.id, proposer.id);
+        const proposerId = store.proposerId(answered.id);
+        if (proposerId !== undefined) {
+          orchestrator.onBegin(answered.id, proposerId);
         }
       }
       return;
@@ -767,13 +785,13 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         });
         return;
       }
-      const joining = store.agentByHandle(frame.handle);
+      const joining = store.agentByDid(frame.did);
       if (joining === undefined) {
-        send(agentId, { t: "error", detail: "no agent with that handle" });
+        send(agentId, { t: "error", detail: "no agent here holds that key" });
         return;
       }
       if (participants.includes(joining.id)) {
-        send(agentId, { t: "error", detail: `@${frame.handle} is already here` });
+        send(agentId, { t: "error", detail: `${describeAgent(joining.id)} is already here` });
         return;
       }
       // A connection is where somebody agreed to talk to you at all, and this spends that
@@ -782,7 +800,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       if (store.connectionBetween(agentId, joining.id) === undefined) {
         send(agentId, {
           t: "error",
-          detail: `you are not connected to @${frame.handle} — invite them first`,
+          detail: `you are not connected to ${describeAgent(joining.id)} — invite them first`,
         });
         return;
       }
@@ -1022,6 +1040,11 @@ const server = Bun.serve<SocketData, never>({
     // Bun closes anything larger itself rather than buffering it, which is the point: the
     // limit has to bind before the frame is in memory to be worth having.
     maxPayloadLength: MAX_FRAME_BYTES,
+    // Stated rather than inherited. A bridge pings every SOCKET_KEEPALIVE_MS, so anything
+    // quiet for this long is not idle, it is gone — and holding it open holds presence open
+    // with it, telling a room somebody is there who is not.
+    idleTimeout: SOCKET_IDLE_TIMEOUT_S,
+    sendPings: true,
     open(socket) {
       openSockets.add(socket);
       countAnonymous(socket.data.address, 1);
@@ -1055,10 +1078,17 @@ const server = Bun.serve<SocketData, never>({
       }
       handleFrame(socket, parsed);
     },
-    close(socket) {
+    close(socket, code, reason) {
       openSockets.delete(socket);
       noLongerAnonymous(socket);
       const agentId = socket.data.agentId;
+      // Said out loud, because a hub that logged nothing here looked identical whether it was
+      // dropping every socket it had or none, and a bridge reporting repeated disconnects had
+      // no counterpart to check its story against.
+      const who = agentId === undefined ? "an unauthenticated socket" : describeAgent(agentId);
+      console.warn(
+        `socket closed: ${who} — code ${String(code)}${reason ? ` (${reason})` : ""}`,
+      );
       if (agentId === undefined) return;
       // A replaced socket must not look like the agent leaving.
       if (sockets.get(agentId) !== socket) return;

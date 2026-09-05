@@ -25,7 +25,7 @@ import {
   type Opened,
   type SealingClaim,
 } from "@quartet/protocol";
-import { fingerprint, parseTag } from "@quartet/identity";
+import { displayTag, fingerprint, parseTag, tag } from "@quartet/identity";
 import type { DaemonSettings } from "./config";
 import type { Attestor, Verdict } from "./attest";
 import { recipientsFor, withWords, type Sealer } from "./sealer";
@@ -48,6 +48,7 @@ import {
   recordSent,
   type LedgerEntry,
 } from "./ledger";
+import { checkHub, describeHub, explainHub, summariseHub } from "./hub-check";
 import { logger } from "./log";
 import { composeTurnPayload } from "./prompt";
 import {
@@ -70,6 +71,34 @@ const PROGRESS_EVERY_MS = 45_000;
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
+
+/**
+ * How often to tell the hub this socket is still wanted.
+ *
+ * Between turns a quartet socket carries nothing, and everything in the path treats a silent
+ * connection as an abandoned one — the hub's own idle timeout first, then whatever tunnel or
+ * NAT table sits in between. `PROGRESS_EVERY_MS` does not cover this: it beats only while a
+ * turn is running, which was never the case at risk.
+ */
+const KEEPALIVE_EVERY_MS = 30_000;
+
+/**
+ * How long the hub may say nothing at all before this end stops believing in the socket.
+ *
+ * Three missed pongs. A socket that can still be written to but never answers is exactly what
+ * a dropped tunnel leaves behind: the bridge sees an open connection, the hub has no such
+ * connection, and nothing resolves it until something is expected back and does not arrive.
+ */
+const SILENCE_LIMIT_MS = KEEPALIVE_EVERY_MS * 3;
+
+/**
+ * How long to wait for a socket that never finishes connecting.
+ *
+ * A tunnel that has stopped routing does not refuse the connection, it swallows it, and the
+ * handshake then sits there until the OS gives up — which took a quarter of an hour and
+ * looked, in the log, like nothing happening at all.
+ */
+const CONNECT_TIMEOUT_MS = 15_000;
 
 export class Bridge {
   private socket?: WebSocket;
@@ -101,6 +130,17 @@ export class Bridge {
   private readonly outbound: ClientFrame[] = [];
   /** Heartbeat timers for turns currently running, one per conversation. */
   private readonly beating = new Map<string, ReturnType<typeof setInterval>>();
+  /** The keepalive for the current socket. One at a time, cleared with the socket it belongs to. */
+  private keepalive?: ReturnType<typeof setInterval>;
+  /** When the hub last said anything. Any frame counts, not just a pong. */
+  private lastHeard = 0;
+  /**
+   * Whether this run of failures has already been explained.
+   *
+   * Once per outage, not once per attempt: the reconnect loop is deliberately patient, and a
+   * patient loop that repeats its diagnosis every thirty seconds is just noise with a reason.
+   */
+  private diagnosed = false;
   /**
    * One-time secrets that let this machine's daemon report into a running turn.
    *
@@ -181,6 +221,7 @@ export class Bridge {
   stop(): void {
     this.closing = true;
     for (const conversationId of [...this.beating.keys()]) this.stopBeating(conversationId);
+    this.stopKeepalive();
     this.socket?.close();
   }
 
@@ -217,6 +258,7 @@ export class Bridge {
       verdicts: Object.fromEntries(this.verdicts),
       opened: Object.fromEntries(this.opened),
       keyConflicts: this.known.all(),
+      labels: this.labels(),
       fingerprints: this.fingerprints(),
       ...(keyStoreProblem !== undefined ? { keyStoreProblem } : {}),
       ...(this.lastError !== undefined ? { lastError: this.lastError } : {}),
@@ -269,7 +311,45 @@ export class Bridge {
     this.send({ t: "nudge", conversationId, steer: sealed });
   }
 
-  /** Short forms for every key on screen: mine, the directory's, and both sides of a conflict. */
+  /**
+   * Every key this bridge can put a name to, paired with the full tag for that name.
+   *
+   * One place, so a room, the directory and a log line cannot disagree about who somebody is.
+   */
+  private taggedNames(): Map<string, string> {
+    const pairs = new Map<string, string>();
+    const note = (handle: string, did: string | undefined): void => {
+      if (did === undefined) return;
+      const named = tag(handle, did);
+      if (named !== undefined) pairs.set(did, named);
+    };
+    if (this.me !== undefined) note(this.me.handle, this.attestor.did);
+    for (const entry of this.directory) note(entry.agent.handle, entry.agent.did);
+    for (const entry of this.connections) note(entry.withAgent.handle, entry.withAgent.did);
+    return pairs;
+  }
+
+  /**
+   * What to write on screen for each key.
+   *
+   * The bare handle while it is unambiguous among everyone this bridge knows, and as much
+   * fingerprint as it takes to separate them once it is not — see `displayTag`. Computed over
+   * everyone known rather than per room, so somebody does not change name between screens.
+   */
+  private labels(): Record<string, string> {
+    const named = this.taggedNames();
+    const everyone = [...named.values()];
+    const out: Record<string, string> = {};
+    for (const [did, full] of named) out[did] = displayTag(full, everyone);
+    return out;
+  }
+
+  /** How to name one key in a log line, falling back to its short form when unknown. */
+  private label(did: string): string {
+    return this.labels()[did] ?? `a key with fingerprint ${fingerprint(did) ?? "unknown"}`;
+  }
+
+  /** Short forms for every key on screen: mine, the directory's, and any that was renamed. */
   private fingerprints(): Record<string, string> {
     const dids = [
       this.attestor.did,
@@ -277,7 +357,7 @@ export class Bridge {
       ...this.connections.flatMap((entry) =>
         entry.withAgent.did !== undefined ? [entry.withAgent.did] : [],
       ),
-      ...this.known.all().flatMap((conflict) => [conflict.pinned, conflict.offered]),
+      ...this.known.all().map((conflict) => conflict.did),
     ];
     const out: Record<string, string> = {};
     for (const did of dids) {
@@ -285,22 +365,6 @@ export class Bridge {
       if (short !== undefined) out[did] = short;
     }
     return out;
-  }
-
-  /**
-   * The key a handle is known by here, from whatever the hub has shown us about them.
-   *
-   * Undefined for a stranger, which is the honest answer: until somebody compares a
-   * fingerprint out of band, "the key the hub says is theirs" is all any of this can mean.
-   * What it does buy immediately is *continuity* — the hub cannot change the key behind a
-   * handle later without every line after it failing to verify.
-   */
-  private didFor(handle: string): string | undefined {
-    if (handle === this.me?.handle) return this.attestor.did;
-    // The pin wins over whatever the hub is saying now. That is the entire point of holding
-    // one: a directory entry is the hub's claim, and a pin is what this machine concluded
-    // the first time — possibly after somebody read the fingerprint out loud.
-    return this.known.did(handle);
   }
 
   /**
@@ -328,12 +392,12 @@ export class Bridge {
       ),
     ];
     for (const { handle, did } of seen) {
-      if (did === undefined || handle === this.me?.handle) continue;
-      const conflict = this.known.offer(handle, did);
+      if (did === undefined || did === this.attestor.did) continue;
+      const conflict = this.known.offer(did, handle);
       if (conflict !== undefined) {
         hubLog.error(
-          `@${handle} is being offered under a different key than the one pinned here. ` +
-            "Nothing from them will verify until you compare fingerprints and decide.",
+          `the key this machine knows as @${conflict.known} is now calling itself ` +
+            `@${conflict.offered}. Compare fingerprints before treating it as either.`,
         );
       }
     }
@@ -377,12 +441,12 @@ export class Bridge {
   private judge(message: Message, replay = false): Verdict {
     const verdict = this.attestor.check(
       message,
-      { expectedDid: this.didFor(message.authorHandle) },
+      { expectedDid: message.authorDid },
       { replay },
     );
     this.verdicts.set(message.id, verdict);
     if (verdict.state === "broken") {
-      hubLog.error(`a message from @${message.authorHandle} did not check out: ${verdict.why}`);
+      hubLog.error(`a message from ${this.label(message.authorDid)} did not check out: ${verdict.why}`);
     }
     return verdict;
   }
@@ -404,12 +468,40 @@ export class Bridge {
       return { error: `"${target}" is not a handle or a handle#fingerprint` };
     }
 
-    const offered = this.directory.find((entry) => entry.agent.handle === parsed.handle)?.agent.did;
+    // Every key on this hub wearing that name, not the first one found. Two friends who both
+    // go by @mira is the ordinary case now, and picking one of them silently would be this
+    // bridge choosing somebody's correspondent for them.
+    const wearing = this.directory.filter((entry) => entry.agent.handle === parsed.handle);
+    if (wearing.length > 1 && parsed.fingerprint === undefined) {
+      const choices = wearing
+        .map((entry) => (entry.agent.did === undefined ? undefined : tag(parsed.handle, entry.agent.did)))
+        .filter((named): named is string => named !== undefined);
+      return {
+        error:
+          `${String(wearing.length)} agents here go by @${parsed.handle}. ` +
+          `Say which: ${choices.join(", ")}`,
+      };
+    }
+    const offered = wearing[0]?.agent.did;
     if (parsed.fingerprint !== undefined) {
       if (offered === undefined) {
         return {
           error: `this hub has no key for @${parsed.handle}, so the fingerprint proves nothing`,
         };
+      }
+      const wanted = wearing.find(
+        (entry) => entry.agent.did !== undefined && fingerprint(entry.agent.did) === parsed.fingerprint,
+      )?.agent.did;
+      if (wanted !== undefined) {
+        // Checked by a person, so it supersedes anything pinned on a hub's say-so alone.
+        void this.known.repin(parsed.handle, wanted);
+        this.send({
+          t: "invite.send",
+          toDid: wanted,
+          purpose,
+          ...(limit !== undefined ? { limit } : {}),
+        });
+        return undefined;
       }
       if (fingerprint(offered) !== parsed.fingerprint) {
         return {
@@ -422,21 +514,27 @@ export class Bridge {
       void this.known.repin(parsed.handle, offered);
     }
 
+    // Resolved here rather than on the hub: by the time a frame is built the sender has
+    // already decided which @mira they meant, and sending the name instead would hand that
+    // decision back to whoever is routing it.
+    if (offered === undefined) {
+      return { error: `this hub has no key for @${parsed.handle}, so there is nobody to invite` };
+    }
     this.send({
       t: "invite.send",
-      toHandle: parsed.handle,
+      toDid: offered,
       purpose,
       ...(limit !== undefined ? { limit } : {}),
     });
     return undefined;
   }
 
-  /** Accept a handle's new key, after a person has looked at the fingerprints and decided. */
-  async trustNewKey(handle: string): Promise<void> {
-    const conflict = this.known.conflict(handle);
+  /** Accept a key's new name, after a person has looked at the fingerprints and decided. */
+  async trustNewName(did: string): Promise<void> {
+    const conflict = this.known.conflict(did);
     if (conflict === undefined) return;
-    await this.known.repin(handle, conflict.offered);
-    hubLog.info(`re-pinned @${handle} to its new key`);
+    await this.known.repin(did, conflict.offered);
+    hubLog.info(`now known as @${conflict.offered}`, { was: `@${conflict.known}` });
     this.publish();
   }
 
@@ -459,10 +557,54 @@ export class Bridge {
     const socket = new WebSocket(url.toString());
     this.socket = socket;
 
+    // Every way this socket can end funnels through here, so the reconnect is scheduled once
+    // however it died: closed by the hub, timed out connecting, or given up on for silence.
+    // Three paths that each scheduled their own retry would race into two live sockets.
+    let retired = false;
+    const retire = (why: string): void => {
+      if (retired) return;
+      retired = true;
+      clearTimeout(connecting);
+      socket.close();
+      // Already replaced, so its ending is not news and the socket that supplanted it owns
+      // the reconnect.
+      if (this.socket !== socket) return;
+      this.stopKeepalive();
+      this.connectedToHub = false;
+      // Not on a deliberate shutdown: that is not a failure, and the app is about to close
+      // anyway. Cleared automatically the moment `open` succeeds again.
+      //
+      // Nor once this outage has been diagnosed: the retry line is generic by necessity, and
+      // letting it land every thirty seconds would paper over the one message that says what
+      // to actually do about it.
+      if (!this.closing && !this.diagnosed) {
+        this.lastError = `can't reach the hub at ${this.hubUrl} — retrying`;
+      }
+      this.publish();
+      if (this.closing) return;
+      // Backoff, because a hub that is down stays down for a while and hammering it helps
+      // nobody. Capped so a laptop that slept overnight still rejoins within half a minute.
+      hubLog.warn(`${why}, retrying`, { in: `${String(this.reconnectDelay)}ms` });
+      setTimeout(() => this.open(), this.reconnectDelay);
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS);
+      // Only once the backoff has topped out, which is about a minute of failing: before that
+      // this is most likely a hub being restarted, and saying "it is gone" of a hub that is
+      // three seconds from coming back would be worse than saying nothing.
+      if (!this.diagnosed && this.reconnectDelay >= RECONNECT_MAX_MS) void this.diagnose();
+    };
+
+    const connecting = setTimeout(() => {
+      retire(`no answer from ${this.hubUrl} within ${String(CONNECT_TIMEOUT_MS / 1000)}s`);
+    }, CONNECT_TIMEOUT_MS);
+
     socket.addEventListener("open", () => {
+      clearTimeout(connecting);
       this.reconnectDelay = RECONNECT_MIN_MS;
       this.connectedToHub = true;
       this.lastError = undefined;
+      this.lastHeard = Date.now();
+      this.diagnosed = false;
+      this.startKeepalive(socket, retire);
       hubLog.info("connected", { url: this.hubUrl });
       // Nothing is said until the hub asks. The introduction is a signature over the
       // challenge it is about to send, so there is no secret to present and none to steal.
@@ -470,6 +612,9 @@ export class Bridge {
     });
 
     socket.addEventListener("message", (event) => {
+      // Before parsing, and for every frame rather than only for a pong: what the keepalive
+      // is asking is whether anything at all is still coming back.
+      this.lastHeard = Date.now();
       let raw: unknown;
       try {
         raw = JSON.parse(typeof event.data === "string" ? event.data : "");
@@ -485,25 +630,60 @@ export class Bridge {
       void this.onFrame(frame);
     });
 
-    socket.addEventListener("close", () => {
-      if (this.socket !== socket) return;
-      this.connectedToHub = false;
-      // Not on a deliberate shutdown: that is not a failure, and the app is about to close
-      // anyway. Cleared automatically the moment `open` succeeds again.
-      if (!this.closing) this.lastError = `can't reach the hub at ${this.hubUrl} — retrying`;
-      this.publish();
-      if (this.closing) return;
-      // Backoff, because a hub that is down stays down for a while and hammering it helps
-      // nobody. Capped so a laptop that slept overnight still rejoins within half a minute.
-      hubLog.warn("disconnected, retrying", { in: `${String(this.reconnectDelay)}ms` });
-      setTimeout(() => this.open(), this.reconnectDelay);
-      this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS);
+    socket.addEventListener("close", (event) => {
+      const code = "code" in event ? String((event as CloseEvent).code) : "?";
+      const reason = "reason" in event ? (event as CloseEvent).reason : "";
+      retire(`disconnected by the hub (code ${code}${reason ? `: ${reason}` : ""})`);
     });
 
     socket.addEventListener("error", () => {
       // `close` always follows, and that is where reconnection is handled. Swallowing here
       // keeps one reconnect path rather than two that can race.
     });
+  }
+
+  /**
+   * Work out why the hub has stopped answering, and say so.
+   *
+   * The reconnect loop keeps running either way — a name that has stopped resolving may just
+   * be DNS having a bad minute, and this end is in no position to be certain. What changes is
+   * what the person is told: "retrying" is true but useless when the URL is never going to
+   * work again, and the fix for that case is one flag they cannot guess.
+   */
+  private async diagnose(): Promise<void> {
+    this.diagnosed = true;
+    const check = await checkHub(this.hubUrl);
+    if (check.kind === "ok" || this.closing) return;
+    hubLog.warn(`${this.hubUrl} — ${describeHub(check)}`);
+    for (const line of explainHub(this.hubUrl, check)) hubLog.warn(line);
+    this.lastError = summariseHub(this.hubUrl, check);
+    this.publish();
+  }
+
+  /**
+   * Ping the hub on a timer, and give up on a socket that stops answering.
+   *
+   * Both halves matter and neither is enough alone: the ping is what stops an idle socket
+   * being reaped as abandoned, and the silence check is what notices when it was reaped
+   * anyway somewhere this end cannot see.
+   */
+  private startKeepalive(socket: WebSocket, retire: (why: string) => void): void {
+    this.stopKeepalive();
+    this.keepalive = setInterval(() => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      const silent = Date.now() - this.lastHeard;
+      if (silent > SILENCE_LIMIT_MS) {
+        retire(`nothing from the hub for ${String(Math.round(silent / 1000))}s`);
+        return;
+      }
+      socket.send(JSON.stringify({ t: "ping" } satisfies ClientFrame));
+    }, KEEPALIVE_EVERY_MS);
+  }
+
+  private stopKeepalive(): void {
+    if (this.keepalive === undefined) return;
+    clearInterval(this.keepalive);
+    delete this.keepalive;
   }
 
   private async onFrame(frame: ReturnType<typeof parseServerFrame> & object): Promise<void> {
@@ -571,8 +751,8 @@ export class Bridge {
 
       case "invite":
         hubLog.info(`invite ${frame.invite.status}`, {
-          from: `@${frame.invite.fromHandle}`,
-          to: `@${frame.invite.toHandle}`,
+          from: this.label(frame.invite.fromDid),
+          to: this.label(frame.invite.toDid),
         });
         this.invites = [frame.invite, ...this.invites.filter((i) => i.id !== frame.invite.id)];
         this.publish();
@@ -621,7 +801,7 @@ export class Bridge {
         }
         this.receive(arrived);
         // Our own message landing means our turn is over; anything else leaves us as we were.
-        if (arrived.authorHandle === this.me?.handle) {
+        if (arrived.authorDid === this.attestor.did) {
           this.attestor.confirmOwn(arrived);
           this.activity.set(arrived.conversationId, { state: "idle" });
           await this.recordOutgoing(arrived);
@@ -794,8 +974,8 @@ export class Bridge {
     const conversation = this.conversations.find((candidate) => candidate.id === conversationId);
     if (conversation === undefined) return { error: "this room is not one this bridge is in" };
 
-    const recipients = recipientsFor(conversation.participants, me.handle, (handle) =>
-      this.didFor(handle),
+    const recipients = recipientsFor(conversation.participants, this.attestor.did, (did) =>
+      this.known.handleOf(did) !== undefined,
     );
     if (recipients.state === "refused") return { error: recipients.why };
 
@@ -846,10 +1026,9 @@ export class Bridge {
     if (this.activity.get(conversationId)?.state === "thinking") return;
 
     const conversation = this.conversations.find((candidate) => candidate.id === conversationId);
-    const room =
-      conversation?.participants
-        .filter((member) => member.handle !== me.handle)
-        .map((member) => member.handle) ?? [];
+    const room = (conversation?.participants ?? [])
+      .filter((member) => member.did !== this.attestor.did)
+      .map((member) => this.label(member.did));
     // Opened, not judged: these arrived as `appended` and were checked then. What the agent
     // must never be handed is the ciphertext, which it would read as the words.
     const readable = transcript.map((message) => this.wordsFor(message));
@@ -873,6 +1052,7 @@ export class Bridge {
       {
         you: me.handle,
         speakingWith: room,
+        nameFor: (did) => this.label(did),
         purpose,
         transcript: readable,
         earlier,

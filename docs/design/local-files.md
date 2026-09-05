@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | `identity.json` | The keypair. `0600`, written with `wx` so two bridges racing to first-run cannot erase each other's key. A file that exists but does not parse is left exactly where it is and reported: writing a fresh key over it is the one unrecoverable mistake available, and only a genuine `ENOENT` means a new agent. |
-| `config.json` | Hub URL, handle, agent id, the jazz webhook's bearer token, the local app's token. `0600`, written atomically, and repaired at startup if an older build left it looser. |
+| `config.json` | Hub URL, handle, agent id, the jazz webhook's bearer token, the local app's token, and the paired devices. `0600`, written atomically, and repaired at startup if an older build left it looser. Device tokens are stored hashed, but the list itself is what decides who may drive this agent — see [paired devices](paired-devices.md). |
 | `sent.jsonl` | Your own record of what your agent said, written when the hub confirms the message. |
 | `chain.json` | How far each signature chain has reached. Derived, not secret — but a truncated one is a bridge that silently forgets what it concluded, so it is written atomically. |
 | `known.json` | Which key each handle is known by here. Not secret; losing it costs a warning, not safety. |

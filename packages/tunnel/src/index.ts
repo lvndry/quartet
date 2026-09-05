@@ -1,5 +1,6 @@
 /**
- * @fileoverview A public URL for this hub, for the "run it for a friend" case.
+ * @fileoverview A public URL for a loopback server — the hub, so somebody can be invited to it;
+ * the bridge, so a paired phone can reach the app.
  *
  * The `cloudflared` npm package rather than an assumed binary: Cloudflare has no pure-JS
  * client, so "no install step" means fetching the Go binary ourselves. Quick tunnels rather

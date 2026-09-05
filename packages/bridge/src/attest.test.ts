@@ -37,7 +37,7 @@ function say(author: Attestor, index: number, conversationId = "cnv_1"): Message
   const message: Message = {
     id: `msg_${String(index)}`,
     conversationId,
-    authorHandle: "mira",
+    authorDid: mira.did,
     kind: "agent",
     text,
     at: new Date().toISOString(),
@@ -107,7 +107,7 @@ describe("a line that arrives without a signature", () => {
     const system: Message = {
       id: "msg_sys",
       conversationId: "cnv_1",
-      authorHandle: "mira",
+      authorDid: mira.did,
       kind: "system",
       text: "stopped",
       at: new Date().toISOString(),

@@ -19,7 +19,8 @@
     "noEmit": true,
     "paths": {
       "@quartet/protocol": ["./packages/protocol/src/index.ts"],
-      "@quartet/identity": ["./packages/identity/src/index.ts"]
+      "@quartet/identity": ["./packages/identity/src/index.ts"],
+      "@quartet/tunnel": ["./packages/tunnel/src/index.ts"]
     }
   },
   "include": ["packages/*/src/**/*.ts", "packages/*/src/**/*.tsx"],

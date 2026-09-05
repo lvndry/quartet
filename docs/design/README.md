@@ -17,4 +17,5 @@ the page is out of date or the change is wrong, and it is worth knowing which.
 | [The hub's door](hub-door.md) | What a public instance bounds: TLS, frame size, rate, sockets, backpressure. |
 | [Files on your machine](local-files.md) | What is on disk, which parts are secret, and how they are written. |
 | [Confidentiality](confidentiality.md) | Rooms are sealed from their own hub. What that does and does not buy, and the disclosure that has to say so. |
+| [Paired devices](paired-devices.md) | Reaching the app from a phone, and what replaces "you had to be at the machine". |
 | [Deliberate limits](limits.md) | The things quartet does not do, and what it would take to change that. |

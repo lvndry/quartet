@@ -16,7 +16,8 @@ import { signClaim, tag, type Keypair } from "@quartet/identity";
 import { AgentAdmin } from "./agent-admin";
 import { Attestor } from "./attest";
 import { Bridge } from "./bridge";
-import { hardenSecretFiles, loadConfig, saveConfig, type QuartetConfig } from "./config";
+import { hardenSecretFiles, isQuickTunnel, loadConfig, saveConfig, type QuartetConfig } from "./config";
+import { checkHub, describeHub, explainHub } from "./hub-check";
 import { loadIdentity } from "./identity";
 import { loadSealingKeys } from "./sealing-keys";
 import { Sealer } from "./sealer";
@@ -39,9 +40,25 @@ import {
 } from "./jazz-agents";
 import { currentLogLevel, LOG_LEVELS, logger, parseLogLevel, setLogLevel } from "./log";
 import { startLocalServer } from "./local";
+import { DeviceRegistry, type StoredDevice } from "./devices";
+import { startTunnel } from "@quartet/tunnel";
+import QRCode from "qrcode";
 
 const DEFAULT_LOCAL_PORT = 7777;
 const DEFAULT_DAEMON_URL = "http://localhost:4747";
+
+/**
+ * Interface the app binds to.
+ *
+ * Loopback, and the tunnel is how it is reachable from anywhere else —
+ * cloudflared terminates TLS and reaches this over loopback, so the bind never has to widen.
+ * Anything else needs TLS in front of it; see the refusal in `connect`.
+ */
+const APP_HOST = process.env["QUARTET_APP_HOST"] ?? "127.0.0.1";
+
+function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "::1" || host === "localhost" || host === "[::1]";
+}
 
 /**
  * A flag's value, straight off argv, refusing to hand back another flag's name as one.
@@ -327,26 +344,6 @@ async function resolveOrMintToken(webhookName: string): Promise<string | undefin
 
 
 /**
- * Whether the hub is answering right now.
- *
- * Checked up front rather than left to the reconnect loop, which treats a hub restarting and
- * a URL that will never resolve identically — so a typo used to survive indefinitely.
- *
- * A 200 alone is not enough: a mistyped domain can land on a parked page that answers every
- * path with its own HTML. The exact `/health` body is what tells the two apart.
- */
-async function hubReachable(hubUrl: string): Promise<boolean> {
-  try {
-    const response = await fetch(new URL("/health", hubUrl), { signal: AbortSignal.timeout(5000) });
-    if (!response.ok) return false;
-    const body = (await response.json().catch(() => undefined)) as { ok?: boolean } | undefined;
-    return body?.ok === true;
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Start the app server, or say which port is taken and stop.
  *
  * Only reached with `mayMoveUp` false, where the port was named on the command line: there
@@ -425,6 +422,27 @@ async function ensureJazzInstalled(): Promise<boolean> {
   return true;
 }
 
+/**
+ * Which hub this run joins, asked rather than assumed.
+ *
+ * Belonging to a hub is not a setting one configures once: a person has a hub for work and a
+ * hub for friends, and picking between them should not mean remembering a flag. So the
+ * question is asked every time, with the last hub as the default — one keypress to carry on
+ * where you were, and a paste to go somewhere else.
+ *
+ * Skipped when `--hub` says which, and when there is nobody there to answer: a bridge started
+ * by a script or a service manager must not stop on a question, and the stored URL is a
+ * better answer than a hang.
+ */
+async function chooseHub(stored: string): Promise<string> {
+  const fromFlag = argValue("hub");
+  if (fromFlag !== undefined) return fromFlag;
+  if (process.stdin.isTTY !== true) return stored;
+
+  const answer = await prompt(`\n  hub URL [${stored}]: `);
+  return answer === "" ? stored : answer;
+}
+
 async function connect(): Promise<void> {
   const level = parseLogLevel(argValue("log-level"));
   if (level !== undefined) setLogLevel(level);
@@ -433,18 +451,39 @@ async function connect(): Promise<void> {
 
   let config = await loadConfig();
   const requestedPort = argValue("port");
-  const hubUrl = argValue("hub") ?? config.hubUrl;
+  const hubUrl = await chooseHub(config.hubUrl);
 
-  if (!(await hubReachable(hubUrl))) {
-    console.error(`\n  ! ${hubUrl} is not answering.`);
-    console.error("    Check the URL for typos, or start the hub if it just isn't up yet —");
-    console.error("    `bun run hub` (add `--tunnel` if it needs to be reachable from outside).\n");
+  // Checked up front rather than left to the reconnect loop, which cannot tell a hub that is
+  // restarting from a name that is never coming back — and only one of those is worth waiting for.
+  const check = await checkHub(hubUrl);
+  if (check.kind !== "ok") {
+    console.error(`\n  ! ${hubUrl} — ${describeHub(check)}`);
+    for (const line of explainHub(hubUrl, check)) console.error(`    ${line}`);
+    console.error("");
     process.exit(1);
   }
 
   const keypair = await loadIdentity();
   if ("error" in keypair) {
     console.error(`\n${keypair.error}`);
+    process.exit(1);
+  }
+
+  // Refuse to put the app on a network in the clear, in the same shape and for the same
+  // reason as the hub: a warning at boot is a warning nobody reads, and the failure it
+  // precedes is silent. What crosses here is every conversation on this machine plus the
+  // steers you type, which are the one thing quartet otherwise seals end to end.
+  if (!isLoopbackHost(APP_HOST) && process.env["QUARTET_ALLOW_PLAINTEXT"] !== "1") {
+    console.error(
+      `\n  refusing to serve the app on ${APP_HOST} without TLS.\n\n` +
+        "  Every request would cross the network readable — your conversations, and the\n" +
+        "  steers you type to your own agent.\n" +
+        "  Pick one:\n" +
+        "    • leave QUARTET_APP_HOST alone and let the tunnel do it (cloudflared\n" +
+        "      terminates TLS and reaches this over loopback)\n" +
+        "    • set QUARTET_ALLOW_PLAINTEXT=1 if a reverse proxy in front already\n" +
+        "      terminates TLS and only it can reach this port\n",
+    );
     process.exit(1);
   }
 
@@ -495,6 +534,14 @@ async function connect(): Promise<void> {
 
   const localToken = config.localToken ?? crypto.randomUUID().replaceAll("-", "");
   if (config.localToken !== localToken) config = { ...config, localToken };
+
+  // A device list that outlives the process, so a paired phone stays paired across restarts
+  // and a revoked one stays revoked. Writing through `config` rather than a file of its own
+  // keeps one thing to harden and one thing to back up.
+  const devices = new DeviceRegistry(config.devices ?? [], async (updated: readonly StoredDevice[]) => {
+    config = { ...config, devices: updated };
+    await saveConfig(config);
+  });
   const preferredPort = Number(requestedPort ?? config.localPort ?? DEFAULT_LOCAL_PORT);
   const webRoot = join(dirname(Bun.fileURLToPath(import.meta.url)), "..", "..", "web", "dist");
   const built = await Bun.file(join(webRoot, "index.html")).exists();
@@ -508,6 +555,8 @@ async function connect(): Promise<void> {
     token: localToken,
     bridge,
     agents,
+    devices,
+    hostname: APP_HOST,
     ...(built ? { webRoot } : {}),
   });
 
@@ -522,6 +571,48 @@ async function connect(): Promise<void> {
 
   const appUrl = `http://localhost:${String(local.port)}/?token=${localToken}`;
   console.log(`\n  quartet is running\n\n    ${appUrl}\n`);
+
+  // The tunnel comes up after the server, because a quick tunnel needs a port that is already
+  // listening. Failing to get one is a warning rather than an exit: the app on this machine
+  // works either way, and losing it because a phone could not be reached would be the wrong
+  // trade.
+  let stopTunnel: (() => void) | undefined;
+  if (!hasFlag("no-expose")) {
+    console.log("  getting an address a phone can reach — cloudflare quick tunnel…");
+    const tunnel = await startTunnel(local.port);
+    if (tunnel.kind === "ok") {
+      local.setPublicOrigin(tunnel.url);
+      stopTunnel = tunnel.stop;
+      console.log(`\n  ✓ also reachable at ${tunnel.url}`);
+      console.log("    Nothing can get in with that URL alone.\n");
+
+      // Exposing the app and then being told to run a second command to use it is a
+      // two-step for something that is one intention. The exception is a bridge that
+      // already has devices on it: a code nobody asked for is a credential sitting on a
+      // screen, and re-pairing a phone you already paired is not why you passed the flag.
+      if (devices.list().length === 0) {
+        const offer = devices.offerPairing();
+        console.log(await QRCode.toString(`${tunnel.url}/pair?code=${offer.code}`, {
+          type: "terminal",
+          small: true,
+        }));
+        console.log(`  scan that to pair a device — the code is ${offer.code}`);
+        console.log(`  good for two minutes. \`bun run bridge pair${identityFlags()}\` for another,`);
+        console.log("  or `--no-expose` if you would rather this machine were the only way in.\n");
+      } else {
+        const paired = devices.list();
+        const names = paired.map((device) => device.name).join(", ");
+        console.log(`  ${String(paired.length)} device${paired.length === 1 ? "" : "s"} paired: ${names}`);
+        console.log(`  \`bun run bridge pair${identityFlags()}\` to add another.\n`);
+      }
+    } else {
+      // Not fatal, and deliberately so: the app on this machine works either way, and a
+      // connect that fails because a phone could not be reached would be the wrong trade —
+      // especially now that nobody asked for the tunnel by name.
+      console.warn(`\n  ! no tunnel (${tunnel.kind}) — the app is still on ${appUrl}`);
+      console.warn("    That is only the phone address; your agent is connected and working.\n");
+    }
+  }
   logger("bridge").info("watching", {
     agent: `@${config.handle ?? "?"}`,
     webhook: daemon.webhook,
@@ -535,10 +626,89 @@ async function connect(): Promise<void> {
   const shutdown = (): void => {
     bridge.stop();
     local.stop();
+    stopTunnel?.();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+}
+
+/**
+ * Offer a pairing code, from the terminal, for a device to scan.
+ *
+ * A second process talking to the running one over loopback rather than doing the pairing
+ * itself: the offer has to live in the bridge that will honour it, and that bridge is
+ * already up. Reaching it needs the port and token this identity's config remembers, which
+ * is also what makes this refuse to pair against somebody else's agent.
+ *
+ * Which identity that is comes from `--agent`/`--data-dir` like everywhere else, so with
+ * several bridges running this pairs the default one unless told otherwise. It says which,
+ * out loud: a device paired to the wrong agent is a door you did not mean to open, and the
+ * device list only helps somebody who knows which list to look at.
+ */
+async function pairDevice(): Promise<void> {
+  const config = await loadConfig();
+  if (config.localPort === undefined || config.localToken === undefined) {
+    console.error(`\n  ! no app on file in ${getDataDirectory()}.`);
+    console.error("    That is the directory --agent/--data-dir picked, and nothing has run");
+    console.error("    `quartet connect` there yet. A bridge started with `--data-dir <path>`");
+    console.error("    is paired with the same `--data-dir <path>`, not with `--agent`.\n");
+    process.exit(1);
+  }
+
+  console.log(
+    `\n  pairing a device to ${config.handle === undefined ? "this identity" : `@${config.handle}`}` +
+      ` — ${getDataDirectory()}, port ${String(config.localPort)}`,
+  );
+
+  const response = await fetch(`http://localhost:${String(config.localPort)}/api/devices/offer`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${config.localToken}`,
+    },
+    body: "{}",
+  }).catch(() => undefined);
+
+  if (response === undefined || !response.ok) {
+    console.error(`\n  ! nothing is answering on port ${String(config.localPort)} for that identity.`);
+    console.error("    Start it with `quartet connect`, then run this again — or pass");
+    console.error("    `--agent <id>` if you meant one of the other bridges on this machine.\n");
+    process.exit(1);
+  }
+
+  const body = (await response.json()) as { value: { code: string; url: string; expiresAt: number } };
+  const { code, url } = body.value;
+  const seconds = Math.max(0, Math.round((body.value.expiresAt - Date.now()) / 1000));
+
+  const isTunnelled = !url.startsWith("http://localhost");
+  console.log(`\n${await QRCode.toString(url, { type: "terminal", small: true })}`);
+  console.log(`  scan that, or open   ${url}`);
+  console.log(`  the code is          ${code}`);
+  console.log(`\n  Good for ${String(seconds)} seconds, and for one device.`);
+  if (!isTunnelled) {
+    console.warn(
+      "\n  ! this address only works on this machine. For a phone, restart the bridge" +
+        "\n    without `--no-expose` so there is an address it can reach.\n",
+    );
+  } else {
+    console.log("  Revoke it any time from Your agents → Devices.\n");
+  }
+}
+
+/**
+ * The identity flags this invocation was started with, to repeat back in any command we tell
+ * somebody to run next.
+ *
+ * Printing a bare `quartet pair` to a bridge started with `--data-dir` names a *different*
+ * identity — the default one — and pairing a device to the wrong agent is a door opened by
+ * accident. Whatever selected this data directory has to travel with the advice.
+ */
+function identityFlags(): string {
+  const dataDirFlag = argValue("data-dir");
+  if (dataDirFlag !== undefined) return ` --data-dir ${dataDirFlag}`;
+  const agentFlag = argValue("agent");
+  return agentFlag === undefined ? "" : ` --agent ${agentFlag}`;
 }
 
 function usage(): void {
@@ -548,6 +718,8 @@ function usage(): void {
       "",
       "  quartet connect            start the bridge and open the app",
       "    --hub <url>              which hub to join",
+      "    --no-expose              skip the public https URL, so the app is reachable from",
+      "                             this machine only and no phone can pair with it",
       "    --port <n>               local port for the app — served or nothing (default 7777,",
       "                             and only that default moves up when it is taken)",
       "    --data-dir <path>        this agent's config and record (overrides $QUARTET_HOME)",
@@ -563,6 +735,10 @@ function usage(): void {
       "    --jazz <command>         how to invoke jazz (default: jazz)",
       `    --log-level <level>      ${LOG_LEVELS.join(" | ")} (default: info, or $QUARTET_LOG)`,
       "    --yes                    install jazz without asking, if it's missing",
+      "",
+      "  quartet pair                offer a code for a phone or tablet to scan",
+      "    --agent <id>               pair to a second agent on this host, not the default one",
+      "    --data-dir <path>          the same, by directory (overrides $QUARTET_HOME)",
       "",
       "  quartet info                what this identity actually is, right now",
       "    --agent <id>               check a specific jazz agent instead of the one on file",
@@ -599,8 +775,15 @@ async function info(): Promise<void> {
   }
 
   const hubUrl = argValue("hub") ?? config.hubUrl;
-  const reachable = await hubReachable(hubUrl);
-  console.log(`hub        ${hubUrl} — ${reachable ? "reachable" : "not answering"}`);
+  const check = await checkHub(hubUrl);
+  // Only while it is still working, which is when the warning is worth anything. Once the name
+  // has already moved, `explainHub` says the same thing at more length and to more purpose.
+  const naming =
+    check.kind === "ok" && isQuickTunnel(hubUrl)
+      ? " (quick tunnel — this name changes when the hub restarts)"
+      : "";
+  console.log(`hub        ${hubUrl} — ${describeHub(check)}${naming}`);
+  for (const line of explainHub(hubUrl, check)) console.log(`           ${line}`);
 
   const daemonUrl = argValue("daemon") ?? config.daemon?.url ?? DEFAULT_DAEMON_URL;
   const agentFlag =
@@ -663,6 +846,8 @@ if (hasFlag("help") || command === "help") {
   await info();
 } else if (command === "connect") {
   await connect();
+} else if (command === "pair") {
+  await pairDevice();
 } else {
   usage();
   process.exit(1);

@@ -22,7 +22,7 @@ import { Journal } from "./journal";
 
 /** One author's thread within one conversation. A handle cannot contain a space. */
 function chainKey(message: Message): string {
-  return `${message.conversationId} ${message.authorHandle}`;
+  return `${message.conversationId} ${message.authorDid}`;
 }
 
 // The app shows every verdict, so its shape is part of the bridge↔app contract rather than

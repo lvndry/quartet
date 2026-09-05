@@ -22,6 +22,7 @@ import {
   signClaim,
   signMessage,
   signSealingKey,
+  tag as tagFor,
   type Keypair,
 } from "@quartet/identity";
 
@@ -189,6 +190,13 @@ class Party {
     };
   }
 
+  /** How everybody else names this party: the handle plus the fingerprint of its key. */
+  tag(): string {
+    const named = tagFor(this.handle, this.keypair.did);
+    if (named === undefined) throw new Error(`@${this.handle} has no usable did`);
+    return named;
+  }
+
   seen(kind: string): Frame[] {
     return this.frames.filter((frame) => frame.t === kind);
   }
@@ -219,7 +227,7 @@ async function aRoom(names: [string, string]) {
   await first.connect();
   await second.connect();
 
-  first.send({ t: "invite.send", toHandle: second.handle, purpose: "find a time" });
+  first.send({ t: "invite.send", toDid: second.keypair.did, purpose: "find a time" });
   const invite = await second.waitForFrame("invite");
   second.send({ t: "invite.respond", inviteId: String(invite["inviteId"] ?? (invite["invite"] as { id: string }).id), accept: true });
 
@@ -318,7 +326,9 @@ describe("erasing a shared room", () => {
     // One member is not a quorum. @jonas took part in this and paid for his half of it.
     expect(second.seen("conversation.removed")).toHaveLength(0);
     const marked = second.last("conversation");
-    expect((marked?.["conversation"] as { eraseAsked: string[] }).eraseAsked).toEqual(["iris"]);
+    expect((marked?.["conversation"] as { eraseAsked: string[] }).eraseAsked).toEqual([
+      first.keypair.did,
+    ]);
 
     second.send({ t: "conversation.delete", conversationId, scope: "everyone" });
     await waitFor("the room to go once both have asked", () => second.seen("conversation.removed").length === 1);
@@ -356,6 +366,70 @@ describe("erasing a shared room", () => {
         (frame["message"] as { text: string }).text.includes("asked to erase"),
       ),
     ).toBe(false);
+  });
+});
+
+describe("two people who chose the same name", () => {
+  it("both get it, because the key is the identity and the handle is a label", async () => {
+    const one = new Party("robin");
+    const two = new Party("robin");
+
+    expect((await one.claim()).status).toBe(201);
+    expect((await two.claim()).status).toBe(201);
+    expect(one.tag()).not.toBe(two.tag());
+  });
+
+  it("reaches the one that was named, not whichever claimed it first", async () => {
+    const [first, second] = [new Party("sam"), new Party("sam")];
+    const inviter = new Party("kit");
+    for (const party of [first, second, inviter]) {
+      expect((await party.claim()).status).toBe(201);
+    }
+    for (const party of [first, second, inviter]) await party.connect();
+
+    // The *second* @sam, which a lookup by bare handle would never have found.
+    inviter.send({ t: "invite.send", toDid: second.keypair.did, purpose: "the right sam" });
+
+    const invite = await second.waitForFrame("invite");
+    expect(String((invite["invite"] as { toDid: string }).toDid)).toBe(second.keypair.did);
+    expect(first.seen("invite")).toHaveLength(0);
+    for (const party of [first, second, inviter]) party.socket.close();
+  });
+
+  it("refuses a claim from a key that already has a handle here", async () => {
+    const twice = new Party("wren");
+    expect((await twice.claim()).status).toBe(201);
+
+    const again = await twice.claim();
+    expect(again.status).toBe(409);
+    expect(await again.text()).toContain("already claimed");
+  });
+});
+
+describe("a socket with nothing to say", () => {
+  it("is answered when it pings, so an idle connection is not a silent one", async () => {
+    const quiet = new Party("quiet");
+    expect((await quiet.claim()).status).toBe(201);
+    await quiet.connect();
+
+    quiet.send({ t: "ping" });
+    await quiet.waitForFrame("pong");
+    expect(quiet.seen("pong")).toHaveLength(1);
+    expect(quiet.errors()).toEqual([]);
+    quiet.socket.close();
+  });
+
+  it("may ping before it has said who it is, because a keepalive is not a conversation", async () => {
+    const stranger = new Party("stranger");
+    await stranger.connect({ sayHello: false });
+
+    stranger.send({ t: "ping" });
+    await stranger.waitForFrame("pong");
+    // The grace period still applies — a keepalive buys a socket time to introduce itself,
+    // not permission to skip it.
+    expect(stranger.errors()).toEqual([]);
+    await waitFor("the socket to be closed anyway", () => stranger.closedWith !== undefined);
+    expect(stranger.closedWith).toBe(1008);
   });
 });
 

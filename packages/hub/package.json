@@ -3,5 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "dependencies": { "@quartet/protocol": "workspace:*" }
+  "dependencies": {
+    "@quartet/protocol": "workspace:*",
+    "@quartet/tunnel": "workspace:*"
+  }
 }

@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useState, type ReactElement } from "react";
+import { Devices } from "./Devices";
 import {
   read,
   type BridgeState,
@@ -429,6 +430,8 @@ export function Dashboard({
               New agent
             </button>
           )}
+
+          <Devices />
         </div>
 
         <div className="dash-editor pane-scroll">

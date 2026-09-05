@@ -5,6 +5,22 @@
  * carries the rationale — ink ground, cream as the type colour, and the rule that hue means
  * state rather than identity.
  */
+/*
+ * Widths. Fixed rem tracks at every breakpoint gave a 2560px display laptop proportions —
+ * the chat column absorbed the whole surplus while the text inside it stayed clamped, so the
+ * widest screens got the worst reading line and the ledger, the column that gains most from
+ * room, gained none.
+ *
+ * The tracks are fluid because a pane is furniture and should grow with the wall. The measure
+ * is fixed because a line of prose does not get more readable at 1400px, and the discrete
+ * breakpoints below now only fold the layout, which is the thing they are good at.
+ */
+:root {
+  --track-nav: clamp(16rem, 13rem + 5vw, 21rem);
+  --track-ledger: clamp(14rem, 9.5rem + 11.9vw, 26rem);
+  --measure-thread: 62rem;
+}
+
 * { box-sizing: border-box; }
 
 html, body, #root { height: 100%; }
@@ -55,9 +71,12 @@ button, input, textarea { font: inherit; color: inherit; }
 .columns {
   display: grid;
   grid-template-areas: "nav chat ledger";
-  grid-template-columns: 16rem minmax(0, 1fr) 16rem;
+  grid-template-columns: var(--track-nav) minmax(0, 1fr) var(--track-ledger);
   min-height: 0;
   overflow: hidden;
+  /* The anchor for the overlay drawer below: the top of this row is the bottom of the
+     topbar, by construction rather than by measurement. */
+  position: relative;
 }
 .pane.nav { grid-area: nav; }
 .pane.chat { grid-area: chat; border-right: none; }
@@ -76,36 +95,49 @@ button, input, textarea { font: inherit; color: inherit; }
 .nav-toggle:hover { border-color: var(--signal); color: var(--signal); }
 .nav-scrim { display: none; }
 
-@media (min-width: 1280px) {
-  .columns { grid-template-columns: 17rem minmax(0, 1fr) 19rem; }
-}
-
 @media (max-width: 959px) {
+  /* Fixed here, not fluid: the tablet band has one column of chat to protect, and a ledger
+     that grew with the viewport would take it from the conversation. */
   .columns { grid-template-areas: "chat ledger"; grid-template-columns: minmax(0, 1fr) 14rem; }
   .nav-toggle { display: inline-flex; }
+  /* Absolute inside `.columns` rather than fixed against the viewport, so the drawer starts
+     where the topbar ends without anyone having to know how tall the topbar is — which
+     changes with the safe-area inset on a notched phone, and would change again if the bar
+     ever wrapped. The scrim is a sibling of `.columns` rather than a child, so it keeps
+     covering the whole window as it did before — dimming the topbar is the point of it. */
   .pane.nav {
     display: none;
-    position: fixed; top: 3.05rem; left: 0; bottom: 0; width: 17rem;
+    position: absolute; top: 0; left: 0; bottom: 0; width: 17rem;
     z-index: 30; background: var(--ink); border-right: 1px solid var(--rule);
     box-shadow: 8px 0 28px rgb(0 0 0 / 45%);
   }
   .pane.nav.open { display: flex; }
   .nav-scrim.open {
-    display: block; position: fixed; inset: 0; z-index: 25;
+    display: block; position: absolute; inset: 0; z-index: 25;
     background: rgb(0 0 0 / 45%);
   }
 }
 
+/* The ledger is `state.ledger` filtered to this room — your own agent's outbound lines,
+   every one of which is already in the thread above it. On a handset that is a third of the
+   screen spent reading the same messages twice, so the phone gets the conversation whole. */
 @media (max-width: 719px) {
   .columns {
-    grid-template-areas: "chat" "ledger";
+    grid-template-areas: "chat";
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) minmax(11rem, 34vh);
+    grid-template-rows: minmax(0, 1fr);
   }
-  .pane.ledger { border-left: none; border-top: 1px solid var(--rule); }
+  .pane.ledger { display: none; }
 }
 
-.pane { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--rule); }
+/* A pane is asked to look right in its own box, so it is the box it should be consulting.
+   The nav is 16rem in a three-column window and 17rem as a drawer; the ledger is anywhere
+   from 14rem to 26rem. Keying their contents to the viewport meant answering a question
+   about themselves by measuring something else. */
+.pane {
+  min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--rule);
+  container-type: inline-size;
+}
 .pane-scroll { overflow-y: auto; min-height: 0; flex: 1; }
 
 .pane-title {
@@ -217,7 +249,22 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
   cursor: pointer;
 }
 
-/* ---------- chat ---------- */
+/* ---------- chat ----------
+
+   The conversation is a column, not a track. `.md` has always held prose to ~68 characters,
+   but the pane it sits in grew without limit, so past about 1400px the transcript became a
+   ribbon of type pinned to the left edge with the surplus as dead ink beside it. Capping and
+   centring the four pieces of the conversation — its header, its cast, the transcript and
+   the composer — keeps them stacked in one column at any width. The rules that separate them
+   belong to that column, so they stop with it. */
+.chat-head,
+.cast,
+.thread,
+.composer {
+  width: 100%;
+  max-width: var(--measure-thread);
+  margin-inline: auto;
+}
 
 .chat-head {
   padding: 0.8rem 1.2rem; border-bottom: 1px solid var(--rule);
@@ -372,6 +419,22 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
   overflow: hidden; white-space: pre-wrap; word-break: break-word;
 }
 .led-steer { font-family: var(--mono); font-size: 0.62rem; color: var(--brass); }
+
+/* Once the column has the room, the clock moves out of the text's way into its own gutter,
+   the record gets the full width instead of starting a line below the time, and two more
+   lines of it survive the clamp. A wide screen's dividend is more of the record visible,
+   not more margin.
+
+   Placed after `.led-text` deliberately: both rules are a single class, so source order is
+   what decides between them. */
+@container (min-width: 21rem) {
+  .led-row {
+    display: grid; grid-template-columns: 4.5rem minmax(0, 1fr);
+    column-gap: 0.6rem; row-gap: 0.2rem;
+  }
+  .led-text, .led-steer { grid-column: 2; }
+  .led-text { -webkit-line-clamp: 5; }
+}
 .led-foot { padding: 0.8rem 1rem; font-family: var(--mono); font-size: 0.62rem; color: var(--slate); line-height: 1.7; }
 
 .placeholder { display: grid; place-items: center; height: 100%; padding: 2rem; text-align: center; }
@@ -485,7 +548,9 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
 }
 .dash-new { border-style: dashed; color: var(--slate); width: calc(100% - 2rem); margin: 0.7rem 1rem; }
 
-.dash-editor { padding: 0.9rem 1.1rem 1.6rem; max-width: 34rem; }
+/* A form is a column too, but a wider one than prose: the fields have their own labels and
+   hints to carry, and 34rem on a studio display was a strip. */
+.dash-editor { padding: 0.9rem 1.1rem 1.6rem; max-width: clamp(34rem, 46vw, 46rem); }
 .dash-promote { width: 100%; margin-bottom: 0.5rem; }
 
 /* Group heads carry the structure, so they get the rule that runs to the edge. */
@@ -582,4 +647,118 @@ button.model-badge.open .model-badge-more {
 .dash-action {
   font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.1em;
   text-transform: uppercase; color: var(--cream-dim); margin-top: 0.6rem;
+}
+
+/* ---------- devices ----------
+   Paired devices sit under the agent roster because they answer the same question: what is
+   acting as me. Revoke is the only vermilion control here — it is the one that takes
+   something away. */
+
+.devices { border-top: 1px solid var(--rule); margin-top: 0.9rem; padding: 0.9rem 0.75rem 1.1rem; }
+.device-row {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.45rem 0; border-bottom: 1px solid var(--rule-soft);
+}
+.device-row .row-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.btn.danger { border-color: var(--rule); color: var(--cream-dim); }
+.btn.danger:hover:not(:disabled) { border-color: var(--vermilion); background: var(--vermilion); color: var(--ink); }
+
+.pairing-offer { margin-top: 0.7rem; display: flex; flex-direction: column; align-items: center; gap: 0.4rem; text-align: center; }
+.pairing-qr { width: min(15rem, 100%); height: auto; image-rendering: pixelated; background: var(--cream); padding: 0.5rem; }
+.pairing-offer-code {
+  font-family: var(--mono); font-size: 1.5rem; letter-spacing: 0.28em;
+  text-indent: 0.28em; color: var(--cream); user-select: all;
+}
+
+/* ---------- pairing screen ----------
+   The only screen that renders without a credential, so it carries the wordmark and says in
+   plain words what pairing hands over. */
+
+.pairing { min-height: 100%; display: grid; place-items: center; padding: 1.5rem 1.1rem calc(1.5rem + env(safe-area-inset-bottom)); }
+.pairing-card {
+  width: min(26rem, 100%); display: flex; flex-direction: column; gap: 0.5rem;
+  border: 1px solid var(--rule); background: var(--ink-raised); padding: 1.4rem 1.2rem;
+}
+.pairing-card h1 { font-family: var(--shout); font-size: 1.3rem; font-weight: 500; margin: 0.6rem 0 0; }
+.pairing-lede { color: var(--cream-dim); font-size: 0.85rem; margin: 0 0 0.5rem; }
+.pairing-card label {
+  font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--cream-dim); margin-top: 0.5rem;
+}
+.pairing-card input {
+  background: var(--ink); border: 1px solid var(--rule); color: var(--cream);
+  padding: 0.7rem 0.75rem; width: 100%;
+}
+.pairing-card input:focus-visible { border-color: var(--signal); }
+.pairing-code { font-family: var(--mono); font-size: 1.25rem; letter-spacing: 0.24em; }
+.pairing-error { color: var(--vermilion); font-size: 0.85rem; margin: 0.6rem 0 0; }
+.pairing-card button[type="submit"] {
+  margin-top: 1rem; font-family: var(--mono); font-size: 0.72rem; font-weight: 600;
+  letter-spacing: 0.12em; text-transform: uppercase; padding: 0.85rem 1rem;
+  background: var(--vermilion); border: 1px solid var(--vermilion); color: var(--ink);
+  cursor: pointer;
+}
+.pairing-card button[type="submit"]:disabled { opacity: 0.4; cursor: default; }
+
+/* ---------- a phone, rather than a narrow window ----------
+   The breakpoints above fold the layout; these handle what a handset adds on top of width.
+   375–430px portrait is the range that matters, and the notch, the home indicator and the
+   on-screen keyboard are not width at all. */
+
+@media (max-width: 480px) {
+  body { font-size: 16px; }
+
+  /* iOS zooms the whole page when a focused input is under 16px, and never zooms back out.
+     Sizing the inputs up front is what stops the composer from wrecking the layout. */
+  input, textarea, select { font-size: 16px; }
+
+  .topbar { gap: 0.6rem; padding: 0.6rem 0.75rem; padding-top: calc(0.6rem + env(safe-area-inset-top)); }
+  .wordmark { font-size: 1.1rem; }
+  /* The fingerprint is the first thing to go: it is a thing you check deliberately, on a
+     screen with room for it, not something to crowd a phone's topbar with. */
+  .whoami { display: none; }
+
+  .composer { padding: 0.6rem 0.75rem calc(0.6rem + env(safe-area-inset-bottom)); }
+
+  .pane.nav { width: min(17rem, 82vw); }
+  .devices { padding-left: 0.5rem; padding-right: 0.5rem; }
+}
+
+/* Touch, rather than width: a device with no cursor cannot hover, so anything that only
+   appears on hover is invisible rather than subtle. The model badge is the case that
+   matters — it is how you reach the agent screen at all. */
+@media (hover: none) {
+  .model-badge .model-badge-more {
+    max-width: 10rem; opacity: 1; margin-left: 0.5rem;
+    padding-left: 0.5rem; border-left-color: currentColor;
+  }
+  /* Forty-four points is Apple's floor and a reasonable one; a cursor-sized control is a
+     coin toss with a thumb. */
+  .btn, .nav-toggle, .dash-row, .device-row .btn { min-height: 2.75rem; }
+  .btn { padding: 0.6rem 0.9rem; }
+}
+
+/* The on-screen keyboard shrinks the viewport rather than scrolling under it, but only where
+   dynamic viewport units are honoured. `100%` stays the fallback, so nothing here depends on
+   it landing. */
+@supports (height: 100dvh) {
+  html, body, #root { height: 100dvh; }
+}
+
+/* Last, deliberately: these undo parts of the `hover: none` block above for the narrowest
+   screens, and source order is what decides between two rules of equal specificity.
+
+   On a touch device the badge's label is always showing, so the model name and the label
+   together are wider than a phone's topbar — and the model name is the half you cannot act
+   on. The status is what gets pushed off otherwise, and "is this thing connected" is the one
+   thing the topbar owes a phone. */
+@media (max-width: 480px) {
+  .topbar { gap: 0.5rem; }
+  button.model-badge { max-width: 9rem; flex: 0 1 auto; min-width: 0; }
+  button.model-badge > span:first-child { display: none; }
+  /* Matching the touch block's specificity, not just following it: with the model name gone
+     the separator has nothing to separate, and reads as a stray mark. */
+  button.model-badge .model-badge-more { margin-left: 0; padding-left: 0; border-left-color: transparent; }
+  .nav-toggle { flex: 0 0 auto; }
+  .status { white-space: nowrap; flex: 0 0 auto; font-size: 0.58rem; letter-spacing: 0.06em; }
 }

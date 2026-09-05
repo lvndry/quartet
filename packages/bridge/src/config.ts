@@ -7,6 +7,7 @@
  */
 
 import { chmod, stat } from "node:fs/promises";
+import type { StoredDevice } from "./devices";
 import { writeJsonAtomically } from "./atomic";
 import { configPath, identityPath } from "./paths";
 
@@ -15,8 +16,9 @@ import { configPath, identityPath } from "./paths";
  *
  * `config.json` holds the jazz webhook's bearer token, which can spend its owner's model
  * budget, and the local app's token, which is the whole of what guards a page showing every
- * conversation on this machine. `identity.json` holds the private key. See
- * `docs/design/local-files.md`.
+ * conversation on this machine. It also holds the paired-device list, whose tokens are
+ * hashed rather than stored — but whose *presence* still decides who can drive this agent.
+ * `identity.json` holds the private key. See `docs/design/local-files.md`.
  */
 const SECRET_FILE_MODE = 0o600;
 
@@ -45,9 +47,36 @@ export interface QuartetConfig {
   readonly localPort?: number;
   /** Guards the local app. Kept so the URL stays bookmarkable across restarts. */
   readonly localToken?: string;
+  /**
+   * Devices paired to drive this agent from somewhere other than this machine.
+   *
+   * Each holds a hashed token, so this list is what stands between a tunnel URL and the
+   * agent. Removing an entry here is revocation — see `docs/design/paired-devices.md`.
+   */
+  readonly devices?: readonly StoredDevice[];
 }
 
 export const DEFAULT_HUB_URL = "http://localhost:8080";
+
+/**
+ * Whether a hub URL is a cloudflare quick tunnel — the kind `hub --tunnel` prints.
+ *
+ * Not a judgement about whether to use one: a quick tunnel is a perfectly good way to keep a
+ * hub up for other people, and plenty of them run for weeks. It is about one property those
+ * hostnames have and no others do — they are handed out anonymously, so cloudflare owes
+ * nobody the same name twice, and a hub that restarts comes back at a different address.
+ *
+ * Worth naming specifically because of what that failure looks like from the other end: a URL
+ * that worked yesterday and answers nothing today is indistinguishable from a typo, and the
+ * advice for a typo is useless here.
+ */
+export function isQuickTunnel(hubUrl: string): boolean {
+  try {
+    return new URL(hubUrl).hostname.endsWith(".trycloudflare.com");
+  } catch {
+    return false;
+  }
+}
 
 export { configPath };
 

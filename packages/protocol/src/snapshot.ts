@@ -109,10 +109,12 @@ export type Opened =
   | { readonly state: "sealed-to-others" }
   | { readonly state: "unopenable" };
 
-/** A handle whose key changed under us, and what it changed between. */
+/** A key that changed its name under us, and what it changed between. */
 export interface Conflict {
-  readonly handle: string;
-  readonly pinned: string;
+  readonly did: string;
+  /** What this key was calling itself when this machine first saw it. */
+  readonly known: string;
+  /** What it is calling itself now. */
   readonly offered: string;
 }
 
@@ -277,13 +279,19 @@ export interface BridgeState {
    */
   readonly opened: Readonly<Record<string, Opened>>;
   /**
-   * Handles whose key has changed since this machine first saw them.
+   * Keys that have started calling themselves something else.
    *
-   * Surfaced rather than resolved. A changed key is a new device or a reinstall about as often
-   * as it is an attack, and a bridge cannot tell the two apart — but a person who compares a
-   * fingerprint can, and they cannot do that if nobody tells them.
+   * Surfaced rather than resolved. A rename is somebody changing their mind about as often as
+   * it is somebody walking into a room wearing a name that means another person there, and a
+   * bridge cannot tell the two apart — but a person who compares a fingerprint can, and they
+   * cannot do that if nobody tells them.
    */
   readonly keyConflicts: readonly Conflict[];
+  /**
+   * How to write each key on screen, by did: `@mira` alone, or `@mira#4f2a` where two share
+   * the name. Computed here so every surface renders one name for one key.
+   */
+  readonly labels: Readonly<Record<string, string>>;
   /**
    * The readable short form of every key this bridge can name, by did.
    *
