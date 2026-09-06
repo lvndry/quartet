@@ -371,6 +371,8 @@ export function Dashboard({
   async function save(): Promise<void> {
     setBusy(true);
     setRefusal(undefined);
+    // Read before the await: creating the agent is what makes this false.
+    const isTheFirst = creating && noAgentsYet;
     const config = configFrom(draft, detail?.config);
     const result = creating
       ? await read<JazzAgentDetail>("agents/create", {
@@ -394,6 +396,11 @@ export function Dashboard({
     setDraft(draftFrom(result.value));
     setCreating(false);
     setOpenId(result.value.id);
+
+    // The first agent goes on stage without being asked. There is nothing to choose between,
+    // and leaving somebody who has just made their only agent looking at a button called
+    // "let it speak for you" is the same dead end one screen further on.
+    if (isTheFirst) await onAct("agents/select", { agentId: result.value.id });
   }
 
   async function savePersona(): Promise<void> {
@@ -891,7 +898,13 @@ export function Dashboard({
                     disabled={busy || !dirty}
                     onClick={() => void save()}
                   >
-                    {creating ? "Create agent" : dirty ? "Save changes" : "Saved"}
+                    {creating
+                      ? noAgentsYet
+                        ? "Create and put on stage"
+                        : "Create agent"
+                      : dirty
+                        ? "Save changes"
+                        : "Saved"}
                   </button>
                   {/* Absent rather than disabled on the agent that speaks for you: a greyed
                       control never says why, and the reason is the actionable part. */}
