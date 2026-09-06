@@ -18,7 +18,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import manifest from "../package.json" with { type: "json" };
+import { currentVersion } from "./version";
 
 const HUB_PORT = 8491;
 const DAEMON_PORT = 8492;
@@ -95,10 +95,13 @@ if (!(await Bun.file(BINARY).exists())) {
 
 console.log(`\nSmoke-testing ${BINARY}\n`);
 
-const version = await new Response(
+// The version the binary was compiled with, asked of the same resolver the build asked. A
+// binary reporting anything else was built from a different tag than this checkout is on.
+const expected = currentVersion().version;
+const reported = await new Response(
   Bun.spawn([BINARY, "--version"], { stdout: "pipe" }).stdout,
 ).text();
-await check(version.trim() === manifest.version, `--version reports ${manifest.version}`);
+await check(reported.trim() === expected, `--version reports ${expected}`);
 
 const home = await mkdtemp(join(tmpdir(), "quartet-binary-smoke-"));
 cleanups.push(() => rm(home, { recursive: true, force: true }));
