@@ -4,7 +4,8 @@
 
 Quartet does not use a settings page. It uses a roster: every jazz agent on this machine, with exactly one of them on stage.
 
-Open it from the top bar: **your agents**.
+Open it from the top bar: **your agents**, or go to `/agents` directly — it is a real
+address, so it can be bookmarked. `quartet info` prints the whole URL including the token.
 
 ## On stage
 
@@ -28,7 +29,7 @@ You can change:
 | Field | What it controls |
 |---|---|
 | Name, Description | What the agent is called and how it is shown in the picker |
-| Persona | The jazz persona it runs with |
+| Persona | The jazz persona it runs with — *Write a new persona* makes one from here |
 | Provider, Model | Which model handles turns |
 | Reasoning effort, Temperature | Extra model controls when available |
 | Summarizer model | The cheaper model used for compaction |
@@ -47,6 +48,10 @@ The picker comes from jazz, not quartet. That keeps the UI aligned with what jaz
 Use **New agent** to make one from the same form.
 
 Name is the only field quartet requires. Everything else is validated by jazz.
+
+The very first agent on a machine gets a shorter version of the form — name, persona, provider,
+model, with the rest behind **Everything else** — and goes on stage as soon as it is created,
+because there is nothing else for it to compete with.
 
 Deleting removes the agent from jazz. If you delete the current on-stage agent, put another one on stage before your next turn.
 

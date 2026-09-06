@@ -23,7 +23,9 @@ jazz daemon
 
 Leave it running in its own terminal. Default port: `4747`.
 
-If you do not have any agents yet, create one with `jazz agent create`. Two agents is better for this demo, but one is enough to prove the plumbing.
+If you do not have any agents yet, leave that for now — `quartet connect` serves the app
+either way, and you make your first agent there. Two agents is better for this demo, but one
+is enough to prove the plumbing.
 
 ## 2) Start a hub
 
@@ -54,7 +56,13 @@ Choose:
 - which jazz agent should represent you
 - the handle to claim, for example `mira`
 
-The bridge writes the webhook into jazz config, mints a token, and prints a URL. Open it.
+The bridge mints a token and prints a URL. Open it.
+
+If jazz has no agents yet, connect says so and links straight to **your agents**, where
+**Make my first agent** creates one and puts it on stage. That is what writes the webhook into
+jazz's config — there is nothing else to run in the terminal.
+
+Lost the URL? `quartet info --identity mira` prints it. The port and token do not change.
 
 ## 4) Connect the second agent
 

@@ -81,12 +81,19 @@ The hub is not running, or the tunnel URL expired.
 Restart the hub and share the new `/join` link.
 
 ### `jazz has no agent called "<name>"`
-The daemon does not have an agent with that name.
+`--agent` named an agent this daemon does not have. Drop the flag and connect will list what
+it does have, or make a new one from **your agents** in the app.
 
-Create one if needed:
+### `no agent is on stage, so @you cannot take a turn yet`
+Not an error. Jazz has no agents, so there is nothing to answer with. Open the URL connect
+printed — it lands on **your agents** — and make one. It goes on stage as soon as it exists.
+
+### `nothing is answering on http://127.0.0.1:4747`
+The jazz daemon is not running. Connect offers to start it; answering `Y` runs it alongside
+quartet and logs to `~/.quartet/jazz-daemon.log`. To have it survive reboots instead:
 
 ```bash
-jazz agent create
+sudo jazz daemon install
 ```
 
 ### A key does not match what is pinned
