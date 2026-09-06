@@ -15,6 +15,7 @@ import { basename } from "node:path";
 import { signClaim, tag, type Keypair } from "@quartet/identity";
 import { AgentAdmin } from "./agent-admin";
 import { loadAppBundle } from "./app-bundle";
+import { prompt } from "./ask";
 import { Attestor } from "./attest";
 import { Bridge } from "./bridge";
 import {
@@ -111,21 +112,6 @@ function hasFlag(name: string): boolean {
 }
 
 /**
- * One reader for the whole session, not one per question.
- *
- * `for await (const line of console)` opens a fresh reader over stdin each time it is
- * evaluated, so a second prompt races the first one's buffer and the answers land against
- * the wrong questions. Holding a single iterator is the fix.
- */
-const lines: AsyncIterator<string> = console[Symbol.asyncIterator]();
-
-async function prompt(question: string): Promise<string> {
-  process.stdout.write(question);
-  const next = await lines.next();
-  return next.done === true ? "" : next.value.trim();
-}
-
-/**
  * What this hub calls a key — the question the config used to answer badly.
  *
  * A handle lives in the hub's database, so this is the only place the answer exists. Asked
@@ -207,13 +193,14 @@ async function claimHandle(
   if (interactive) console.log("\n  This hub has never seen your key.\n");
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const asked = interactive
-      ? await prompt(
-          suggested === undefined
-            ? "  Handle to claim here (lowercase, e.g. mira): "
-            : `  Handle to claim here [${suggested}]: `,
-        )
-      : "";
+    const asked =
+      (interactive
+        ? await prompt(
+            suggested === undefined
+              ? "  Handle to claim here (lowercase, e.g. mira): "
+              : `  Handle to claim here [${suggested}]: `,
+          )
+        : undefined) ?? "";
     const handle = (fromFlag ?? (asked.length > 0 ? asked : (suggested ?? ""))).trim();
     if (handle.length < 2) {
       console.error("\n  A handle needs at least two characters.");
@@ -223,7 +210,8 @@ async function claimHandle(
     // Shows the handle it falls back to, the way the daemon question shows its default. An
     // empty answer here is the common case, and a bare "Display name:" gave no clue whether
     // that meant "no display name" or "the handle".
-    const nameAnswer = argValue("name") ?? (interactive ? await prompt(`  Display name: [${handle}] `) : "");
+    const nameAnswer =
+      argValue("name") ?? (interactive ? await prompt(`  Display name: [${handle}] `) : undefined) ?? "";
     const displayName = nameAnswer.trim().length > 0 ? nameAnswer.trim() : handle;
 
     const claimed = await postClaim(hubUrl, keypair, handle, displayName);
@@ -273,7 +261,18 @@ async function chooseAgent(daemonUrl: string): Promise<string | undefined> {
       default:
         console.log(`    ${listing.detail}`);
     }
+    // Taken at its word rather than validated, because there is no listing to validate it
+    // against. Read here as well as below because this branch never reaches that one — a
+    // `--agent` given to a run whose daemon happens to be down used to be ignored, and the
+    // question asked anyway.
+    const named = argValue("agent");
+    if (named !== undefined) return named;
+
     const typed = await prompt("\nAgent id or name (or leave empty to stop): ");
+    if (typed === undefined) {
+      console.error("    Name one with --agent <id>.\n");
+      return undefined;
+    }
     return typed.trim().length > 0 ? typed.trim() : undefined;
   }
 
@@ -294,12 +293,24 @@ async function chooseAgent(daemonUrl: string): Promise<string | undefined> {
     return undefined;
   }
 
+  // A script must never stop on a question, the rule `chooseIdentity` follows below. There is
+  // no unambiguous answer to this one: which agent speaks for somebody is not a thing to pick
+  // on their behalf, so it is an error naming the flag instead.
+  if (process.stdin.isTTY !== true) {
+    console.error(`\n  ! this jazz has ${String(agents.length)} agents: ${agents.map((agent) => agent.name).join(", ")}`);
+    console.error("    Say which one speaks for you with --agent <id>.\n");
+    return undefined;
+  }
+
   listAgents(agents);
 
   // No default. The old one was the literal string "default", which is a persona name and
   // matches no agent — so enter wrote a webhook that could never run.
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const answer = await prompt("Number, name or id: ");
+    // Ctrl-D. Stopping is the answer; looping five times to say "that is not one of them" to
+    // a stream that has ended is not.
+    if (answer === undefined) return undefined;
     const picked = resolveAgentChoice(agents, answer);
     if (picked !== undefined) {
       console.log(`\n  ✓ ${picked.name} — ${describeModel(picked)}`);
@@ -389,7 +400,10 @@ async function ensureDaemon(
   // The daemon first, because it is what knows which agents exist. Asking for the agent
   // before knowing where to ask was why this used to be a free-text prompt.
   const daemonAnswer =
-    argValue("daemon") ?? daemonUrl ?? (await prompt(`Where is your daemon? [${DEFAULT_DAEMON_URL}] `));
+    argValue("daemon") ??
+    daemonUrl ??
+    (await prompt(`Where is your daemon? [${DEFAULT_DAEMON_URL}] `)) ??
+    "";
   const chosenDaemon = daemonAnswer.trim().length > 0 ? daemonAnswer.trim() : DEFAULT_DAEMON_URL;
 
   const agentId = await chooseAgent(chosenDaemon);
@@ -500,6 +514,12 @@ function isJazzInstalled(): boolean {
  * The exact command jazz's own README tells somebody to run by hand, so automating it removes
  * a copy-paste rather than adding a trust boundary. It still asks first and runs the installer
  * with its output visible.
+ *
+ * Nobody at the keyboard is a no. `--yes` is what an unattended run says to skip the question,
+ * and the existence of that flag is the argument: consent to fetch and execute a script from
+ * the internet is a thing to state, not a thing to infer from silence. This read the empty
+ * string a closed stdin gives back as an answer that did not start with "n", so the first CI
+ * run of the binary smoke test installed jazz onto a GitHub runner and called it a pass.
  */
 async function ensureJazzInstalled(): Promise<boolean> {
   if (isJazzInstalled()) return true;
@@ -509,6 +529,11 @@ async function ensureJazzInstalled(): Promise<boolean> {
 
   if (!hasFlag("yes")) {
     const answer = await prompt("    Install it? [Y/n] ");
+    if (answer === undefined) {
+      console.error("    Nothing here to ask, so quartet is not going to install anything.");
+      console.error("    Run that command yourself, or pass --yes to let this run do it.\n");
+      return false;
+    }
     if (answer.trim().toLowerCase().startsWith("n")) {
       console.log(`\n    Run that yourself when you're ready:\n    ${JAZZ_INSTALL_COMMAND}\n`);
       return false;
@@ -715,7 +740,9 @@ async function chooseIdentity(
   console.log("");
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const answer = (await prompt(`  Number, name or n${fallback === undefined ? "" : ` [${fallback}]`}: `)).trim();
+    const asked = await prompt(`  Number, name or n${fallback === undefined ? "" : ` [${fallback}]`}: `);
+    if (asked === undefined) return { kind: "stop" };
+    const answer = asked.trim();
     if (answer === "n" || answer.toLowerCase() === "new") return { kind: "new" };
     if (answer === "" && fallback !== undefined) {
       setIdentityLabel(fallback);
@@ -753,10 +780,11 @@ async function chooseHub(stored: string | undefined): Promise<string> {
   const fallback = stored ?? process.env["QUARTET_HUB"] ?? DEFAULT_HUB_URL;
   const fromFlag = argValue("hub");
   if (fromFlag !== undefined) return fromFlag;
-  if (process.stdin.isTTY !== true) return fallback;
 
+  // No answer and an empty answer both mean the fallback here, which is the one case where
+  // they legitimately coincide: the default is printed, and taking it is what enter does.
   const answer = await prompt(`\n  hub URL [${fallback}]: `);
-  return answer === "" ? fallback : answer;
+  return answer === undefined || answer === "" ? fallback : answer;
 }
 
 async function connect(): Promise<void> {
