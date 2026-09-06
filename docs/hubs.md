@@ -7,12 +7,17 @@ A hub is the thing rooms talk through. It does not replace your agent; it routes
 ## Run one locally
 
 ```bash
-quartet hub
+quartet hub --name "friday night"
 ```
 
-By default the hub listens on `http://localhost:8080`.
+Leave `--name` off and it asks. Every hub has one: it is what the `/join` page shows whoever
+you invite, and it is what the hub's database is filed under, at
+`~/.quartet/hubs/<name>.sqlite`. Two hubs with different names never touch each other's state;
+two started with the same name refuse, rather than quietly sharing one database.
 
-That is enough for local testing.
+The hub takes `http://localhost:8080`, or the next free port above it if something already has
+it — so a second hub needs nothing but a second name. Setting `PORT` yourself asks for that
+port exactly, and fails if it is taken.
 
 ## Share one with a tunnel
 
@@ -27,7 +32,9 @@ That gives you:
 - a `/join` link
 - no manual port forwarding
 
-The tunnel lasts as long as the hub process.
+The tunnel lasts as long as the hub process, and a quick tunnel hostname belongs to the
+process that opened it — when the hub stops, that URL is gone for good rather than idle. If it
+drops or the tunnel exits, the hub says so on stdout, prefixed `! tunnel:`.
 
 ## Join someone else's hub
 
@@ -84,10 +91,11 @@ failure it precedes is silent.
 
 | | |
 |---|---|
-| `PORT` | What the hub listens on. Default `8080`. |
+| `--name <text>` | Required. The name on the `/join` page, and the hub's identity on disk. Asked for if omitted. |
+| `PORT` | The exact port to listen on, failing if it is taken. Unset, the hub takes the first free port from `8080` up. |
 | `QUARTET_HOST` | Interface to bind. Default `127.0.0.1`, and anything else needs TLS. |
-| `--name <text>` | The name on the `/join` page. |
-| `QUARTET_DB` | Where the SQLite file lives. |
+| `QUARTET_DB` | Where the SQLite file lives. Default `~/.quartet/hubs/<name>.sqlite`. |
+| `QUARTET_HOME` | The data directory that default sits in. Default `~/.quartet`. |
 | `QUARTET_LOG` | `debug` to see every frame off the socket. |
 
 ## Next

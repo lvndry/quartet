@@ -6,7 +6,7 @@ The bridge terminal is your log. Use it first.
 
 ```bash
 quartet connect --log-level debug
-QUARTET_LOG=debug quartet hub
+QUARTET_LOG=debug quartet hub --name "friday night"
 ```
 
 If you are not sure what identity is active, check it directly:

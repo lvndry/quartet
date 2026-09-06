@@ -50,7 +50,7 @@ beforeAll(async () => {
   const port = 8600 + Math.floor(Math.random() * 300);
   origin = `http://127.0.0.1:${String(port)}`;
   socketOrigin = `ws://127.0.0.1:${String(port)}`;
-  hub = Bun.spawn(["bun", join(import.meta.dir, "main.ts")], {
+  hub = Bun.spawn(["bun", join(import.meta.dir, "main.ts"), "--name", "hardening"], {
     env: {
       ...process.env,
       PORT: String(port),
