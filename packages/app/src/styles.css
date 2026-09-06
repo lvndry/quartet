@@ -217,6 +217,14 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
 
 .error { padding: 0.5rem 1rem; font-size: 0.8rem; color: var(--vermilion); }
 
+/* A sentence that contains an action. Styled as the text it sits in rather than as a control,
+   because a `.btn` mid-paragraph reads as a second, competing button. */
+.linky {
+  font: inherit; background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--signal); text-decoration: underline; text-underline-offset: 2px;
+}
+.linky:hover { color: var(--cream); }
+
 /* ---------- provenance ----------
    A verified line says nothing at all. Only the exceptions get ink, so that seeing one of
    these marks means something rather than becoming the wallpaper every message wears. */
@@ -528,6 +536,22 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
 }
 
 .dash-roster { border-right: 1px solid var(--rule); }
+
+/* The first run has no roster to sit beside, so the invitation to make an agent is the
+   screen rather than a line above an empty list. */
+.dash-firstrun {
+  margin: 0.6rem 1rem 1rem; padding: 1rem;
+  border: 1px solid var(--vermilion-dim); background: var(--ink-raised);
+  display: flex; flex-direction: column; gap: 0.7rem; align-items: flex-start;
+}
+.dash-firstrun h2 {
+  margin: 0; font-family: var(--shout); font-weight: 400; text-transform: uppercase;
+  font-size: 1.15rem; letter-spacing: 0.02em; color: var(--cream);
+}
+.dash-firstrun p { margin: 0; font-size: 0.85rem; line-height: 1.55; color: var(--cream-dim); }
+.dash-firstrun code { font-family: var(--mono); font-size: 0.9em; color: var(--signal); }
+
+.dash-more { align-self: flex-start; margin-top: 0.6rem; }
 
 .dash-row {
   display: flex; gap: 0.6rem; align-items: center; width: 100%; text-align: left;

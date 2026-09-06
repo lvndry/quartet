@@ -13,6 +13,7 @@ import {
   call,
   useBridge,
   useSocketLive,
+  useStateArrived,
   type Activity,
   type Aside,
   type KeyConflict,
@@ -566,13 +567,60 @@ export default function App(): React.JSX.Element {
   return <Quartet />;
 }
 
+type View = "rooms" | "agents";
+
+/**
+ * The roster is a path, not a toggle.
+ *
+ * It was component state, which meant the one screen somebody comes back to — to edit an
+ * agent, to write a persona — could not be linked to, bookmarked, or survive a refresh. The
+ * server already falls back to the app shell on unknown paths for exactly this.
+ */
+const AGENTS_PATH = "/agents";
+
+function viewForPath(pathname: string): View {
+  return pathname === AGENTS_PATH ? "agents" : "rooms";
+}
+
 function Quartet(): React.JSX.Element {
   const state = useBridge();
   const live = useSocketLive();
   const [selected, setSelected] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [navOpen, setNavOpen] = useState(false);
-  const [view, setView] = useState<"rooms" | "agents">("rooms");
+  const [view, setView] = useState<View>(() => viewForPath(window.location.pathname));
+  const stateArrived = useStateArrived();
+  const sentToRoster = useRef(false);
+
+  // The query string carries the token, so only the path moves.
+  const show = useCallback((next: View): void => {
+    const path = next === "agents" ? AGENTS_PATH : "/";
+    if (window.location.pathname !== path) {
+      window.history.pushState(null, "", `${path}${window.location.search}`);
+    }
+    setView(next);
+  }, []);
+
+  useEffect(() => {
+    const followUrl = (): void => setView(viewForPath(window.location.pathname));
+    window.addEventListener("popstate", followUrl);
+    return () => window.removeEventListener("popstate", followUrl);
+  }, []);
+
+  /**
+   * With nothing on stage there is no turn to take, so rooms is a screen that can only
+   * disappoint. `connect` already links straight to the roster on a first run; this catches
+   * the person who typed the bare address instead. Once only — after that, going to rooms and
+   * finding it empty is a choice they made.
+   */
+  useEffect(() => {
+    if (!stateArrived || sentToRoster.current) return;
+    sentToRoster.current = true;
+    if (state.myAgentId === undefined && window.location.pathname === "/") {
+      window.history.replaceState(null, "", `${AGENTS_PATH}${window.location.search}`);
+      setView("agents");
+    }
+  }, [stateArrived, state.myAgentId]);
 
   const conversation: Conversation | undefined = useMemo(
     () =>
@@ -622,7 +670,7 @@ function Quartet(): React.JSX.Element {
           className={view === "agents" ? "model-badge open" : "model-badge"}
           type="button"
           aria-label={view === "agents" ? "Back to rooms" : "Your agents on this machine"}
-          onClick={() => setView(view === "agents" ? "rooms" : "agents")}
+          onClick={() => show(view === "agents" ? "rooms" : "agents")}
         >
           <span>{state.myModel ?? "model not recorded"}</span>
           <span className="model-badge-more">
@@ -643,7 +691,7 @@ function Quartet(): React.JSX.Element {
       />
 
       {view === "agents" ? (
-        <Dashboard state={state} onClose={() => setView("rooms")} onAct={act} />
+        <Dashboard state={state} onClose={() => show("rooms")} onAct={act} />
       ) : (
       <div className="columns">
         <Sidebar
@@ -656,6 +704,7 @@ function Quartet(): React.JSX.Element {
             setNavOpen(false);
           }}
           onAct={act}
+          onPickAgent={() => show("agents")}
         />
         {conversation === undefined ? (
           <section className="pane chat">
@@ -767,6 +816,7 @@ function Sidebar({
   open,
   onSelect,
   onAct,
+  onPickAgent,
 }: {
   state: ReturnType<typeof useBridge>;
   shortFingerprints: Record<string, string>;
@@ -774,7 +824,9 @@ function Sidebar({
   open: boolean;
   onSelect: (id: string) => void;
   onAct: (path: string, body: Record<string, unknown>) => Promise<void>;
+  onPickAgent: () => void;
 }): React.JSX.Element {
+  const nobodyOnStage = state.myAgentId === undefined;
   const [toHandle, setToHandle] = useState("");
   const [purpose, setPurpose] = useState("");
   const [limit, setLimit] = useState<Limit>({ kind: "turns", turns: DEFAULT_TURN_BUDGET });
@@ -920,10 +972,23 @@ function Sidebar({
             onChange={(event) => setPurpose(event.target.value)}
           />
           <LimitDraft value={limit} onChange={setLimit} />
+          {/* An invite sent with nothing on stage is accepted by the hub and then fails every
+              turn, which looks like the other person ignoring you. Refused here, with the fix. */}
+          {nobodyOnStage && (
+            <p className="empty">
+              No agent is on stage, so nothing can answer for you.{" "}
+              <button className="linky" type="button" onClick={onPickAgent}>
+                Put one on stage
+              </button>{" "}
+              first.
+            </p>
+          )}
           <button
             className="btn go"
             type="button"
-            disabled={toHandle.trim().length === 0 || purpose.trim().length === 0}
+            disabled={
+              nobodyOnStage || toHandle.trim().length === 0 || purpose.trim().length === 0
+            }
             onClick={() => {
               // Always an invite: the hub opens a new conversation directly when you turn
               // out to be already connected, instead of asking you to introduce yourself twice.

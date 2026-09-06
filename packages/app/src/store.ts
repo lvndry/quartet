@@ -88,6 +88,14 @@ export const token = readToken();
 
 let current: BridgeState = EMPTY;
 let socketLive = false;
+/**
+ * Whether a snapshot has ever landed.
+ *
+ * The empty state and "this machine has no agents" are the same value, so anything deciding
+ * what to show on the strength of an absence — the first-run screen most of all — would fire
+ * on first paint for everybody and then have to take itself back once the real state arrived.
+ */
+let stateArrived = false;
 let currentSocket: WebSocket | undefined;
 const listeners = new Set<() => void>();
 
@@ -112,6 +120,7 @@ function connect(): void {
       const parsed = JSON.parse(String(event.data)) as { t: string; state: BridgeState };
       if (parsed.t === "state") {
         current = parsed.state;
+        stateArrived = true;
         emit();
       }
     } catch {
@@ -150,6 +159,7 @@ function subscribe(listener: () => void): () => void {
 
 const readState = (): BridgeState => current;
 const readSocketLive = (): boolean => socketLive;
+const readStateArrived = (): boolean => stateArrived;
 
 export function useBridge(): BridgeState {
   return useSyncExternalStore(subscribe, readState);
@@ -157,6 +167,10 @@ export function useBridge(): BridgeState {
 
 export function useSocketLive(): boolean {
   return useSyncExternalStore(subscribe, readSocketLive);
+}
+
+export function useStateArrived(): boolean {
+  return useSyncExternalStore(subscribe, readStateArrived);
 }
 
 export async function call(path: string, body: Record<string, unknown>): Promise<string | undefined> {

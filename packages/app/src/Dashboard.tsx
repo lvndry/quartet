@@ -269,9 +269,17 @@ export function Dashboard({
   const [modelsProblem, setModelsProblem] = useState<string | undefined>(undefined);
   const [refusal, setRefusal] = useState<Refusal | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  const [showEverything, setShowEverything] = useState(false);
 
   const catalog = state.jazzCatalog;
   const editable = catalog !== undefined;
+  const noAgentsYet = state.jazzAgents.length === 0;
+  /**
+   * Fourteen fields is the right form for editing an agent and the wrong one for meeting
+   * quartet. Only the very first agent gets the short version — everything past the model is
+   * behind a disclosure — because only then is there nothing else on screen to learn from.
+   */
+  const folded = creating && noAgentsYet && !showEverything;
 
   // The catalogues that cannot change while a form is open, asked for once.
   useEffect(() => {
@@ -362,6 +370,7 @@ export function Dashboard({
 
   function startCreating(): void {
     setCreating(true);
+    setShowEverything(false);
     setDetail(undefined);
     setRefusal(undefined);
     setDraft({ ...BLANK, llmProvider: catalog?.providers[0] ?? "" });
@@ -389,10 +398,27 @@ export function Dashboard({
 
       <div className="dash-body">
         <div className="dash-roster pane-scroll">
-          {state.jazzAgents.length === 0 && (
-            <div className="empty">
-              No agents on this machine yet.{" "}
-              {editable ? "Make one to get started." : "Create one with `jazz agent create`."}
+          {/* On a first run this is the whole screen, not a footnote above an empty list:
+              there is no agent, so there is nothing else here to do. */}
+          {noAgentsYet && !creating && (
+            <div className="dash-firstrun">
+              <h2>Nobody is on stage</h2>
+              {editable ? (
+                <>
+                  <p>
+                    You have a handle and a key, but no agent to answer with. Make one and it
+                    starts taking turns — you will not need the terminal again.
+                  </p>
+                  <button className="btn go" type="button" onClick={startCreating}>
+                    Make my first agent
+                  </button>
+                </>
+              ) : (
+                <p>
+                  This jazz can list agents but not create them. Update jazz to do it here, or
+                  run <code>jazz agent create</code> and reload.
+                </p>
+              )}
             </div>
           )}
           {state.jazzAgents.map((agent) => {
@@ -425,7 +451,7 @@ export function Dashboard({
               </button>
             );
           })}
-          {editable && (
+          {editable && !noAgentsYet && (
             <button className="btn dash-new" type="button" onClick={startCreating}>
               New agent
             </button>
@@ -436,7 +462,9 @@ export function Dashboard({
 
         <div className="dash-editor pane-scroll">
           {openId === undefined && !creating && (
-            <div className="placeholder">Pick an agent, or make one.</div>
+            <div className="placeholder">
+              {noAgentsYet ? "Nothing to show until there is an agent." : "Pick an agent, or make one."}
+            </div>
           )}
 
           {(creating || detail !== undefined) && (
@@ -465,17 +493,21 @@ export function Dashboard({
               />
               {fieldNote("name")}
 
-              <label className="dash-label" htmlFor="agent-description">
-                Description
-              </label>
-              <input
-                id="agent-description"
-                className="field"
-                value={draft.description}
-                disabled={!editable}
-                onChange={(event) => setDraft({ ...draft, description: event.target.value })}
-              />
-              {fieldNote("description")}
+              {!folded && (
+                <>
+                  <label className="dash-label" htmlFor="agent-description">
+                    Description
+                  </label>
+                  <input
+                    id="agent-description"
+                    className="field"
+                    value={draft.description}
+                    disabled={!editable}
+                    onChange={(event) => setDraft({ ...draft, description: event.target.value })}
+                  />
+                  {fieldNote("description")}
+                </>
+              )}
 
               <label className="dash-label" htmlFor="agent-persona">
                 Persona
@@ -559,179 +591,193 @@ export function Dashboard({
               )}
               {fieldNote("config.llmModel")}
 
-              {chosenModel?.isReasoningModel === true && (
+              {!folded && (
                 <>
-                  <label className="dash-label" htmlFor="agent-effort">
-                    Reasoning effort
-                  </label>
-                  <select
-                    id="agent-effort"
-                    className="field"
-                    value={draft.reasoningEffort}
-                    onChange={(event) => setDraft({ ...draft, reasoningEffort: event.target.value })}
-                  >
-                    <option value="">provider default</option>
-                    {(catalog?.reasoningEfforts ?? []).map((effort) => (
-                      <option key={effort} value={effort}>
-                        {effort}
-                      </option>
-                    ))}
-                  </select>
-                  {fieldNote("config.reasoningEffort")}
-                </>
-              )}
-
-              {/* Absent rather than inert when the model ignores it: a control that silently
-                  does nothing is worse than no control, because it looks like a setting. */}
-              {chosenModel !== undefined &&
-                (chosenModel.supportsTemperature ? (
+                {chosenModel?.isReasoningModel === true && (
                   <>
-                    <label className="dash-label" htmlFor="agent-temperature">
-                      Temperature
+                    <label className="dash-label" htmlFor="agent-effort">
+                      Reasoning effort
+                    </label>
+                    <select
+                      id="agent-effort"
+                      className="field"
+                      value={draft.reasoningEffort}
+                      onChange={(event) => setDraft({ ...draft, reasoningEffort: event.target.value })}
+                    >
+                      <option value="">provider default</option>
+                      {(catalog?.reasoningEfforts ?? []).map((effort) => (
+                        <option key={effort} value={effort}>
+                          {effort}
+                        </option>
+                      ))}
+                    </select>
+                    {fieldNote("config.reasoningEffort")}
+                  </>
+                )}
+
+                {/* Absent rather than inert when the model ignores it: a control that silently
+                    does nothing is worse than no control, because it looks like a setting. */}
+                {chosenModel !== undefined &&
+                  (chosenModel.supportsTemperature ? (
+                    <>
+                      <label className="dash-label" htmlFor="agent-temperature">
+                        Temperature
+                      </label>
+                      <input
+                        id="agent-temperature"
+                        className={
+                          fieldError("config.temperature") !== undefined ? "field wrong" : "field"
+                        }
+                        inputMode="decimal"
+                        placeholder="provider default"
+                        value={draft.temperature}
+                        onChange={(event) => setDraft({ ...draft, temperature: event.target.value })}
+                      />
+                      {fieldNote("config.temperature")}
+                    </>
+                  ) : (
+                    <p className="dash-hint">
+                      {chosenModel.id} ignores temperature, so there is nothing to set.
+                    </p>
+                  ))}
+
+                <label className="dash-label" htmlFor="agent-summarizer">
+                  Summarizer model
+                </label>
+                <input
+                  id="agent-summarizer"
+                  className="field"
+                  placeholder="provider/model — defaults to its own"
+                  value={draft.summarizerModel}
+                  disabled={!editable}
+                  onChange={(event) => setDraft({ ...draft, summarizerModel: event.target.value })}
+                />
+                {fieldNote("config.summarizerModel")}
+
+                <ToolPicker
+                  tools={tools}
+                  defaults={defaults}
+                  draft={draft}
+                  editable={editable}
+                  onToggle={(tool) => setDraft(toggleTool(tool, draft, defaults))}
+                />
+
+                <div className="dash-group">What it delegates to</div>
+                {byAction(catalog?.companionRoles ?? []).map(([action, roles]) => (
+                  <div className="dash-delegation" key={action}>
+                    <div className="dash-action">{action}</div>
+                    <p className="dash-hint">
+                      {action === "generate"
+                        ? "Nothing delegates generation yet, so a model bound here is recorded and unused until something does."
+                        : "Media this agent's own model cannot read. Quartet drives jazz unattended, so an unbound modality does not stop to ask you — it fails the turn instead."}
+                    </p>
+                    {roles.map((role) => (
+                      <CompanionRow
+                        key={role}
+                        role={role}
+                        providers={catalog?.providers ?? []}
+                        bound={draft.companions[role] ?? ""}
+                        editable={editable}
+                        onBind={(value) => {
+                          const next = { ...draft.companions };
+                          if (value.length === 0) delete next[role];
+                          else next[role] = value;
+                          setDraft({ ...draft, companions: next });
+                        }}
+                      />
+                    ))}
+                  </div>
+                ))}
+                {fieldNote("config.companions")}
+                {(catalog?.companionRoles ?? []).map((role) => fieldNote(`config.companions.${role}`))}
+
+                <div className="dash-group">What it keeps</div>
+                <label className="dash-label" htmlFor="agent-context">
+                  Context ceiling, in tokens
+                </label>
+                <input
+                  id="agent-context"
+                  className="field"
+                  inputMode="numeric"
+                  placeholder="the model's own window"
+                  value={draft.maxContextTokens}
+                  disabled={!editable}
+                  onChange={(event) => setDraft({ ...draft, maxContextTokens: event.target.value })}
+                />
+                {fieldNote("config.maxContextTokens")}
+
+                {draft.llmProvider === "ollama" && (
+                  <>
+                    <label className="dash-label" htmlFor="agent-numctx">
+                      Ollama num_ctx
                     </label>
                     <input
-                      id="agent-temperature"
-                      className={
-                        fieldError("config.temperature") !== undefined ? "field wrong" : "field"
-                      }
-                      inputMode="decimal"
-                      placeholder="provider default"
-                      value={draft.temperature}
-                      onChange={(event) => setDraft({ ...draft, temperature: event.target.value })}
+                      id="agent-numctx"
+                      className="field"
+                      inputMode="numeric"
+                      value={draft.numCtx}
+                      onChange={(event) => setDraft({ ...draft, numCtx: event.target.value })}
                     />
-                    {fieldNote("config.temperature")}
+                    {fieldNote("config.numCtx")}
                   </>
-                ) : (
-                  <p className="dash-hint">
-                    {chosenModel.id} ignores temperature, so there is nothing to set.
-                  </p>
-                ))}
+                )}
 
-              <label className="dash-label" htmlFor="agent-summarizer">
-                Summarizer model
-              </label>
-              <input
-                id="agent-summarizer"
-                className="field"
-                placeholder="provider/model — defaults to its own"
-                value={draft.summarizerModel}
-                disabled={!editable}
-                onChange={(event) => setDraft({ ...draft, summarizerModel: event.target.value })}
-              />
-              {fieldNote("config.summarizerModel")}
+                <label className="dash-label" htmlFor="agent-memory">
+                  Memory scopes
+                </label>
+                <input
+                  id="agent-memory"
+                  className="field"
+                  placeholder="work, personal"
+                  value={draft.memoryScopes}
+                  disabled={!editable}
+                  onChange={(event) => setDraft({ ...draft, memoryScopes: event.target.value })}
+                />
+                {fieldNote("config.memoryScopes")}
 
-              <ToolPicker
-                tools={tools}
-                defaults={defaults}
-                draft={draft}
-                editable={editable}
-                onToggle={(tool) => setDraft(toggleTool(tool, draft, defaults))}
-              />
+                <label className="dash-label" htmlFor="agent-env">
+                  Env vars it may keep
+                </label>
+                <input
+                  id="agent-env"
+                  className="field"
+                  placeholder="MY_TOKEN, OTHER_VAR"
+                  value={draft.envAllowlist}
+                  disabled={!editable}
+                  onChange={(event) => setDraft({ ...draft, envAllowlist: event.target.value })}
+                />
+                {fieldNote("config.envAllowlist")}
 
-              <div className="dash-group">What it delegates to</div>
-              {byAction(catalog?.companionRoles ?? []).map(([action, roles]) => (
-                <div className="dash-delegation" key={action}>
-                  <div className="dash-action">{action}</div>
-                  <p className="dash-hint">
-                    {action === "generate"
-                      ? "Nothing delegates generation yet, so a model bound here is recorded and unused until something does."
-                      : "Media this agent's own model cannot read. Quartet drives jazz unattended, so an unbound modality does not stop to ask you — it fails the turn instead."}
-                  </p>
-                  {roles.map((role) => (
-                    <CompanionRow
-                      key={role}
-                      role={role}
-                      providers={catalog?.providers ?? []}
-                      bound={draft.companions[role] ?? ""}
-                      editable={editable}
-                      onBind={(value) => {
-                        const next = { ...draft.companions };
-                        if (value.length === 0) delete next[role];
-                        else next[role] = value;
-                        setDraft({ ...draft, companions: next });
-                      }}
-                    />
+                <label className="dash-label" htmlFor="agent-websearch">
+                  Web search
+                </label>
+                <select
+                  id="agent-websearch"
+                  className="field"
+                  value={draft.webSearchProvider}
+                  disabled={!editable}
+                  onChange={(event) => setDraft({ ...draft, webSearchProvider: event.target.value })}
+                >
+                  <option value="">none</option>
+                  {(catalog?.webSearchProviders ?? []).map((provider) => (
+                    <option key={provider} value={provider}>
+                      {provider}
+                    </option>
                   ))}
-                </div>
-              ))}
-              {fieldNote("config.companions")}
-              {(catalog?.companionRoles ?? []).map((role) => fieldNote(`config.companions.${role}`))}
-
-              <div className="dash-group">What it keeps</div>
-              <label className="dash-label" htmlFor="agent-context">
-                Context ceiling, in tokens
-              </label>
-              <input
-                id="agent-context"
-                className="field"
-                inputMode="numeric"
-                placeholder="the model's own window"
-                value={draft.maxContextTokens}
-                disabled={!editable}
-                onChange={(event) => setDraft({ ...draft, maxContextTokens: event.target.value })}
-              />
-              {fieldNote("config.maxContextTokens")}
-
-              {draft.llmProvider === "ollama" && (
-                <>
-                  <label className="dash-label" htmlFor="agent-numctx">
-                    Ollama num_ctx
-                  </label>
-                  <input
-                    id="agent-numctx"
-                    className="field"
-                    inputMode="numeric"
-                    value={draft.numCtx}
-                    onChange={(event) => setDraft({ ...draft, numCtx: event.target.value })}
-                  />
-                  {fieldNote("config.numCtx")}
+                </select>
+                {fieldNote("config.webSearchProvider")}
                 </>
               )}
 
-              <label className="dash-label" htmlFor="agent-memory">
-                Memory scopes
-              </label>
-              <input
-                id="agent-memory"
-                className="field"
-                placeholder="work, personal"
-                value={draft.memoryScopes}
-                disabled={!editable}
-                onChange={(event) => setDraft({ ...draft, memoryScopes: event.target.value })}
-              />
-              {fieldNote("config.memoryScopes")}
-
-              <label className="dash-label" htmlFor="agent-env">
-                Env vars it may keep
-              </label>
-              <input
-                id="agent-env"
-                className="field"
-                placeholder="MY_TOKEN, OTHER_VAR"
-                value={draft.envAllowlist}
-                disabled={!editable}
-                onChange={(event) => setDraft({ ...draft, envAllowlist: event.target.value })}
-              />
-              {fieldNote("config.envAllowlist")}
-
-              <label className="dash-label" htmlFor="agent-websearch">
-                Web search
-              </label>
-              <select
-                id="agent-websearch"
-                className="field"
-                value={draft.webSearchProvider}
-                disabled={!editable}
-                onChange={(event) => setDraft({ ...draft, webSearchProvider: event.target.value })}
-              >
-                <option value="">none</option>
-                {(catalog?.webSearchProviders ?? []).map((provider) => (
-                  <option key={provider} value={provider}>
-                    {provider}
-                  </option>
-                ))}
-              </select>
-              {fieldNote("config.webSearchProvider")}
+              {folded && (
+                <button
+                  className="btn dash-more"
+                  type="button"
+                  onClick={() => setShowEverything(true)}
+                >
+                  Everything else
+                </button>
+              )}
 
               {detail !== undefined && detail.apiKeyProviders.length > 0 && (
                 <p className="dash-hint">
