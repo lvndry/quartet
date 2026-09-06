@@ -553,6 +553,19 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
 
 .dash-more { align-self: flex-start; margin-top: 0.6rem; }
 
+/* Inline under the persona field rather than a screen of its own, so the half-filled agent
+   form that sent somebody here is still there when they come back. */
+.dash-write-persona { align-self: flex-start; margin: 0.35rem 0 0.2rem; font-size: 0.82rem; }
+.dash-persona {
+  display: flex; flex-direction: column; gap: 0.3rem;
+  margin: 0.5rem 0 0.8rem; padding: 0 0 0.7rem 0.8rem;
+  border-left: 2px solid var(--signal);
+}
+.dash-persona .dash-group { margin-top: 0.2rem; }
+.dash-persona textarea.field { resize: vertical; font-family: inherit; line-height: 1.5; }
+.dash-persona-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+.dash-persona-pair > div { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
+
 .dash-row {
   display: flex; gap: 0.6rem; align-items: center; width: 100%; text-align: left;
   padding: 0.55rem 1rem; background: none; border: none;

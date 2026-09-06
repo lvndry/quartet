@@ -196,6 +196,8 @@ export interface Refusal {
   readonly error: string;
   readonly field?: string;
   readonly suggestion?: string;
+  /** Set when jazz has no such route at all, rather than having refused what was sent. */
+  readonly reason?: "unsupported";
 }
 
 /**
@@ -219,7 +221,7 @@ export async function read<T>(
     return { refused: { error: "the bridge is not answering" } };
   }
   const detail = (await response.json().catch(() => null)) as
-    | { value?: T; error?: string; field?: string; suggestion?: string }
+    | { value?: T; error?: string; field?: string; suggestion?: string; reason?: "unsupported" }
     | null;
 
   if (!response.ok || detail === null) {
@@ -228,6 +230,7 @@ export async function read<T>(
         error: detail?.error ?? `request failed (${String(response.status)})`,
         ...(detail?.field !== undefined ? { field: detail.field } : {}),
         ...(detail?.suggestion !== undefined ? { suggestion: detail.suggestion } : {}),
+        ...(detail?.reason !== undefined ? { reason: detail.reason } : {}),
       },
     };
   }

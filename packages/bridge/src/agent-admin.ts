@@ -12,6 +12,7 @@ import type { DaemonSettings } from "./config";
 import { describeModel, fetchJazzAgents, type JazzAgent } from "./jazz-agents";
 import {
   createJazzAgent,
+  createJazzPersona,
   deleteJazzAgent,
   fetchJazzAgentDetail,
   fetchJazzCatalog,
@@ -122,6 +123,16 @@ export class AgentAdmin {
 
   personas(): Promise<JazzResult<readonly JazzPersona[]>> {
     return fetchJazzPersonas(this.daemon);
+  }
+
+  createPersona(draft: {
+    readonly name: string;
+    readonly description: string;
+    readonly systemPrompt: string;
+    readonly tone?: string;
+    readonly style?: string;
+  }): Promise<JazzResult<JazzPersona>> {
+    return createJazzPersona(this.daemon, draft);
   }
 
   tools(): Promise<JazzResult<JazzTools>> {

@@ -237,6 +237,29 @@ function byAction(roles: readonly string[]): [string, string[]][] {
   return grouped;
 }
 
+/**
+ * A persona being written here.
+ *
+ * Matches the file it becomes — `~/.jazz/personas/<name>/persona.md`, frontmatter then body —
+ * rather than inventing a shape of quartet's own. Anything written here is an ordinary jazz
+ * persona: `jazz persona list` sees it, and agents that never touch quartet can use it.
+ */
+interface PersonaDraft {
+  name: string;
+  description: string;
+  tone: string;
+  style: string;
+  systemPrompt: string;
+}
+
+const BLANK_PERSONA: PersonaDraft = {
+  name: "",
+  description: "",
+  tone: "",
+  style: "",
+  systemPrompt: "",
+};
+
 function problemText(problem: BridgeState["jazzProblem"]): string {
   switch (problem) {
     case "unreachable":
@@ -270,6 +293,11 @@ export function Dashboard({
   const [refusal, setRefusal] = useState<Refusal | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [showEverything, setShowEverything] = useState(false);
+  const [personaDraft, setPersonaDraft] = useState<PersonaDraft | undefined>(undefined);
+  const [personaRefusal, setPersonaRefusal] = useState<Refusal | undefined>(undefined);
+  // An old jazz serves the persona list and not the writes. The first attempt is the probe:
+  // once it has answered "no route here", the offer stops being made.
+  const [personaWritesGone, setPersonaWritesGone] = useState(false);
 
   const catalog = state.jazzCatalog;
   const editable = catalog !== undefined;
@@ -366,6 +394,31 @@ export function Dashboard({
     setDraft(draftFrom(result.value));
     setCreating(false);
     setOpenId(result.value.id);
+  }
+
+  async function savePersona(): Promise<void> {
+    if (personaDraft === undefined) return;
+    setBusy(true);
+    setPersonaRefusal(undefined);
+    const result = await read<JazzPersona>("agents/personas/create", {
+      name: personaDraft.name.trim(),
+      description: personaDraft.description.trim(),
+      systemPrompt: personaDraft.systemPrompt.trim(),
+      tone: personaDraft.tone.trim(),
+      style: personaDraft.style.trim(),
+    });
+    setBusy(false);
+
+    if ("refused" in result) {
+      setPersonaRefusal(result.refused);
+      if (result.refused.reason === "unsupported") setPersonaWritesGone(true);
+      return;
+    }
+    // Straight onto the agent being edited: writing a persona from this form is something
+    // somebody does because they want *this* agent to use it.
+    setPersonas((known) => [...known, result.value]);
+    setDraft({ ...draft, persona: result.value.name });
+    setPersonaDraft(undefined);
   }
 
   function startCreating(): void {
@@ -528,6 +581,42 @@ export function Dashboard({
                 ))}
               </select>
               {fieldNote("config.persona")}
+
+              {/* A menu with nothing suitable in it is a dead end, and the way out was a
+                  command in another terminal. */}
+              {editable && !personaWritesGone && personaDraft === undefined && (
+                <button
+                  className="linky dash-write-persona"
+                  type="button"
+                  onClick={() => {
+                    setPersonaRefusal(undefined);
+                    setPersonaDraft(BLANK_PERSONA);
+                  }}
+                >
+                  Write a new persona
+                </button>
+              )}
+
+              {personaWritesGone && (
+                <p className="dash-hint">
+                  This jazz can list personas but not write them. Make one with{" "}
+                  <code>jazz persona create</code> and reload, or update jazz to do it here.
+                </p>
+              )}
+
+              {personaDraft !== undefined && (
+                <PersonaForm
+                  draft={personaDraft}
+                  refusal={personaRefusal}
+                  busy={busy}
+                  onChange={setPersonaDraft}
+                  onCancel={() => {
+                    setPersonaDraft(undefined);
+                    setPersonaRefusal(undefined);
+                  }}
+                  onSave={() => void savePersona()}
+                />
+              )}
 
               <div className="dash-group">What it thinks with</div>
               <label className="dash-label" htmlFor="agent-provider">
@@ -896,6 +985,124 @@ function ToolPicker({
         </div>
       ))}
     </>
+  );
+}
+
+/**
+ * Writing a persona, inline under the field that needed one.
+ *
+ * Not a screen of its own: the reason somebody is here is that the menu above had nothing
+ * suitable in it, and taking them away from the agent they were configuring to fix that would
+ * lose the half-filled form that prompted it.
+ */
+function PersonaForm({
+  draft,
+  refusal,
+  busy,
+  onChange,
+  onCancel,
+  onSave,
+}: {
+  draft: PersonaDraft;
+  refusal: Refusal | undefined;
+  busy: boolean;
+  onChange: (next: PersonaDraft) => void;
+  onCancel: () => void;
+  onSave: () => void;
+}): ReactElement {
+  const wrong = (field: string): string | undefined =>
+    refusal?.field === field ? refusal.error : undefined;
+
+  return (
+    <div className="dash-persona">
+      <div className="dash-group">A new persona</div>
+
+      <label className="dash-label" htmlFor="persona-name">
+        Name
+      </label>
+      <input
+        id="persona-name"
+        className={wrong("name") !== undefined ? "field wrong" : "field"}
+        placeholder="sceptic"
+        value={draft.name}
+        onChange={(event) => onChange({ ...draft, name: event.target.value })}
+      />
+
+      <label className="dash-label" htmlFor="persona-description">
+        Description
+      </label>
+      <input
+        id="persona-description"
+        className="field"
+        placeholder="Asks what would have to be true"
+        value={draft.description}
+        onChange={(event) => onChange({ ...draft, description: event.target.value })}
+      />
+
+      <div className="dash-persona-pair">
+        <div>
+          <label className="dash-label" htmlFor="persona-tone">
+            Tone
+          </label>
+          <input
+            id="persona-tone"
+            className="field"
+            placeholder="optional"
+            value={draft.tone}
+            onChange={(event) => onChange({ ...draft, tone: event.target.value })}
+          />
+        </div>
+        <div>
+          <label className="dash-label" htmlFor="persona-style">
+            Style
+          </label>
+          <input
+            id="persona-style"
+            className="field"
+            placeholder="optional"
+            value={draft.style}
+            onChange={(event) => onChange({ ...draft, style: event.target.value })}
+          />
+        </div>
+      </div>
+
+      <label className="dash-label" htmlFor="persona-prompt">
+        System prompt
+      </label>
+      <textarea
+        id="persona-prompt"
+        className={wrong("systemPrompt") !== undefined ? "field wrong" : "field"}
+        rows={6}
+        placeholder="How this persona approaches a conversation."
+        value={draft.systemPrompt}
+        onChange={(event) => onChange({ ...draft, systemPrompt: event.target.value })}
+      />
+      <p className="dash-hint">
+        Saved to ~/.jazz/personas/{draft.name.trim().length > 0 ? draft.name.trim() : "<name>"}
+        /persona.md, so every agent on this machine can use it.
+      </p>
+
+      {refusal !== undefined && refusal.field === undefined && (
+        <p className="dash-wrong">
+          {refusal.error}
+          {refusal.suggestion !== undefined && ` ${refusal.suggestion}`}
+        </p>
+      )}
+
+      <div className="dash-actions">
+        <button
+          className="btn go"
+          type="button"
+          disabled={busy || draft.name.trim().length === 0 || draft.systemPrompt.trim().length === 0}
+          onClick={onSave}
+        >
+          Save persona
+        </button>
+        <button className="btn" type="button" disabled={busy} onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }
 
