@@ -103,6 +103,21 @@ await check(version.trim() === manifest.version, `--version reports ${manifest.v
 const home = await mkdtemp(join(tmpdir(), "quartet-binary-smoke-"));
 cleanups.push(() => rm(home, { recursive: true, force: true }));
 
+/**
+ * A `jazz` that exists and does nothing.
+ *
+ * `connect` offers to install jazz when it cannot find one, and an offer read from a closed
+ * stdin comes back empty, which is a yes. Without this the smoke run curl-pipes jazz's
+ * installer onto whatever machine it is on — which it did, on the first CI run. Nothing here
+ * needs the real CLI: the stand-in daemon answers everything `connect` asks over HTTP, and
+ * `--token` means no token has to be minted.
+ */
+// Under `bin/`, not beside it: `JAZZ_HOME` below is `<home>/jazz`, and a file of that name
+// is a directory jazz's config cannot be written into.
+const fakeJazz = join(home, "bin", "jazz");
+await Bun.write(fakeJazz, "#!/bin/sh\nexit 0\n");
+await Bun.$`chmod 755 ${fakeJazz}`.quiet();
+
 const daemon = fakeDaemon(DAEMON_PORT);
 cleanups.push(() => daemon.stop());
 
@@ -140,6 +155,8 @@ const connect = Bun.spawn(
     `http://127.0.0.1:${String(DAEMON_PORT)}`,
     "--token",
     "test-token",
+    "--jazz",
+    fakeJazz,
     "--no-expose",
     "--port",
     String(APP_PORT),
