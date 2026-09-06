@@ -11,7 +11,8 @@
  * configuration; a tool that silently rewrites it has not earned the access.
  */
 
-import { basename } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { basename, dirname } from "node:path";
 import { signClaim, tag, type Keypair } from "@quartet/identity";
 import { AgentAdmin } from "./agent-admin";
 import { loadAppBundle } from "./app-bundle";
@@ -42,6 +43,7 @@ import {
   getDataDirectory,
   identitiesDirectory,
   identityPath,
+  jazzLogPath,
   isUsableLabel,
   listIdentityLabels,
   setIdentityDirectory,
@@ -72,6 +74,10 @@ import QRCode from "qrcode";
 
 const DEFAULT_LOCAL_PORT = 7777;
 const DEFAULT_DAEMON_URL = "http://localhost:4747";
+
+/** How long to wait for a jazz daemon quartet just started to answer: ten seconds. */
+const JAZZ_START_ATTEMPTS = 20;
+const JAZZ_START_POLL_MS = 500;
 
 /**
  * Interface the app binds to.
@@ -241,7 +247,103 @@ async function claimHandle(
  * decides what quartet can actually do. `undefined` means give up, and the caller stops
  * rather than writing a webhook pointing at nothing.
  */
-async function chooseAgent(daemonUrl: string): Promise<string | undefined> {
+/**
+ * Make sure something is answering at the daemon's address, offering to start it if not.
+ *
+ * `ensureJazzInstalled` has already settled whether jazz exists, so the only question left is
+ * whether it is up — and telling somebody to go and run `jazz daemon` in another terminal is
+ * a worse answer than starting it, when they are right here and have just asked for setup.
+ *
+ * Deliberately not an installer hook. A postinstall script fires in CI, in image builds, and
+ * on every global install by somebody who is only looking — and the `curl | bash` route runs
+ * no npm scripts at all, so anything hung off one would exist on one install path and not the
+ * other. Here the person is present and expecting setup to happen.
+ */
+async function ensureJazzRunning(daemonUrl: string): Promise<void> {
+  if (await daemonReachable({ url: daemonUrl, webhook: "", token: "" })) return;
+
+  const jazzCli = argValue("jazz") ?? "jazz";
+  console.log(`\n  ! nothing is answering on ${daemonUrl}`);
+
+  // A script must never stop on a question. Saying what would have been offered beats silence,
+  // because a log is where somebody debugging a container will look.
+  if (process.stdin.isTTY !== true) {
+    console.log(`    Start it with \`${jazzCli} daemon\` — turns fail until it is up.`);
+    return;
+  }
+
+  console.log("\n    Your agent runs there. Start it now? It keeps running alongside quartet.\n");
+  const answer = await prompt("    [Y] start it   [s] I'll do it myself   [q] quit: ");
+  if (answer === undefined) return;
+  const chosen = answer.trim().toLowerCase();
+
+  if (chosen === "q") {
+    console.log("\n  stopped. Nothing was started.\n");
+    process.exit(0);
+  }
+  if (chosen.startsWith("s")) {
+    console.log(`\n    Waiting for you — start it with \`${jazzCli} daemon\` in another terminal.`);
+    return;
+  }
+  await startJazzDaemon(jazzCli, daemonUrl);
+}
+
+/**
+ * Start a jazz daemon and wait until it actually answers.
+ *
+ * A child of this process rather than a detached one, and said so plainly: quartet is itself
+ * long-running, so the daemon lives exactly as long as the thing that needed it and nobody is
+ * left with an orphan serving an agent they thought they had closed. Surviving reboots is
+ * `jazz daemon install`, which needs root — printed, never run on somebody's behalf.
+ */
+async function startJazzDaemon(jazzCli: string, daemonUrl: string): Promise<void> {
+  const logPath = jazzLogPath();
+  await mkdir(dirname(logPath), { recursive: true });
+  const log = Bun.file(logPath).writer();
+
+  const daemon = Bun.spawn({
+    cmd: [jazzCli, "daemon"],
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  void drainInto(daemon.stdout, log);
+  void drainInto(daemon.stderr, log);
+  // So a quartet that is otherwise done is not held open by the daemon it started.
+  daemon.unref();
+
+  for (let attempt = 0; attempt < JAZZ_START_ATTEMPTS; attempt += 1) {
+    await Bun.sleep(JAZZ_START_POLL_MS);
+    if (await daemonReachable({ url: daemonUrl, webhook: "", token: "" })) {
+      console.log(`\n  ✓ jazz daemon up on ${daemonUrl} (pid ${String(daemon.pid)})`);
+      console.log(`    log → ${logPath}`);
+      console.log("    it stops when quartet does. To keep it: sudo jazz daemon install");
+      return;
+    }
+    if (daemon.exitCode !== null) break;
+  }
+
+  console.warn(`\n  ! jazz did not come up. Its output is in ${logPath}.`);
+  console.warn("    Quartet will keep trying, but turns fail until it answers.");
+}
+
+async function drainInto(stream: ReadableStream<Uint8Array>, sink: Bun.FileSink): Promise<void> {
+  for await (const chunk of stream) sink.write(chunk);
+  await sink.flush();
+}
+
+/**
+ * Which jazz agent speaks for this identity, or the fact that there is not one yet.
+ *
+ * `none-yet` and `stop` are deliberately different answers. An empty roster is a state the
+ * app is built to fix; anything else here is a setup that cannot go on.
+ */
+type AgentChoice =
+  | { readonly kind: "agent"; readonly agentId: string }
+  | { readonly kind: "none-yet" }
+  | { readonly kind: "stop" };
+
+async function chooseAgent(daemonUrl: string): Promise<AgentChoice> {
   const listing = await fetchJazzAgents(daemonUrl);
 
   if (listing.kind !== "ok") {
@@ -266,14 +368,15 @@ async function chooseAgent(daemonUrl: string): Promise<string | undefined> {
     // `--agent` given to a run whose daemon happens to be down used to be ignored, and the
     // question asked anyway.
     const named = argValue("agent");
-    if (named !== undefined) return named;
+    if (named !== undefined) return { kind: "agent", agentId: named };
 
     const typed = await prompt("\nAgent id or name (or leave empty to stop): ");
     if (typed === undefined) {
       console.error("    Name one with --agent <id>.\n");
-      return undefined;
+      return { kind: "stop" };
     }
-    return typed.trim().length > 0 ? typed.trim() : undefined;
+    const trimmed = typed.trim();
+    return trimmed.length > 0 ? { kind: "agent", agentId: trimmed } : { kind: "stop" };
   }
 
   const agents = listing.agents;
@@ -282,16 +385,16 @@ async function chooseAgent(daemonUrl: string): Promise<string | undefined> {
     // Validated, not trusted. A flag naming an agent that does not exist fails the same way
     // a typed answer would, and at setup rather than at the first turn.
     const picked = resolveAgentChoice(agents, fromFlag);
-    if (picked !== undefined) return picked.id;
+    if (picked !== undefined) return { kind: "agent", agentId: picked.id };
     console.error(`\n  ! jazz has no agent called "${fromFlag}".`);
     console.error(`    It has: ${agents.map((agent) => agent.name).join(", ")}`);
-    return undefined;
+    return { kind: "stop" };
   }
 
-  if (agents.length === 0) {
-    console.log("\n  ! That daemon has no agents. Create one with `jazz agent create`.");
-    return undefined;
-  }
+  // Not an error. This used to exit, which sent somebody meeting quartet for the first time
+  // off to learn a second CLI — while quartet's own agent editor, which does the same job,
+  // sat behind the app that only opens once this command succeeds.
+  if (agents.length === 0) return { kind: "none-yet" };
 
   // A script must never stop on a question, the rule `chooseIdentity` follows below. There is
   // no unambiguous answer to this one: which agent speaks for somebody is not a thing to pick
@@ -299,7 +402,7 @@ async function chooseAgent(daemonUrl: string): Promise<string | undefined> {
   if (process.stdin.isTTY !== true) {
     console.error(`\n  ! this jazz has ${String(agents.length)} agents: ${agents.map((agent) => agent.name).join(", ")}`);
     console.error("    Say which one speaks for you with --agent <id>.\n");
-    return undefined;
+    return { kind: "stop" };
   }
 
   listAgents(agents);
@@ -310,15 +413,15 @@ async function chooseAgent(daemonUrl: string): Promise<string | undefined> {
     const answer = await prompt("Number, name or id: ");
     // Ctrl-D. Stopping is the answer; looping five times to say "that is not one of them" to
     // a stream that has ended is not.
-    if (answer === undefined) return undefined;
+    if (answer === undefined) return { kind: "stop" };
     const picked = resolveAgentChoice(agents, answer);
     if (picked !== undefined) {
       console.log(`\n  ✓ ${picked.name} — ${describeModel(picked)}`);
-      return picked.id;
+      return { kind: "agent", agentId: picked.id };
     }
     console.log(`  That is not one of them. Pick 1-${String(agents.length)}, or type a name.`);
   }
-  return undefined;
+  return { kind: "stop" };
 }
 
 function listAgents(agents: readonly JazzAgent[]): void {
@@ -356,6 +459,7 @@ async function ensureDaemon(
 ): Promise<{ machine: MachineConfig; config: IdentityConfig; daemon: DaemonSettings } | undefined> {
   const daemonUrl = machine.daemonUrl;
   const webhook = config.webhook;
+  if (daemonUrl !== undefined) await ensureJazzRunning(daemonUrl);
   if (daemonUrl !== undefined && webhook !== undefined) {
     // The prompt lives in jazz's config, written when the webhook was first set up. Quartet
     // owns that text and it changes with quartet, so it is rewritten whenever it has drifted
@@ -374,14 +478,17 @@ async function ensureDaemon(
     // pointed the webhook at nothing and only failed at the first turn, long after the
     // command said it had succeeded.
     const recorded = config.agentId ?? (await agentIdFor(webhookName));
-    const agentId =
+    const choice: AgentChoice =
       argValue("agent") !== undefined || recorded === undefined
         ? await chooseAgent(daemonUrl)
-        : recorded;
-    if (agentId === undefined) return undefined;
-    const refreshed = await ensureJazzWebhook({ webhookName, agentId });
-    if (refreshed.changed) {
-      console.log(`\n  ✓ refreshed the "${webhookName}" prompt in ${refreshed.path}`);
+        : { kind: "agent", agentId: recorded };
+    if (choice.kind === "stop") return undefined;
+    const agentId = choice.kind === "agent" ? choice.agentId : undefined;
+    if (agentId !== undefined) {
+      const refreshed = await ensureJazzWebhook({ webhookName, agentId });
+      if (refreshed.changed) {
+        console.log(`\n  ✓ refreshed the "${webhookName}" prompt in ${refreshed.path}`);
+      }
     }
 
     // A stored token can be stranded: anything that runs `jazz webhook token` mints a fresh
@@ -391,7 +498,11 @@ async function ensureDaemon(
     const needsToken = renamed !== undefined || hasFlag("new-token") || argValue("token") !== undefined;
     const token = needsToken ? await resolveOrMintToken(webhookName) : webhook.token;
     if (token === undefined) return undefined;
-    const updated: IdentityConfig = { ...config, agentId, webhook: { name: webhookName, token } };
+    const updated: IdentityConfig = {
+      ...config,
+      ...(agentId !== undefined ? { agentId } : {}),
+      webhook: { name: webhookName, token },
+    };
     return { machine, config: updated, daemon: { url: daemonUrl, webhook: webhookName, token } };
   }
 
@@ -406,27 +517,40 @@ async function ensureDaemon(
     "";
   const chosenDaemon = daemonAnswer.trim().length > 0 ? daemonAnswer.trim() : DEFAULT_DAEMON_URL;
 
-  const agentId = await chooseAgent(chosenDaemon);
-  if (agentId === undefined) return undefined;
+  // Before asking which agents it has, because a daemon that is down has none.
+  if (chosenDaemon !== daemonUrl) await ensureJazzRunning(chosenDaemon);
+
+  const choice = await chooseAgent(chosenDaemon);
+  if (choice.kind === "stop") return undefined;
 
   // Named after this identity's label rather than a handle: a handle can differ from hub to
   // hub, and the keyring entry holding this webhook's token is keyed by the name. A webhook
   // that renamed itself when a hub called you something else would strand its own token.
   const webhookName = argValue("webhook") ?? defaultWebhookName(config.label);
 
-  const written = await ensureJazzWebhook({ webhookName, agentId });
-  console.log(
-    written.changed
-      ? `\n  ✓ wrote the "${webhookName}" webhook into ${written.path}`
-      : `\n  ✓ the "${webhookName}" webhook is already configured in ${written.path}`,
-  );
+  // With no agent yet there is nothing to point the entry at, so it is left unwritten and the
+  // app writes it when the first agent goes on stage. The token is minted either way: jazz
+  // keys it by the webhook's name, not by what the webhook names, so it is already correct
+  // for whatever agent turns up.
+  if (choice.kind === "agent") {
+    const written = await ensureJazzWebhook({ webhookName, agentId: choice.agentId });
+    console.log(
+      written.changed
+        ? `\n  ✓ wrote the "${webhookName}" webhook into ${written.path}`
+        : `\n  ✓ the "${webhookName}" webhook is already configured in ${written.path}`,
+    );
+  }
 
   const token = await resolveOrMintToken(webhookName);
   if (token === undefined) return undefined;
 
   return {
     machine: { ...machine, daemonUrl: chosenDaemon },
-    config: { ...config, agentId, webhook: { name: webhookName, token } },
+    config: {
+      ...config,
+      ...(choice.kind === "agent" ? { agentId: choice.agentId } : {}),
+      webhook: { name: webhookName, token },
+    },
     daemon: { url: chosenDaemon, webhook: webhookName, token },
   };
 }
@@ -437,6 +561,17 @@ async function ensureDaemon(
  * `jazz webhook token` generates and stores it, printing it once — the single point at which
  * it is readable. `--token` wins for CI and containers.
  */
+/**
+ * The app's address on this machine.
+ *
+ * Deep-links to the roster when there is no agent yet: that is the screen the person has to
+ * reach, and landing them on an empty room with a button to find is how the old flow lost
+ * people. The token rides in the query, so the path is the only part that varies.
+ */
+function appAddress(port: number, localToken: string, onStage: boolean): string {
+  return `http://localhost:${String(port)}${onStage ? "/" : "/agents"}?token=${localToken}`;
+}
+
 async function resolveOrMintToken(webhookName: string): Promise<string | undefined> {
   const explicit = argValue("token");
   if (explicit !== undefined && explicit.trim().length > 0) return explicit.trim();
@@ -908,7 +1043,11 @@ async function connect(): Promise<void> {
   await saveMachineConfig(machine);
   await saveIdentityConfig(config);
 
-  if (!(await webhookConfigured(daemon.webhook))) {
+  // Nothing is on stage until an agent is, and the app is where that gets fixed. Said once
+  // here so the URL below can land on the screen that fixes it.
+  const onStage = config.agentId !== undefined;
+
+  if (onStage && !(await webhookConfigured(daemon.webhook))) {
     console.warn(
       `\n  ! jazz has no webhook called "${daemon.webhook}". Every turn will fail until it` +
         `\n    appears in the "webhooks" list in ~/.jazz/config.json.`,
@@ -982,8 +1121,16 @@ async function connect(): Promise<void> {
   if (config.localPort !== local.port) config = { ...config, localPort: local.port };
   await saveIdentityConfig(config);
 
-  const appUrl = `http://localhost:${String(local.port)}/?token=${localToken}`;
-  console.log(`\n  quartet is running\n\n    ${appUrl}\n`);
+  const appUrl = appAddress(local.port, localToken, onStage);
+  if (onStage) {
+    console.log(`\n  quartet is running\n\n    ${appUrl}\n`);
+  } else {
+    console.log(
+      `\n  ! no agent is on stage, so @${handle ?? config.label} cannot take a turn yet.\n` +
+        `\n    Set one up in the browser — there is nothing else to run in here.\n` +
+        `\n    ${appUrl}\n`,
+    );
+  }
 
   // The tunnel comes up after the server, because a quick tunnel needs a port that is already
   // listening. Failing to get one is a warning rather than an exit: the app on this machine
@@ -1205,6 +1352,17 @@ async function info(): Promise<void> {
 
   if (config.webhook !== undefined) {
     console.log(`webhook    ${config.webhook.name}`);
+  }
+
+  // The port and the token are both stable across restarts, so this line is the way back into
+  // the dashboard — and it was written nowhere a person could find it once the terminal that
+  // printed it had scrolled away.
+  if (config.localPort !== undefined && config.localToken !== undefined) {
+    console.log(
+      `app        ${appAddress(config.localPort, config.localToken, config.agentId !== undefined)}`,
+    );
+  } else {
+    console.log(`app        not served yet — run \`quartet connect\` once`);
   }
 }
 
