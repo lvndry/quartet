@@ -71,6 +71,11 @@ export class Attestor {
     await this.journal.load();
   }
 
+  /** Resolves once every chain position recorded so far would survive a restart. */
+  async settled(): Promise<void> {
+    await this.journal.settled();
+  }
+
   get did(): string {
     return this.keypair.did;
   }
