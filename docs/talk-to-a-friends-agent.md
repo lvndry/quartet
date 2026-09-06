@@ -15,7 +15,7 @@ The shape is the same:
 One person starts the hub with `--tunnel`:
 
 ```bash
-bun run hub --tunnel --name "friday night"
+quartet hub --tunnel --name "friday night"
 ```
 
 That prints a public URL and a `/join` link.
@@ -28,7 +28,7 @@ They open it and run the command it gives them, which connects their bridge to y
 
 ## 3) Connect each agent
 
-Each person uses `bun run bridge connect` on their own machine and chooses the agent that should represent them.
+Each person uses `quartet connect` on their own machine and chooses the agent that should represent them.
 
 Each bridge keeps its own local state, so the two identities stay separate.
 

@@ -1,0 +1,199 @@
+name: Release Binaries
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag to build binaries for (e.g. v0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.event.release.tag_name }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS binaries are built on macOS so they come out ad-hoc signed. An unsigned
+          # Mach-O is killed on sight by arm64 macOS, and cross-compiling from Linux produces
+          # exactly that.
+          - name: darwin-arm64
+            runner: macos-latest
+            targets: bun-darwin-arm64
+          - name: darwin-x64
+            runner: macos-latest
+            targets: bun-darwin-x64
+          - name: linux
+            runner: ubuntu-latest
+            targets: bun-linux-x64 bun-linux-arm64 bun-linux-x64-musl bun-linux-arm64-musl
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG_NAME }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Once for the whole matrix leg: the app is the same bytes everywhere, and the compile
+      # steps below reuse the table generated from this build.
+      - name: Build the app
+        run: bun run app:build
+
+      - name: Compile binaries
+        run: |
+          for target in ${{ matrix.targets }}; do
+            bun run scripts/build.ts --skip-app-build --target "$target"
+          done
+
+      - name: Sign macOS binaries
+        if: runner.os == 'macOS'
+        run: |
+          for binary in deploy/binaries/*; do
+            codesign --force --sign - "$binary"
+            codesign --verify --verbose "$binary"
+          done
+
+      # Only where the binary can actually run. Cross-compiled targets are checked by the
+      # matching native leg, or by CI on the pull request that produced this tag.
+      - name: Smoke test the native binary
+        if: matrix.name == 'darwin-arm64' || matrix.name == 'linux'
+        run: |
+          arch="$([ "$(uname -m)" = "x86_64" ] && echo x64 || echo arm64)"
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          bun run smoke:binary "deploy/binaries/quartet-$os-$arch"
+
+      - name: Compress binaries
+        run: gzip -9 deploy/binaries/*
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.name }}
+          path: deploy/binaries/*.gz
+          retention-days: 1
+
+  publish:
+    name: Attach binaries to the release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG_NAME }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: binaries-*
+          merge-multiple: true
+
+      # install.sh refuses to install anything it cannot check against this file, so a release
+      # without it is a broken release rather than an unverifiable one.
+      - name: Generate checksums
+        working-directory: artifacts
+        run: |
+          sha256sum *.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp scripts/install.sh artifacts/install.sh
+          gh release upload "$TAG_NAME" artifacts/* --clobber
+
+  publish-npm:
+    name: Publish npm packages
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG_NAME }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+
+      - name: Ensure npm 11.5.1 or later
+        run: npm install -g npm@^11.5.1
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: binaries-*
+          merge-multiple: true
+
+      - name: Unpack binaries
+        run: |
+          mkdir -p deploy/binaries
+          cp artifacts/*.gz deploy/binaries/
+          gunzip deploy/binaries/*.gz
+          chmod +x deploy/binaries/*
+
+      # Every quartet-ai-<platform> package gets its binary and version stamped here, and
+      # quartet-ai gets its version, its optionalDependencies and the docs its `files` list
+      # references. This reuses the macOS-signed binaries the build job produced rather than
+      # recompiling: an ad-hoc signature only applies on the OS that made it.
+      - name: Stage npm packages
+        run: bun run scripts/build.ts --npm-packages-from-dir deploy/binaries
+
+      # Must publish before quartet-ai, whose optionalDependencies pin this exact version.
+      - name: Publish platform packages
+        run: |
+          failed=()
+          for dir in deploy/npm/quartet-ai-*/; do
+            name="$(node -p "require('./${dir}package.json').name")"
+            version="$(node -p "require('./${dir}package.json').version")"
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "$name@$version already published, skipping"
+              continue
+            fi
+            echo "Publishing $name..."
+            (cd "$dir" && npm publish) || failed+=("$name")
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::Failed to publish: ${failed[*]}"
+            exit 1
+          fi
+
+      - name: Publish quartet-ai
+        working-directory: deploy/npm/quartet-ai
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "${name}@${version}" version >/dev/null 2>&1; then
+            echo "$name@$version already published, skipping"
+            exit 0
+          fi
+          npm publish

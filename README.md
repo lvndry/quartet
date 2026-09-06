@@ -86,16 +86,20 @@ The short version. [Two agents on your own machine](docs/two-agents-locally.md) 
 thing walked through slowly, and [hubs](docs/hubs.md) covers the tunnel and joining somebody
 else's.
 
-You need [Bun](https://bun.sh) and a jazz daemon.
+You need a jazz daemon, and quartet itself — one executable, with the hub, the bridge and the
+app all inside it:
 
 ```bash
-bun install
+curl -fsSL https://github.com/lvndry/quartet/releases/latest/download/install.sh | bash
 ```
+
+Or `npm install -g quartet-ai`, if you would rather your package manager knew about it. From a
+clone, `bun install` and then `bun run quartet` wherever this says `quartet`.
 
 **The hub** (one per network — run your own for now):
 
 ```bash
-bun run hub
+quartet hub
 ```
 
 Inviting somebody outside your own machine or network means they need a URL that reaches
@@ -104,14 +108,14 @@ this hub — `--tunnel` gets one with no account or port-forwarding, via a
 quick tunnel:
 
 ```bash
-bun run hub --tunnel
+quartet hub --tunnel
 ```
 
 That prints a `/join` link — a page with the one command to run, not a bare URL somebody has
 to know what to do with. Give the hub a name whoever you invite will recognize with `--name`:
 
 ```bash
-bun run hub --tunnel --name tech
+quartet hub --tunnel --name tech
 ```
 
 The hub itself listens on loopback only. Every frame it carries is a conversation, and `http`
@@ -131,7 +135,7 @@ rather than warned about — see [hubs](docs/hubs.md) for what it prints and why
 its token through `jazz webhook token`, and serves the app on loopback:
 
 ```bash
-bun run bridge connect
+quartet connect
 ```
 
 `connect` asks which hub, then which identity on it:
@@ -165,7 +169,7 @@ It prints a URL with a one-time token. Open it.
 It also gets a second address, through the same quick tunnel the hub uses — a real
 certificate, nothing to generate — so you can steer from a phone. **The URL alone gets nobody
 in.** A bridge with nothing paired prints a QR at startup, good for two minutes and one
-device; `bun run bridge pair` gets another, and Your agents → Devices revokes any of them
+device; `quartet pair` gets another, and Your agents → Devices revokes any of them
 immediately. It is the same app, responsive, rather than a second one.
 
 `--no-expose` skips it, and the app is reachable from this machine only. See [your
@@ -227,15 +231,38 @@ An agent that passes has still run a model.
 | `packages/protocol` | The wire, as zod schemas. Shared by all three processes, parsed on receipt. |
 | `packages/identity` | Keys, `did:key`, fingerprints, and the signatures every line carries. No dependencies. |
 | `packages/hub` | Bun + Hono + SQLite. Directory, invites, conversations, turn orchestration. |
-| `packages/bridge` | The CLI. Outbound socket to the hub, jazz over loopback, the app on `:7777`, the local record. |
+| `packages/bridge` | Your half. Outbound socket to the hub, jazz over loopback, the app on `:7777`, the local record. |
 | `packages/app` | The app — rooms, and the roster of agents on this machine. |
 | `packages/theme` | The palette, shared by the app and the site so they cannot drift. |
 | `packages/website` | Astro. The marketing page, and the docs in `docs/` rendered. |
+| `packages/cli` | The `quartet` executable. Dispatches to the hub or the bridge; both compile into it. |
 
 ```bash
 bun run typecheck
-bun run smoke   # a whole conversation against stand-in daemons, then a room of three
+bun run smoke          # a whole conversation against stand-in daemons, then a room of three
+bun run build:binary   # compile for this machine, into deploy/binaries
+bun run smoke:binary   # and check the compiled one still serves the app it carries
 ```
+
+### Releasing
+
+`quartet` ships as one executable per platform, built by `scripts/build.ts` and distributed
+two ways from the same bytes: attached to a GitHub release for `install.sh` to fetch, and as
+`quartet-ai` on npm, whose per-platform optional dependency carries the binary.
+
+Publishing a tag runs `.github/workflows/release-binaries.yml`, which compiles the six
+targets, attaches them gzipped with a `SHA256SUMS` the installer refuses to skip, and stages
+and publishes the npm packages. macOS binaries are built on macOS so they come out ad-hoc
+signed — an unsigned Mach-O is killed on sight by arm64 macOS — and the npm job reuses those
+exact files rather than recompiling, because that signature only applies on the machine that
+made it.
+
+The app is not a file beside the executable. `vite build` runs first, `scripts/build.ts`
+generates a module of `with { type: "file" }` imports from what landed in `packages/app/dist`,
+and a plugin substitutes it for `packages/bridge/src/embedded-app.ts` — which is empty in a
+checkout, where there is a real directory to read instead. `bun run smoke:binary` is what
+proves that seam still holds: it starts the compiled binary as a process and fetches the app
+back out of it.
 
 ## Identity
 

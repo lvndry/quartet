@@ -104,7 +104,7 @@ export function explainHub(hubUrl: string, check: HubCheck): string[] {
     case "gone":
       return ["Check the hostname for typos, and whatever serves its DNS."];
     case "refused":
-      return ["Start it with `bun run hub` — add `--tunnel` to reach it from outside."];
+      return ["Start it with `quartet hub` — add `--tunnel` to reach it from outside."];
     case "not-a-hub":
       return ["A parked domain or the wrong port will both do this."];
     default:

@@ -99,16 +99,31 @@ describe("every package declares what it imports", () => {
 });
 
 describe("dependencies point toward the things that cannot change casually", () => {
-  test("nothing imports an application package", () => {
+  test("nothing imports an application package, except the one that starts them", () => {
+    // `cli` is the composition root: its whole job is to be the executable that runs either
+    // half, so it is the one package allowed to point at an application. Every other edge
+    // pointing this way is the mistake docs/design/packages.md exists to make visible.
     const applications = ["@quartet/bridge", "@quartet/hub", "@quartet/app", "@quartet/website"];
     const offenders: string[] = [];
     for (const pkg of packageNames) {
+      if (pkg === "cli") continue;
       const manifest = manifestOf(pkg);
       for (const dependency of Object.keys(manifest.dependencies ?? {})) {
         if (applications.includes(dependency)) offenders.push(`${pkg} → ${dependency}`);
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  test("the composition root depends on both halves and nothing else does", () => {
+    // The other direction of the same rule: `cli` earns its exemption by actually being the
+    // thing that starts both, so a bridge-only executable would be a different design and
+    // should have to say so here.
+    const manifest = manifestOf("cli");
+    expect(Object.keys(manifest.dependencies ?? {}).sort()).toEqual([
+      "@quartet/bridge",
+      "@quartet/hub",
+    ]);
   });
 
   test("the app never imports the hub wire", () => {
@@ -148,8 +163,8 @@ describe("the paths that only exist as strings", () => {
     // `join(dirname(...), "..", "..", "app", "dist")` is a string, so renaming the package
     // leaves it compiling and pointing nowhere. The only symptom would be every page serving
     // the "no build found" notice, which reads like a missing build rather than a broken path.
-    const main = readFileSync(join(PACKAGES, "bridge", "src", "main.ts"), "utf8");
-    const match = /appRoot = join\([\s\S]*?"\.\.",\s*"\.\.",\s*"([^"]+)",\s*"([^"]+)"\)/.exec(main);
+    const source = readFileSync(join(PACKAGES, "bridge", "src", "app-bundle.ts"), "utf8");
+    const match = /builtAppDirectory[\s\S]*?"\.\.",\s*"\.\.",\s*"([^"]+)",\s*"([^"]+)"\)/.exec(source);
     expect(match).not.toBeNull();
     const [, pkg, outDir] = match ?? [];
     expect(packageNames).toContain(pkg ?? "");
@@ -157,6 +172,74 @@ describe("the paths that only exist as strings", () => {
     // And that the package really does build there, rather than the two agreeing by luck.
     const viteConfig = readFileSync(join(PACKAGES, pkg ?? "", "vite.config.ts"), "utf8");
     expect(viteConfig).toContain(`outDir: "${outDir ?? ""}"`);
+  });
+
+  test("the compile embeds the app from that same directory", () => {
+    // The second copy of that path: `scripts/build.ts` walks the build to generate the
+    // embedded-file module, and a binary whose table was built from the wrong directory
+    // serves the "no build found" notice to every request while a checkout stays fine.
+    const build = readFileSync(join(ROOT, "scripts", "build.ts"), "utf8");
+    const match = /BUILT_APP_DIRECTORY = join\(PACKAGES, "([^"]+)", "([^"]+)"\)/.exec(build);
+    expect(match).not.toBeNull();
+    const [, pkg, outDir] = match ?? [];
+    expect(packageNames).toContain(pkg ?? "");
+    const viteConfig = readFileSync(join(PACKAGES, pkg ?? "", "vite.config.ts"), "utf8");
+    expect(viteConfig).toContain(`outDir: "${outDir ?? ""}"`);
+  });
+});
+
+describe("what gets published", () => {
+  /**
+   * `files` is the tarball's contents list, and npm ships what it names without checking.
+   * A missing entry here is a package that installs and then cannot run — the failure lands
+   * on somebody else's machine, after publishing, where it cannot be taken back.
+   *
+   * `bin/quartet` is the one worth naming: it is a guard script that the postinstall replaces
+   * with the real binary, and `bun run clean` once deleted it, which nothing else noticed.
+   */
+  test("quartet-ai ships everything its manifest promises", () => {
+    const packageDir = join(ROOT, "deploy", "npm", "quartet-ai");
+    const manifest = JSON.parse(
+      readFileSync(join(packageDir, "package.json"), "utf8"),
+    ) as { files: string[]; bin: Record<string, string>; optionalDependencies: Record<string, string> };
+
+    // README and LICENSE are copied in by the build, so only the committed ones are checked.
+    const committed = manifest.files.filter((entry) => !/^(README\.md|LICENSE)$/.test(entry));
+    const missing = committed.filter(
+      (entry) => statSync(join(packageDir, entry), { throwIfNoEntry: false }) === undefined,
+    );
+    expect(missing).toEqual([]);
+
+    const binary = Object.values(manifest.bin)[0] ?? "";
+    expect(statSync(join(packageDir, binary), { throwIfNoEntry: false })).toBeDefined();
+  });
+
+  test("every platform quartet-ai depends on is a package that exists here", () => {
+    // The optionalDependency list is how a machine finds its own binary; a name in it with no
+    // directory to publish from is an install that silently resolves nothing on that platform.
+    const manifest = JSON.parse(
+      readFileSync(join(ROOT, "deploy", "npm", "quartet-ai", "package.json"), "utf8"),
+    ) as { optionalDependencies: Record<string, string> };
+
+    const missing = Object.keys(manifest.optionalDependencies).filter(
+      (name) =>
+        statSync(join(ROOT, "deploy", "npm", name, "package.json"), { throwIfNoEntry: false }) ===
+        undefined,
+    );
+    expect(missing).toEqual([]);
+  });
+
+  test("the compile targets and the npm platform packages are the same list", () => {
+    // Two maps in scripts/build.ts, one per distribution channel. A target present in one and
+    // absent from the other is a platform that gets a release asset and no npm package, or an
+    // npm package staged from a binary that was never built.
+    const build = readFileSync(join(ROOT, "scripts", "build.ts"), "utf8");
+    const targetsIn = (constant: string): string[] => {
+      const block = new RegExp(`${constant}[^=]*= \\{([^}]*)\\}`).exec(build)?.[1] ?? "";
+      return [...block.matchAll(/"(bun-[a-z0-9-]+)":/g)].map((match) => match[1] ?? "").sort();
+    };
+    expect(targetsIn("NPM_PLATFORM_PACKAGES")).toEqual(targetsIn("COMPILE_TARGETS"));
+    expect(targetsIn("COMPILE_TARGETS").length).toBeGreaterThan(0);
   });
 });
 

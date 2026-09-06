@@ -17,6 +17,9 @@
     "noFallthroughCasesInSwitch": true,
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
+    // The CLI reads the workspace version out of the root manifest, so the number a binary
+    // reports is fixed when it is compiled rather than looked for on disk beside it.
+    "resolveJsonModule": true,
     "skipLibCheck": true,
     "noEmit": true,
     "paths": {

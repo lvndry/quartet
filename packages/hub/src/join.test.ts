@@ -4,8 +4,17 @@ import { joinPage } from "./join";
 describe("the invite page", () => {
   it("fills the origin into the command somebody has to run", () => {
     expect(joinPage("https://webmasters.trycloudflare.com")).toContain(
-      "bun run bridge connect --hub https://webmasters.trycloudflare.com",
+      "quartet connect --hub https://webmasters.trycloudflare.com",
     );
+  });
+
+  it("tells somebody how to get quartet, not just how to run it", () => {
+    // The page is shown to a person who does not have quartet yet — that is what an invite
+    // is. A command assuming a checkout is a command they cannot run.
+    const page = joinPage("https://webmasters.trycloudflare.com");
+
+    expect(page).toContain("install.sh");
+    expect(page).not.toContain("bun run");
   });
 
   it("names the hub in the headline and the tab, when it has a name", () => {

@@ -9,14 +9,20 @@
     "packages/*"
   ],
   "scripts": {
+    "quartet": "bun run packages/cli/src/main.ts",
     "hub": "bun run --cwd packages/hub start",
     "hub:dev": "bun run --cwd packages/hub dev",
     "bridge": "bun run --cwd packages/bridge start",
     "app:dev": "bun run --cwd packages/app dev",
     "app:build": "bun run --cwd packages/app build",
+    "build:binary": "bun run scripts/build.ts",
+    "build:binaries": "bun run scripts/build.ts --all-targets",
+    "stage-npm-packages": "bun run scripts/build.ts --all-targets --npm-packages",
     "typecheck": "bun run tsc --noEmit -p tsconfig.json",
     "test": "bun test",
-    "smoke": "bun scripts/smoke.ts"
+    "smoke": "bun scripts/smoke.ts",
+    "smoke:binary": "bun scripts/binary-smoke.ts",
+    "clean": "rm -rf .build deploy/binaries deploy/npm/quartet-ai-*/bin packages/app/dist"
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",

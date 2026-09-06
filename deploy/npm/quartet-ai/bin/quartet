@@ -1,0 +1,17 @@
+#!/usr/bin/env node
+/**
+ * A placeholder, replaced by the real binary during postinstall.
+ *
+ * Reaching this means the install script never ran — almost always `--ignore-scripts`, which
+ * some setups turn on globally. Saying so is the whole job: without it the failure is a
+ * syntax error from a shell trying to execute a Mach-O header, or nothing at all.
+ */
+console.error(
+  "quartet: this install did not finish.\n\n" +
+    "  The real binary is copied into place by quartet-ai's postinstall script, which did\n" +
+    "  not run — usually because npm was configured with --ignore-scripts.\n\n" +
+    "  Fix it with one of:\n" +
+    "    npm install -g quartet-ai --foreground-scripts\n" +
+    "    curl -fsSL https://github.com/lvndry/quartet/releases/latest/download/install.sh | bash\n",
+);
+process.exit(1);

@@ -136,6 +136,18 @@ const KEEPALIVE_EVERY_MS = 30_000;
 const SILENCE_LIMIT_MS = KEEPALIVE_EVERY_MS * 3;
 
 /**
+ * How late a keepalive tick may run before the gap is read as this machine having been
+ * suspended, rather than the hub having gone quiet.
+ *
+ * A laptop that sleeps stops the timer with it. The first tick after waking then measures the
+ * whole nap as silence and reports it against the hub — "nothing from the hub for 1007s",
+ * when the hub was answering every ping right up to the lid closing and the check that would
+ * have caught it never ran. The socket is dead either way, so the outcome does not change;
+ * what changes is that the log stops accusing the wrong end.
+ */
+const TICK_LATE_MS = KEEPALIVE_EVERY_MS * 2;
+
+/**
  * How long to wait for a socket that never finishes connecting.
  *
  * A tunnel that has stopped routing does not refuse the connection, it swallows it, and the
@@ -143,6 +155,20 @@ const SILENCE_LIMIT_MS = KEEPALIVE_EVERY_MS * 3;
  * looked, in the log, like nothing happening at all.
  */
 const CONNECT_TIMEOUT_MS = 15_000;
+
+/**
+ * A stretch of time as somebody reading a log would say it.
+ *
+ * Minutes past ninety seconds, because the gaps worth printing here are the long ones — a nap
+ * or an outage — and "1007s" is a number the reader has to do arithmetic on before it means
+ * anything.
+ */
+function describeGap(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 90) return `${String(seconds)}s`;
+  const minutes = Math.round(seconds / 60);
+  return `${String(minutes)}min`;
+}
 
 export class Bridge {
   private socket?: WebSocket;
@@ -792,11 +818,23 @@ export class Bridge {
    */
   private startKeepalive(socket: WebSocket, retire: (why: string) => void): void {
     this.stopKeepalive();
+    // Compared against the wall clock on every tick, because the gap between the two is the
+    // only evidence this end gets that it stopped running at all.
+    let ticked = Date.now();
     this.keepalive = setInterval(() => {
+      const now = Date.now();
+      const overdue = now - ticked - KEEPALIVE_EVERY_MS;
+      ticked = now;
       if (socket.readyState !== WebSocket.OPEN) return;
-      const silent = Date.now() - this.lastHeard;
+      // Checked before the silence, and instead of it: after a suspend both are true, and only
+      // one of them is the reason.
+      if (overdue > TICK_LATE_MS) {
+        retire(`this machine was asleep for ${describeGap(overdue)} — the socket did not survive it`);
+        return;
+      }
+      const silent = now - this.lastHeard;
       if (silent > SILENCE_LIMIT_MS) {
-        retire(`nothing from the hub for ${String(Math.round(silent / 1000))}s`);
+        retire(`nothing from the hub for ${describeGap(silent)}`);
         return;
       }
       socket.send(JSON.stringify({ t: "ping" } satisfies ClientFrame));

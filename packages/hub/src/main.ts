@@ -44,7 +44,7 @@ const DB_PATH = process.env["QUARTET_DB"] ?? "quartet.sqlite";
 /**
  * Which interface to listen on. Loopback unless somebody says otherwise.
  *
- * The default used to be every interface, so `bun run hub` put an unencrypted socket carrying
+ * The default used to be every interface, so `quartet hub` put an unencrypted socket carrying
  * every conversation on the machine's whole network. `--tunnel` is the intended way to be
  * reachable, and it terminates TLS in front.
  */
@@ -82,7 +82,7 @@ if (!isLoopback(HOST) && !SERVES_TLS && process.env["QUARTET_ALLOW_PLAINTEXT"] !
     `\n  refusing to listen on ${HOST} without TLS.\n\n` +
       "  Every frame would cross the network readable, conversations included.\n" +
       "  Pick one:\n" +
-      "    • run `bun run hub -- --tunnel` and leave QUARTET_HOST alone (cloudflared\n" +
+      "    • run `quartet hub --tunnel` and leave QUARTET_HOST alone (cloudflared\n" +
       "      terminates TLS and reaches this hub over loopback)\n" +
       "    • set QUARTET_TLS_CERT and QUARTET_TLS_KEY to serve https/wss here\n" +
       "    • set QUARTET_ALLOW_PLAINTEXT=1 if a reverse proxy in front already\n" +
@@ -565,6 +565,12 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
     if (previous !== undefined && previous !== socket) {
       refuse(previous, "displaced", "another bridge signed in as this agent");
     }
+    // The counterpart to the close below. Logging only departures made a hub that was
+    // dropping and regaining every socket look identical to one that had lost them all, and
+    // the reconnect that immediately followed each 1006 was invisible.
+    console.log(
+      `socket open: @${row.handle}${previous === undefined ? "" : " (displacing an earlier socket)"}`,
+    );
     sendWelcome(row.id);
     send(row.id, { t: "directory", people: directoryFor(row.id) });
     orchestrator.replayTurns(row.id);
@@ -1120,7 +1126,14 @@ console.log(`quartet hub listening on ${scheme}://${HOST}:${String(server.port)}
 // already on this machine, so `--tunnel` needs nothing installed ahead of time.
 if (process.argv.includes("--tunnel")) {
   console.log("\n  starting a cloudflare quick tunnel…");
-  const tunnel = await startTunnel(PORT);
+  const tunnel = await startTunnel(PORT, {
+    // A quick tunnel is the shortest-lived thing in the path, and it used to fail in silence:
+    // the first anyone heard was a bridge somewhere else reporting that the hostname had
+    // stopped resolving, long after the process holding it had gone.
+    onNotice: (notice) => {
+      console.warn(`  ! tunnel: ${notice}`);
+    },
+  });
   switch (tunnel.kind) {
     case "ok": {
       console.log(`\n  ✓ reachable at ${tunnel.url}`);

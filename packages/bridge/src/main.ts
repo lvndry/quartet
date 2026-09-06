@@ -11,9 +11,10 @@
  * configuration; a tool that silently rewrites it has not earned the access.
  */
 
-import { basename, dirname, join } from "node:path";
+import { basename } from "node:path";
 import { signClaim, tag, type Keypair } from "@quartet/identity";
 import { AgentAdmin } from "./agent-admin";
+import { loadAppBundle } from "./app-bundle";
 import { Attestor } from "./attest";
 import { Bridge } from "./bridge";
 import {
@@ -61,8 +62,9 @@ import {
   toolRarity,
   type JazzAgent,
 } from "./jazz-agents";
-import { currentLogLevel, LOG_LEVELS, logger, parseLogLevel, setLogLevel } from "./log";
+import { currentLogLevel, logger, parseLogLevel, setLogLevel } from "./log";
 import { startLocalServer } from "./local";
+import { usage } from "./usage";
 import { DeviceRegistry, type StoredDevice } from "./devices";
 import { startTunnel } from "@quartet/tunnel";
 import QRCode from "qrcode";
@@ -916,8 +918,7 @@ async function connect(): Promise<void> {
     await saveIdentityConfig(config);
   });
   const preferredPort = Number(requestedPort ?? config.localPort ?? DEFAULT_LOCAL_PORT);
-  const appRoot = join(dirname(Bun.fileURLToPath(import.meta.url)), "..", "..", "app", "dist");
-  const built = await Bun.file(join(appRoot, "index.html")).exists();
+  const app = await loadAppBundle();
 
   // A port that was asked for is the one to serve on. Stepping up to the next free one is
   // for the port nobody named, where the alternative is a second agent on this host refusing
@@ -941,7 +942,7 @@ async function connect(): Promise<void> {
       return { ok: true as const };
     },
     hostname: APP_HOST,
-    ...(built ? { appRoot } : {}),
+    ...(app === undefined ? {} : { app }),
   });
 
   if (local.port !== preferredPort) {
@@ -963,7 +964,11 @@ async function connect(): Promise<void> {
   let stopTunnel: (() => void) | undefined;
   if (!hasFlag("no-expose")) {
     console.log("  getting an address a phone can reach — cloudflare quick tunnel…");
-    const tunnel = await startTunnel(local.port);
+    const tunnel = await startTunnel(local.port, {
+      onNotice: (notice) => {
+        console.warn(`  ! tunnel: ${notice}`);
+      },
+    });
     if (tunnel.kind === "ok") {
       local.setPublicOrigin(tunnel.url);
       stopTunnel = tunnel.stop;
@@ -981,13 +986,13 @@ async function connect(): Promise<void> {
           small: true,
         }));
         console.log(`  scan that to pair a device — the code is ${offer.code}`);
-        console.log(`  good for two minutes. \`bun run bridge pair${identityFlags()}\` for another,`);
+        console.log(`  good for two minutes. \`quartet pair${identityFlags()}\` for another,`);
         console.log("  or `--no-expose` if you would rather this machine were the only way in.\n");
       } else {
         const paired = devices.list();
         const names = paired.map((device) => device.name).join(", ");
         console.log(`  ${String(paired.length)} device${paired.length === 1 ? "" : "s"} paired: ${names}`);
-        console.log(`  \`bun run bridge pair${identityFlags()}\` to add another.\n`);
+        console.log(`  \`quartet pair${identityFlags()}\` to add another.\n`);
       }
     } else {
       // Not fatal, and deliberately so: the app on this machine works either way, and a
@@ -1003,7 +1008,7 @@ async function connect(): Promise<void> {
     data: getDataDirectory(),
     level: currentLogLevel(),
   });
-  if (!built) {
+  if (app === undefined) {
     console.log("  (no app build yet — run `bun run app:build`, or `bun run app:dev` to develop)\n");
   }
 
@@ -1102,43 +1107,6 @@ function identityFlags(): string {
   return label === undefined ? "" : ` --identity ${label}`;
 }
 
-function usage(): void {
-  console.log(
-    [
-      "quartet — a place where jazz agents meet, get introduced, and talk",
-      "",
-      "  quartet connect            start the bridge and open the app",
-      "    --identity <name>        which identity on this machine to be, skipping the",
-      "                             question — a name it does not know makes a new one",
-      "    --hub <url>              which hub to join",
-      "    --no-expose              skip the public https URL, so the app is reachable from",
-      "                             this machine only and no phone can pair with it",
-      "    --port <n>               local port for the app — served or nothing (default 7777,",
-      "                             and only that default moves up when it is taken)",
-      "    --data-dir <path>        this identity's folder, wherever it is",
-      "    --agent <id>             which jazz agent represents you",
-      "    --webhook <name>         webhook name (default: quartet-<identity>)",
-      "    --daemon <url>           where jazz is listening (default :4747)",
-      "    --handle <name>          claim this handle on that hub without being asked",
-      "    --name <text>            display name",
-      "    --token <secret>         supply the webhook token instead of generating one",
-      "    --new-token              mint a fresh webhook token and save it, for when jazz",
-      "                             has started rejecting the one on file",
-      "    --jazz <command>         how to invoke jazz (default: jazz)",
-      `    --log-level <level>      ${LOG_LEVELS.join(" | ")} (default: info, or $QUARTET_LOG)`,
-      "    --yes                    install jazz without asking, if it's missing",
-      "",
-      "  quartet pair                offer a code for a phone or tablet to scan",
-      "    --identity <name>          pair to one of the identities on this host",
-      "    --data-dir <path>          the same, by directory",
-      "",
-      "  quartet info                what this identity actually is, right now",
-      "    --identity <name>          which identity to describe",
-      "    --agent <id>               check a specific jazz agent instead of the one on file",
-      "    --daemon <url>             where jazz is listening (default :4747, or the file's own)",
-    ].join("\n"),
-  );
-}
 
 /**
  * What `--data-dir`/`--agent` resolved to, what identity lives there, and what it would
