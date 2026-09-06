@@ -54,11 +54,6 @@ function say(author: Attestor, index: number, conversationId = "cnv_1"): Message
   return message;
 }
 
-/** The saves are deliberately fire-and-forget, so let them land as a live process would. */
-async function settle(): Promise<void> {
-  await Bun.sleep(50);
-}
-
 describe("the chain across a restart", () => {
   it("does not cry gap when the author's own bridge merely restarted", async () => {
     const receiver = await restart("otto", otto);
@@ -66,7 +61,9 @@ describe("the chain across a restart", () => {
 
     expect(receiver.check(say(sender, 1), context()).state).toBe("signed");
     expect(receiver.check(say(sender, 2), context()).state).toBe("signed");
-    await settle();
+    // The saves are fire-and-forget, so wait for the bytes a restart would read rather than
+    // for an interval that is long enough on a quiet machine and not on a busy one.
+    await sender.settled();
 
     // A restart is an ordinary event. If it reported as tampering, the one warning that
     // matters would be the one everybody has learned to click past.
@@ -79,7 +76,7 @@ describe("the chain across a restart", () => {
     let receiver = await restart("otto", otto);
 
     expect(receiver.check(say(sender, 1), context()).state).toBe("signed");
-    await settle();
+    await receiver.settled();
 
     receiver = await restart("otto", otto);
     const withheld = say(sender, 2);

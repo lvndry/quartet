@@ -36,6 +36,8 @@ export class Journal {
   private own = new Map<string, string>();
   private seen = new Map<string, string>();
   private readonly path: string;
+  /** The most recent save. Writes are serialised per path, so awaiting it awaits them all. */
+  private pending: Promise<void> = Promise.resolve();
 
   /** Passed in for the same reason the pin file is: one process can run two agents. */
   constructor(path: string = journalPath()) {
@@ -65,7 +67,7 @@ export class Journal {
 
   recordOwn(conversationId: string, link: string): void {
     this.own.set(conversationId, link);
-    void this.save();
+    this.pending = this.save();
   }
 
   lastSeen(key: string): string | undefined {
@@ -74,7 +76,18 @@ export class Journal {
 
   recordSeen(key: string, link: string): void {
     this.seen.set(key, link);
-    void this.save();
+    this.pending = this.save();
+  }
+
+  /**
+   * Resolves once everything recorded so far is on disk.
+   *
+   * Recording stays fire-and-forget — a turn must not wait on a derived file — so anything
+   * that has to know the next process will read what this one concluded asks here instead of
+   * guessing at an interval.
+   */
+  async settled(): Promise<void> {
+    await this.pending;
   }
 
   private async save(): Promise<void> {
