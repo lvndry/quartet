@@ -4,6 +4,7 @@
  * credential", so these are the assertions that carry that weight.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { appBundleFromDirectory } from "./app-bundle";
 import { DeviceRegistry } from "./devices";
 import { startLocalServer } from "./local";
 import type { AgentAdmin } from "./agent-admin";
@@ -178,7 +179,8 @@ describe("the app itself", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  function serving(appRoot: string | undefined) {
+  async function serving(appRoot: string | undefined) {
+    const app = appRoot === undefined ? undefined : await appBundleFromDirectory(appRoot);
     return startLocalServer({
       port: 0,
       mayMoveUp: true,
@@ -186,12 +188,12 @@ describe("the app itself", () => {
       bridge: stubBridge,
       agents: stubAgents,
       devices: new DeviceRegistry([], async () => {}),
-      ...(appRoot === undefined ? {} : { appRoot }),
+      ...(app === undefined ? {} : { app }),
     });
   }
 
   test("serves the build at the root", async () => {
-    const local = serving(root);
+    const local = await serving(root);
     try {
       const response = await fetch(`http://127.0.0.1:${String(local.port)}/`);
       expect(response.status).toBe(200);
@@ -202,7 +204,7 @@ describe("the app itself", () => {
   });
 
   test("serves an asset by its own path", async () => {
-    const local = serving(root);
+    const local = await serving(root);
     try {
       const response = await fetch(`http://127.0.0.1:${String(local.port)}/assets/app.js`);
       expect(response.status).toBe(200);
@@ -213,7 +215,7 @@ describe("the app itself", () => {
   });
 
   test("falls back to the shell so a hard refresh keeps client routing", async () => {
-    const local = serving(root);
+    const local = await serving(root);
     try {
       const response = await fetch(`http://127.0.0.1:${String(local.port)}/rooms/anything`);
       expect(await response.text()).toContain("<title>quartet</title>");
@@ -223,7 +225,7 @@ describe("the app itself", () => {
   });
 
   test("says so plainly when there is no build, naming a script that exists", async () => {
-    const local = serving(undefined);
+    const local = await serving(undefined);
     try {
       const response = await fetch(`http://127.0.0.1:${String(local.port)}/`);
       expect(response.status).toBe(503);

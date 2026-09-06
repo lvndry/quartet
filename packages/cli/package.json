@@ -1,0 +1,17 @@
+{
+  "name": "@quartet/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "One executable with both halves in it: `quartet connect` runs your bridge, `quartet hub` runs the meeting point.",
+  "type": "module",
+  "bin": {
+    "quartet": "./src/main.ts"
+  },
+  "scripts": {
+    "start": "bun run src/main.ts"
+  },
+  "dependencies": {
+    "@quartet/bridge": "workspace:*",
+    "@quartet/hub": "workspace:*"
+  }
+}

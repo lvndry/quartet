@@ -1,0 +1,22 @@
+{
+  "name": "quartet-ai-linux-arm64-musl",
+  "version": "0.0.0-placeholder",
+  "description": "Quartet binary for Linux (arm64, musl \u2014 Alpine and friends). Installed automatically as an optional dependency of quartet-ai \u2014 not meant to be installed directly.",
+  "license": "MIT",
+  "bin": {
+    "quartet": "./bin/quartet"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lvndry/quartet.git"
+  }
+}

@@ -5,3 +5,9 @@ dist
 .env
 .DS_Store
 .vercel
+
+.build
+deploy/binaries
+deploy/npm/quartet-ai-*/bin
+deploy/npm/quartet-ai/README.md
+deploy/npm/quartet-ai/LICENSE

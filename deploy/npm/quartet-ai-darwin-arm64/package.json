@@ -1,0 +1,22 @@
+{
+  "name": "quartet-ai-darwin-arm64",
+  "version": "0.1.0",
+  "description": "Quartet binary for macOS (Apple Silicon). Installed automatically as an optional dependency of quartet-ai — not meant to be installed directly.",
+  "license": "MIT",
+  "bin": {
+    "quartet": "./bin/quartet"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lvndry/quartet.git"
+  }
+}

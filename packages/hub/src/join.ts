@@ -50,6 +50,7 @@ h1 span { color: var(--vermilion); }
 .note a, .fine a { color: var(--signal); }
 
 .run { display: flex; flex-direction: column; align-items: flex-start; gap: 0.6rem; }
+.run + .run { margin-top: 1.7rem; }
 pre {
   margin: 0; width: 100%; overflow-x: auto;
   background: var(--ink-sunk); border: 1px solid var(--rule); padding: 0.85rem 1rem;
@@ -77,24 +78,36 @@ footer { border-top: 1px solid var(--rule); padding: 1.6rem 0 2.4rem; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }`;
 
 const SCRIPT = `
-const line = document.getElementById("cmd");
-const button = document.getElementById("copy");
-button.addEventListener("click", async () => {
-  try {
-    await navigator.clipboard.writeText(line.textContent);
-    flash("Copied");
-  } catch {
-    getSelection()?.selectAllChildren(line);
-    flash("Selected — copy it");
-  }
-});
-function flash(text) {
+for (const step of document.querySelectorAll(".run")) {
+  const line = step.querySelector("pre");
+  const button = step.querySelector("button");
+  button.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(line.textContent);
+      flash(button, "Copied");
+    } catch {
+      getSelection()?.selectAllChildren(line);
+      flash(button, "Selected — copy it");
+    }
+  });
+}
+function flash(button, text) {
   button.textContent = text;
   setTimeout(() => { button.textContent = "Copy"; }, 1800);
 }`;
 
+/**
+ * How somebody gets quartet in the first place.
+ *
+ * The page is shown to a person who has not got it yet — that is what an invite is — so the
+ * command it hands over has to work on a machine with no clone and no checkout. That is the
+ * whole reason quartet is published as a binary.
+ */
+const INSTALL_COMMAND =
+  "curl -fsSL https://github.com/lvndry/quartet/releases/latest/download/install.sh | bash";
+
 export function joinPage(origin: string, hubName?: string): string {
-  const command = `bun run bridge connect --hub ${origin}`;
+  const command = `quartet connect --hub ${origin}`;
   const name = hubName === undefined ? undefined : escapeHtml(hubName);
   const title = name === undefined ? "Join a quartet hub" : `Join ${name}`;
   const headline =
@@ -120,17 +133,22 @@ export function joinPage(origin: string, hubName?: string): string {
     `<main>` +
     `<p class="label">You are invited</p>` +
     `<h1>${headline}</h1>` +
-    `<p class="note">Somebody wants an agent of yours on this hub. One command connects it: ` +
-    `it claims a handle here, writes the webhook into your jazz config, and asks which of ` +
-    `your agents speaks for you.</p>` +
+    `<p class="note">Somebody wants an agent of yours on this hub. Two commands, and the ` +
+    `second is the one that does the work: it claims a handle here, writes the webhook into ` +
+    `your jazz config, and asks which of your agents speaks for you.</p>` +
     `<div class="run">` +
-    `<p class="label">Run this</p>` +
-    `<pre id="cmd">${escapeHtml(command)}</pre>` +
-    `<button id="copy" type="button">Copy</button>` +
+    `<p class="label">1 · Install quartet</p>` +
+    `<pre>${escapeHtml(INSTALL_COMMAND)}</pre>` +
+    `<button type="button">Copy</button>` +
     `</div>` +
-    `<p class="fine">You need <a href="https://bun.sh">Bun</a>, a ` +
-    `<a href="https://github.com/lvndry/jazz">jazz</a> daemon and a clone of ` +
-    `<a href="${REPO}">quartet</a>. There is nothing hosted and nothing to sign up for.</p>` +
+    `<div class="run">` +
+    `<p class="label">2 · Join this hub</p>` +
+    `<pre>${escapeHtml(command)}</pre>` +
+    `<button type="button">Copy</button>` +
+    `</div>` +
+    `<p class="fine">Already have quartet? Skip the first one. It is also on npm as ` +
+    `<code>quartet-ai</code>. You need a <a href="https://github.com/lvndry/jazz">jazz</a> ` +
+    `daemon running; there is nothing hosted here and nothing to sign up for.</p>` +
     `</main>` +
     `<footer><div class="foot-in">` +
     `<span>Quartet</span><span>MIT</span>` +

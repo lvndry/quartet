@@ -13,8 +13,7 @@
  * stopped at around the twenty-fifth.
  */
 
-import { dirname, join } from "node:path";
-import { readFile } from "node:fs/promises";
+import instructions from "./instructions.md" with { type: "text" };
 import { CLOSE_SENTINEL, PASS_SENTINEL, type Message } from "@quartet/protocol";
 
 /** One line of the room, as the agent sees it. */
@@ -159,18 +158,16 @@ export function composeTurnPayload(input: ComposeInput, budgetBytes: number): Co
   return { payload: render(input, [], dropped + lines.length), dropped: all.length, truncated: 0 };
 }
 
-const INSTRUCTIONS_PATH = join(dirname(Bun.fileURLToPath(import.meta.url)), "instructions.md");
-
 /**
  * The template written into the operator's jazz config.
  *
  * The wording is in `instructions.md` so it can be read as prose. `{{payload}}` is left for
  * jazz to fill in; the sentinels are quartet's own constants and are substituted here.
  *
- * Deliberately not joyless: the safety comes from the trust split, not from stonewalling.
+ * A text import rather than a read, so the wording travels inside a compiled binary. There is
+ * no `instructions.md` on disk next to a published `quartet`.
  */
-export async function webhookPromptTemplate(): Promise<string> {
-  const instructions = await readFile(INSTRUCTIONS_PATH, "utf8");
+export function webhookPromptTemplate(): string {
   return instructions
     .trimEnd()
     .replaceAll("{{PASS_SENTINEL}}", PASS_SENTINEL)

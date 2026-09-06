@@ -1,4 +1,4 @@
-# Eight packages, and what each is not allowed to know
+# Nine packages, and what each is not allowed to know
 
 [Three processes](architecture.md) says how the bridge, the hub and the app stand relative to
 one another at runtime. This says how the source is divided, which is a different cut: the
@@ -11,11 +11,12 @@ nowhere else. A boundary nobody wrote down is a boundary the next change erodes 
 theme ─────────────────────────────► app, website
 identity ─┬──────► protocol ──┬────► bridge, hub, app
           └──────────────────►┤
-tunnel ───────────────────────└────► bridge, hub
+tunnel ───────────────────────└────► bridge, hub ──► cli
 ```
 
-Nothing imports `bridge`, `hub`, `app` or `website`. They are the leaves of the graph, not
-the trunk, which is what makes any of them replaceable.
+Nothing imports `bridge`, `hub`, `app` or `website` except `cli`, which exists to start two of
+them and is the last node rather than a shared one. They are the leaves of the graph, not the
+trunk, which is what makes any of them replaceable.
 
 ## The rule underneath all of it
 
@@ -23,6 +24,11 @@ Dependencies point *toward* the things that cannot change casually. `identity` k
 is depended on most; `app` knows most and is depended on by nothing. A new edge that points
 the other way — a library importing an application — is the shape of the mistake this page
 exists to make visible.
+
+`cli` is the one exception, and it is the standard one: a composition root has to know the
+things it composes, which is exactly why nothing composes *it*. `scripts/boundaries.test.ts`
+names it explicitly rather than loosening the rule, so a second exemption has to be argued for
+rather than inherited.
 
 ---
 
@@ -80,8 +86,12 @@ it; the bridge, so a paired phone can reach the app.
 
 **Depended on by** `bridge`, `hub` — one call site each.
 
-**Must not know** anything about quartet. It takes a number and returns a URL or a reason it
-could not.
+**Must not know** anything about quartet, with one exception it is stuck with: where the
+`cloudflared` binary goes. The package's own default is beside its own `node_modules` copy,
+which in a compiled `quartet` is a read-only path inside the embedded filesystem — the
+download fails there every time and the tunnel simply never comes up, looking exactly like a
+network problem. So it resolves `~/.quartet/bin/cloudflared` itself rather than importing the
+bridge's paths, which would point this edge the wrong way for the sake of one string.
 
 **It is not a transport layer, and should not be described as one.** The bridge↔hub socket is
 a plain WebSocket that does not route through it, and quartet works with no tunnel at all when
@@ -113,9 +123,9 @@ components, and they do not: one renders a live conversation, the other renders 
 **Owns** the meeting point. A socket router with SQLite: handles and their keys, connections,
 rooms, invites, turn policy, presence, rate limits, backpressure.
 
-**Exports** nothing. It is a process, started by `bun run hub`.
+**Exports** `./main`, a module that starts the hub when it is imported. Only `cli` imports it.
 
-**Depended on by** nothing.
+**Depended on by** `cli`.
 
 **Must not know** a model key, a plaintext line, or what anything cost. Every token quartet
 spends is spent on a participant's own machine with their own key, which is what makes a
@@ -131,9 +141,11 @@ been broken rather than extended. See [confidentiality](confidentiality.md).
 **Owns** your half. One outbound socket to a hub, jazz over loopback, your keys, your ledger,
 your journal, the device pairing, and it serves the app.
 
-**Exports** a `quartet` binary. Its modules are internal — no other package imports them.
+**Exports** `./main`, which runs a command when imported, and `./usage`, which is the text
+`quartet` prints when nobody has said what to do — including the `hub` section, because it
+documents the executable rather than this package. Everything else here is internal.
 
-**Depended on by** nothing.
+**Depended on by** `cli`.
 
 **Must not know** the browser's rendering concerns. It publishes a snapshot; how that becomes
 a screen is the app's problem.
@@ -147,7 +159,9 @@ threat model, not a feature.
 **Owns** the app you look at. One socket to your own bridge, whole-snapshot rendering, and
 every form.
 
-**Exports** nothing. Vite builds it; the bridge serves the build.
+**Exports** nothing. Vite builds it; the bridge serves the build — from `dist/` in a checkout,
+and from a table of files embedded at compile time in a published binary. `app-bundle.ts` is
+the seam, and it is the only place either answer is known.
 
 **Depended on by** nothing.
 
@@ -171,3 +185,19 @@ point is what makes that a compile error instead of a code review note.
 **Must not know** the protocol. It shares the palette and it reads the same markdown a reader
 would; it has no opinion about frames. It is excluded from the root `tsconfig` because
 `astro:content` is a virtual module that only exists under `astro check`.
+
+## `@quartet/cli`
+
+**Owns** the `quartet` executable, and nothing else. Roughly twenty lines: read the first
+argument, print a version or a usage, and import one of the two halves.
+
+**Exports** nothing. It is the `bin`, and it is what `scripts/build.ts` compiles.
+
+**Depended on by** nothing, and that is the point — see the exception above.
+
+**Must not know** anything either half does. It has no config, no I/O and no state; if a
+decision ever needs making here, it belongs to whichever half is about to be started.
+
+**One binary rather than two.** A `/join` page hands somebody a single command, and running a
+hub and joining one being separate installs would make that a lie. Both halves compile in and
+only the named one is evaluated, so the cost is size on disk rather than anything at runtime.

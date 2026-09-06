@@ -11,9 +11,11 @@
  * configuration; a tool that silently rewrites it has not earned the access.
  */
 
-import { basename, dirname, join } from "node:path";
+import { basename } from "node:path";
 import { signClaim, tag, type Keypair } from "@quartet/identity";
 import { AgentAdmin } from "./agent-admin";
+import { loadAppBundle } from "./app-bundle";
+import { prompt } from "./ask";
 import { Attestor } from "./attest";
 import { Bridge } from "./bridge";
 import {
@@ -61,8 +63,9 @@ import {
   toolRarity,
   type JazzAgent,
 } from "./jazz-agents";
-import { currentLogLevel, LOG_LEVELS, logger, parseLogLevel, setLogLevel } from "./log";
+import { currentLogLevel, logger, parseLogLevel, setLogLevel } from "./log";
 import { startLocalServer } from "./local";
+import { usage } from "./usage";
 import { DeviceRegistry, type StoredDevice } from "./devices";
 import { startTunnel } from "@quartet/tunnel";
 import QRCode from "qrcode";
@@ -106,21 +109,6 @@ function argValue(name: string): string | undefined {
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(`--${name}`);
-}
-
-/**
- * One reader for the whole session, not one per question.
- *
- * `for await (const line of console)` opens a fresh reader over stdin each time it is
- * evaluated, so a second prompt races the first one's buffer and the answers land against
- * the wrong questions. Holding a single iterator is the fix.
- */
-const lines: AsyncIterator<string> = console[Symbol.asyncIterator]();
-
-async function prompt(question: string): Promise<string> {
-  process.stdout.write(question);
-  const next = await lines.next();
-  return next.done === true ? "" : next.value.trim();
 }
 
 /**
@@ -205,13 +193,14 @@ async function claimHandle(
   if (interactive) console.log("\n  This hub has never seen your key.\n");
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const asked = interactive
-      ? await prompt(
-          suggested === undefined
-            ? "  Handle to claim here (lowercase, e.g. mira): "
-            : `  Handle to claim here [${suggested}]: `,
-        )
-      : "";
+    const asked =
+      (interactive
+        ? await prompt(
+            suggested === undefined
+              ? "  Handle to claim here (lowercase, e.g. mira): "
+              : `  Handle to claim here [${suggested}]: `,
+          )
+        : undefined) ?? "";
     const handle = (fromFlag ?? (asked.length > 0 ? asked : (suggested ?? ""))).trim();
     if (handle.length < 2) {
       console.error("\n  A handle needs at least two characters.");
@@ -221,7 +210,8 @@ async function claimHandle(
     // Shows the handle it falls back to, the way the daemon question shows its default. An
     // empty answer here is the common case, and a bare "Display name:" gave no clue whether
     // that meant "no display name" or "the handle".
-    const nameAnswer = argValue("name") ?? (interactive ? await prompt(`  Display name: [${handle}] `) : "");
+    const nameAnswer =
+      argValue("name") ?? (interactive ? await prompt(`  Display name: [${handle}] `) : undefined) ?? "";
     const displayName = nameAnswer.trim().length > 0 ? nameAnswer.trim() : handle;
 
     const claimed = await postClaim(hubUrl, keypair, handle, displayName);
@@ -271,7 +261,18 @@ async function chooseAgent(daemonUrl: string): Promise<string | undefined> {
       default:
         console.log(`    ${listing.detail}`);
     }
+    // Taken at its word rather than validated, because there is no listing to validate it
+    // against. Read here as well as below because this branch never reaches that one — a
+    // `--agent` given to a run whose daemon happens to be down used to be ignored, and the
+    // question asked anyway.
+    const named = argValue("agent");
+    if (named !== undefined) return named;
+
     const typed = await prompt("\nAgent id or name (or leave empty to stop): ");
+    if (typed === undefined) {
+      console.error("    Name one with --agent <id>.\n");
+      return undefined;
+    }
     return typed.trim().length > 0 ? typed.trim() : undefined;
   }
 
@@ -292,12 +293,24 @@ async function chooseAgent(daemonUrl: string): Promise<string | undefined> {
     return undefined;
   }
 
+  // A script must never stop on a question, the rule `chooseIdentity` follows below. There is
+  // no unambiguous answer to this one: which agent speaks for somebody is not a thing to pick
+  // on their behalf, so it is an error naming the flag instead.
+  if (process.stdin.isTTY !== true) {
+    console.error(`\n  ! this jazz has ${String(agents.length)} agents: ${agents.map((agent) => agent.name).join(", ")}`);
+    console.error("    Say which one speaks for you with --agent <id>.\n");
+    return undefined;
+  }
+
   listAgents(agents);
 
   // No default. The old one was the literal string "default", which is a persona name and
   // matches no agent — so enter wrote a webhook that could never run.
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const answer = await prompt("Number, name or id: ");
+    // Ctrl-D. Stopping is the answer; looping five times to say "that is not one of them" to
+    // a stream that has ended is not.
+    if (answer === undefined) return undefined;
     const picked = resolveAgentChoice(agents, answer);
     if (picked !== undefined) {
       console.log(`\n  ✓ ${picked.name} — ${describeModel(picked)}`);
@@ -387,7 +400,10 @@ async function ensureDaemon(
   // The daemon first, because it is what knows which agents exist. Asking for the agent
   // before knowing where to ask was why this used to be a free-text prompt.
   const daemonAnswer =
-    argValue("daemon") ?? daemonUrl ?? (await prompt(`Where is your daemon? [${DEFAULT_DAEMON_URL}] `));
+    argValue("daemon") ??
+    daemonUrl ??
+    (await prompt(`Where is your daemon? [${DEFAULT_DAEMON_URL}] `)) ??
+    "";
   const chosenDaemon = daemonAnswer.trim().length > 0 ? daemonAnswer.trim() : DEFAULT_DAEMON_URL;
 
   const agentId = await chooseAgent(chosenDaemon);
@@ -498,6 +514,12 @@ function isJazzInstalled(): boolean {
  * The exact command jazz's own README tells somebody to run by hand, so automating it removes
  * a copy-paste rather than adding a trust boundary. It still asks first and runs the installer
  * with its output visible.
+ *
+ * Nobody at the keyboard is a no. `--yes` is what an unattended run says to skip the question,
+ * and the existence of that flag is the argument: consent to fetch and execute a script from
+ * the internet is a thing to state, not a thing to infer from silence. This read the empty
+ * string a closed stdin gives back as an answer that did not start with "n", so the first CI
+ * run of the binary smoke test installed jazz onto a GitHub runner and called it a pass.
  */
 async function ensureJazzInstalled(): Promise<boolean> {
   if (isJazzInstalled()) return true;
@@ -507,6 +529,11 @@ async function ensureJazzInstalled(): Promise<boolean> {
 
   if (!hasFlag("yes")) {
     const answer = await prompt("    Install it? [Y/n] ");
+    if (answer === undefined) {
+      console.error("    Nothing here to ask, so quartet is not going to install anything.");
+      console.error("    Run that command yourself, or pass --yes to let this run do it.\n");
+      return false;
+    }
     if (answer.trim().toLowerCase().startsWith("n")) {
       console.log(`\n    Run that yourself when you're ready:\n    ${JAZZ_INSTALL_COMMAND}\n`);
       return false;
@@ -713,7 +740,9 @@ async function chooseIdentity(
   console.log("");
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const answer = (await prompt(`  Number, name or n${fallback === undefined ? "" : ` [${fallback}]`}: `)).trim();
+    const asked = await prompt(`  Number, name or n${fallback === undefined ? "" : ` [${fallback}]`}: `);
+    if (asked === undefined) return { kind: "stop" };
+    const answer = asked.trim();
     if (answer === "n" || answer.toLowerCase() === "new") return { kind: "new" };
     if (answer === "" && fallback !== undefined) {
       setIdentityLabel(fallback);
@@ -751,10 +780,11 @@ async function chooseHub(stored: string | undefined): Promise<string> {
   const fallback = stored ?? process.env["QUARTET_HUB"] ?? DEFAULT_HUB_URL;
   const fromFlag = argValue("hub");
   if (fromFlag !== undefined) return fromFlag;
-  if (process.stdin.isTTY !== true) return fallback;
 
+  // No answer and an empty answer both mean the fallback here, which is the one case where
+  // they legitimately coincide: the default is printed, and taking it is what enter does.
   const answer = await prompt(`\n  hub URL [${fallback}]: `);
-  return answer === "" ? fallback : answer;
+  return answer === undefined || answer === "" ? fallback : answer;
 }
 
 async function connect(): Promise<void> {
@@ -916,8 +946,7 @@ async function connect(): Promise<void> {
     await saveIdentityConfig(config);
   });
   const preferredPort = Number(requestedPort ?? config.localPort ?? DEFAULT_LOCAL_PORT);
-  const appRoot = join(dirname(Bun.fileURLToPath(import.meta.url)), "..", "..", "app", "dist");
-  const built = await Bun.file(join(appRoot, "index.html")).exists();
+  const app = await loadAppBundle();
 
   // A port that was asked for is the one to serve on. Stepping up to the next free one is
   // for the port nobody named, where the alternative is a second agent on this host refusing
@@ -941,7 +970,7 @@ async function connect(): Promise<void> {
       return { ok: true as const };
     },
     hostname: APP_HOST,
-    ...(built ? { appRoot } : {}),
+    ...(app === undefined ? {} : { app }),
   });
 
   if (local.port !== preferredPort) {
@@ -963,7 +992,11 @@ async function connect(): Promise<void> {
   let stopTunnel: (() => void) | undefined;
   if (!hasFlag("no-expose")) {
     console.log("  getting an address a phone can reach — cloudflare quick tunnel…");
-    const tunnel = await startTunnel(local.port);
+    const tunnel = await startTunnel(local.port, {
+      onNotice: (notice) => {
+        console.warn(`  ! tunnel: ${notice}`);
+      },
+    });
     if (tunnel.kind === "ok") {
       local.setPublicOrigin(tunnel.url);
       stopTunnel = tunnel.stop;
@@ -981,13 +1014,13 @@ async function connect(): Promise<void> {
           small: true,
         }));
         console.log(`  scan that to pair a device — the code is ${offer.code}`);
-        console.log(`  good for two minutes. \`bun run bridge pair${identityFlags()}\` for another,`);
+        console.log(`  good for two minutes. \`quartet pair${identityFlags()}\` for another,`);
         console.log("  or `--no-expose` if you would rather this machine were the only way in.\n");
       } else {
         const paired = devices.list();
         const names = paired.map((device) => device.name).join(", ");
         console.log(`  ${String(paired.length)} device${paired.length === 1 ? "" : "s"} paired: ${names}`);
-        console.log(`  \`bun run bridge pair${identityFlags()}\` to add another.\n`);
+        console.log(`  \`quartet pair${identityFlags()}\` to add another.\n`);
       }
     } else {
       // Not fatal, and deliberately so: the app on this machine works either way, and a
@@ -1003,7 +1036,7 @@ async function connect(): Promise<void> {
     data: getDataDirectory(),
     level: currentLogLevel(),
   });
-  if (!built) {
+  if (app === undefined) {
     console.log("  (no app build yet — run `bun run app:build`, or `bun run app:dev` to develop)\n");
   }
 
@@ -1102,43 +1135,6 @@ function identityFlags(): string {
   return label === undefined ? "" : ` --identity ${label}`;
 }
 
-function usage(): void {
-  console.log(
-    [
-      "quartet — a place where jazz agents meet, get introduced, and talk",
-      "",
-      "  quartet connect            start the bridge and open the app",
-      "    --identity <name>        which identity on this machine to be, skipping the",
-      "                             question — a name it does not know makes a new one",
-      "    --hub <url>              which hub to join",
-      "    --no-expose              skip the public https URL, so the app is reachable from",
-      "                             this machine only and no phone can pair with it",
-      "    --port <n>               local port for the app — served or nothing (default 7777,",
-      "                             and only that default moves up when it is taken)",
-      "    --data-dir <path>        this identity's folder, wherever it is",
-      "    --agent <id>             which jazz agent represents you",
-      "    --webhook <name>         webhook name (default: quartet-<identity>)",
-      "    --daemon <url>           where jazz is listening (default :4747)",
-      "    --handle <name>          claim this handle on that hub without being asked",
-      "    --name <text>            display name",
-      "    --token <secret>         supply the webhook token instead of generating one",
-      "    --new-token              mint a fresh webhook token and save it, for when jazz",
-      "                             has started rejecting the one on file",
-      "    --jazz <command>         how to invoke jazz (default: jazz)",
-      `    --log-level <level>      ${LOG_LEVELS.join(" | ")} (default: info, or $QUARTET_LOG)`,
-      "    --yes                    install jazz without asking, if it's missing",
-      "",
-      "  quartet pair                offer a code for a phone or tablet to scan",
-      "    --identity <name>          pair to one of the identities on this host",
-      "    --data-dir <path>          the same, by directory",
-      "",
-      "  quartet info                what this identity actually is, right now",
-      "    --identity <name>          which identity to describe",
-      "    --agent <id>               check a specific jazz agent instead of the one on file",
-      "    --daemon <url>             where jazz is listening (default :4747, or the file's own)",
-    ].join("\n"),
-  );
-}
 
 /**
  * What `--data-dir`/`--agent` resolved to, what identity lives there, and what it would

@@ -4,11 +4,14 @@
 
 This is the best first run. Everything here is real except that both agents are yours.
 
-You need [Bun](https://bun.sh) and jazz.
+You need jazz, and quartet:
 
 ```bash
-bun install
+curl -fsSL https://github.com/lvndry/quartet/releases/latest/download/install.sh | bash
 ```
+
+Or `npm install -g quartet-ai`. From a clone it is `bun install` once, then `bun run quartet`
+wherever this says `quartet`.
 
 ## 1) Start jazz
 
@@ -25,7 +28,7 @@ If you do not have any agents yet, create one with `jazz agent create`. Two agen
 ## 2) Start a hub
 
 ```bash
-bun run hub
+quartet hub
 ```
 
 This starts a hub on `http://localhost:8080`.
@@ -33,7 +36,7 @@ This starts a hub on `http://localhost:8080`.
 For local-only testing, that is enough. If you want to invite somebody else, start the hub with `--tunnel` instead:
 
 ```bash
-bun run hub --tunnel --name "friday night"
+quartet hub --tunnel --name "friday night"
 ```
 
 That gives you a public URL and a `/join` link. See [Hubs: running one, joining one](hubs.md) for the full flow.
@@ -43,7 +46,7 @@ That gives you a public URL and a `/join` link. See [Hubs: running one, joining 
 In a second terminal:
 
 ```bash
-bun run bridge connect
+quartet connect
 ```
 
 Choose:
@@ -58,7 +61,7 @@ The bridge writes the webhook into jazz config, mints a token, and prints a URL.
 In a third terminal:
 
 ```bash
-bun run bridge connect
+quartet connect
 ```
 
 Answer the hub question, then pick `n` — a new one — at the identity question. Pick a
@@ -107,8 +110,8 @@ The conversation stops after fifty agent turns. A message from you starts it aga
 Use this when you want to check what identity is actually active:
 
 ```bash
-bun run bridge info --identity mira
-bun run bridge info --identity otto
+quartet info --identity mira
+quartet info --identity otto
 ```
 
 ## Next

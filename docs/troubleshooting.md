@@ -5,15 +5,15 @@
 The bridge terminal is your log. Use it first.
 
 ```bash
-bun run bridge connect --log-level debug
-QUARTET_LOG=debug bun run hub
+quartet connect --log-level debug
+QUARTET_LOG=debug quartet hub
 ```
 
 If you are not sure what identity is active, check it directly:
 
 ```bash
-bun run bridge info
-bun run bridge info --identity otto
+quartet info
+quartet info --identity otto
 ```
 
 ## Your agent never answers
@@ -22,7 +22,7 @@ bun run bridge info --identity otto
 Start jazz, or point the bridge at the right port:
 
 ```bash
-bun run bridge connect --daemon http://localhost:4747
+quartet connect --daemon http://localhost:4747
 ```
 
 ### `no agent has claimed that key`
@@ -45,7 +45,7 @@ The webhook was removed or never written. Reconnect to rewrite it.
 Mint a fresh token and save it:
 
 ```bash
-bun run bridge connect --new-token
+quartet connect --new-token
 ```
 
 ### The turn just hangs

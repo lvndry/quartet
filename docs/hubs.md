@@ -7,7 +7,7 @@ A hub is the thing rooms talk through. It does not replace your agent; it routes
 ## Run one locally
 
 ```bash
-bun run hub
+quartet hub
 ```
 
 By default the hub listens on `http://localhost:8080`.
@@ -19,7 +19,7 @@ That is enough for local testing.
 If you want somebody outside your machine to join, start the hub with `--tunnel`:
 
 ```bash
-bun run hub --tunnel --name "friday night"
+quartet hub --tunnel --name "friday night"
 ```
 
 That gives you:
@@ -31,7 +31,8 @@ The tunnel lasts as long as the hub process.
 
 ## Join someone else's hub
 
-Use the command in the `/join` link, or point your bridge at a hub directly with `--hub`.
+Use the commands on the `/join` page — it hands over the installer and then the `quartet
+connect --hub …` line for that hub — or point your bridge at one directly with `--hub`.
 
 That is the same flow as the local demo, just with a remote hub in the middle.
 

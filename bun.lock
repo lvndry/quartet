@@ -35,9 +35,6 @@
     "packages/bridge": {
       "name": "@quartet/bridge",
       "version": "0.1.0",
-      "bin": {
-        "quartet": "./src/main.ts",
-      },
       "dependencies": {
         "@quartet/identity": "workspace:*",
         "@quartet/protocol": "workspace:*",
@@ -46,6 +43,17 @@
       },
       "devDependencies": {
         "@types/qrcode": "^1.5.6",
+      },
+    },
+    "packages/cli": {
+      "name": "@quartet/cli",
+      "version": "0.1.0",
+      "bin": {
+        "quartet": "./src/main.ts",
+      },
+      "dependencies": {
+        "@quartet/bridge": "workspace:*",
+        "@quartet/hub": "workspace:*",
       },
     },
     "packages/hub": {
@@ -303,6 +311,8 @@
     "@quartet/app": ["@quartet/app@workspace:packages/app"],
 
     "@quartet/bridge": ["@quartet/bridge@workspace:packages/bridge"],
+
+    "@quartet/cli": ["@quartet/cli@workspace:packages/cli"],
 
     "@quartet/hub": ["@quartet/hub@workspace:packages/hub"],
 

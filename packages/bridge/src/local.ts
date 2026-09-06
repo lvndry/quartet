@@ -15,6 +15,7 @@
 
 import { limitSchema } from "@quartet/protocol";
 import type { AgentAdmin } from "./agent-admin";
+import type { AppBundle } from "./app-bundle";
 import type { Bridge, BridgeState } from "./bridge";
 import type { DeviceRegistry, PairedDevice } from "./devices";
 import type { JazzResult } from "./jazz-admin";
@@ -62,8 +63,8 @@ export interface LocalServerOptions {
    * somebody, so it is the one that has to be able to offer the repair.
    */
   readonly claim?: (handle: string) => Promise<{ ok: true } | { error: string }>;
-  /** Directory holding the built web app. Absent in development, where Vite serves it. */
-  readonly appRoot?: string;
+  /** The built web app. Absent in a checkout that has not built one, where Vite serves it. */
+  readonly app?: AppBundle;
   /**
    * Interface to bind. Loopback unless somebody deliberately widened it, which `main.ts`
    * refuses to allow without TLS in front — the same refusal the hub makes.
@@ -282,17 +283,16 @@ export function startLocalServer(options: LocalServerOptions): {
 
       // Everything else is the app itself. In development there is no build to serve, so the
       // CLI says so rather than pretending a blank page is working.
-      if (options.appRoot === undefined) {
+      if (options.app === undefined) {
         return new Response(
           "quartet: no app build found. Run `bun run app:build`, or `bun run app:dev` for the dev server.",
           { status: 503, headers: { "content-type": "text/plain" } },
         );
       }
       const requested = url.pathname === "/" ? "/index.html" : url.pathname;
-      const file = Bun.file(`${options.appRoot}${requested}`);
-      if (await file.exists()) return new Response(file);
+      const file = await options.app.response(requested);
       // Unknown paths fall back to the shell so client-side routing works on a hard refresh.
-      return new Response(Bun.file(`${options.appRoot}/index.html`));
+      return file ?? options.app.shell();
     },
     websocket: {
       open(socket) {

@@ -79,7 +79,7 @@ warning nobody reads, and the failure it precedes is silent.
 
 ## 2. Pairing
 
-    bun run bridge pair
+    quartet pair
 
 Prints a QR to the terminal encoding the tunnel URL and a one-time code. The phone scans it,
 posts the code, and receives a device token.
