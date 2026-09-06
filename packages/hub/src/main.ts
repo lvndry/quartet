@@ -37,9 +37,23 @@ import { RoomPresence } from "./presence";
 import { RateLimiter } from "./rate-limit";
 import { startTunnel } from "@quartet/tunnel";
 import { favicon, joinPage } from "./join";
+import { prompt } from "./ask";
+import { claimDatabase, databaseForName, quartetHome } from "./naming";
+import { join } from "node:path";
 
-const PORT = Number(process.env["PORT"] ?? 8080);
-const DB_PATH = process.env["QUARTET_DB"] ?? "quartet.sqlite";
+/**
+ * The port to start looking at, and whether looking is allowed.
+ *
+ * A port that was asked for is the one to serve on, or nothing is. Stepping up is for the
+ * port nobody named, where the alternative is a second hub on this machine refusing to start
+ * until somebody finds it a number — and where quietly moving costs nothing, because the URL
+ * is printed after the fact rather than predicted before it. The bridge draws the same line
+ * for the same reason; see `mayMoveUp` in `packages/bridge/src/local.ts`.
+ */
+const REQUESTED_PORT = process.env["PORT"];
+const PORT = Number(REQUESTED_PORT ?? 8080);
+const MAY_MOVE_UP = REQUESTED_PORT === undefined;
+const PORT_SCAN_ATTEMPTS = 20;
 
 /**
  * Which interface to listen on. Loopback unless somebody says otherwise.
@@ -114,12 +128,67 @@ const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
  * a network hiccup does not read as a departure.
  */
 const SOCKET_IDLE_TIMEOUT_S = 120;
-/** A label for `/join`, so an invite link says what somebody is joining rather than just a URL. */
-const HUB_NAME = (() => {
+/**
+ * What this hub is called, and where that puts its database.
+ *
+ * The name was a label for `/join` and is now the hub's identity: it is what an invitee sees,
+ * and it is what the database is filed under. That is why it is required rather than
+ * optional. The alternative was `quartet.sqlite` relative to the working directory, which
+ * meant two hubs started from one shell silently shared a database — each with its own
+ * in-memory view of who was connected, both writing a store that opens WAL with no busy
+ * timeout. Nothing said so; it just went wrong.
+ *
+ * Asked for rather than demanded. Somebody typing `quartet hub --tunnel` has said what they
+ * want, and answering one question is a better shape for that than reading an error, fetching
+ * a flag, and typing the line again.
+ */
+async function resolveHub(): Promise<{ name: string; database: string }> {
   const index = process.argv.indexOf("--name");
-  const value = index === -1 ? undefined : process.argv[index + 1];
-  return value !== undefined && !value.startsWith("--") ? value : undefined;
-})();
+  const passed = index === -1 ? undefined : process.argv[index + 1];
+  let name = passed !== undefined && !passed.startsWith("--") ? passed : undefined;
+
+  while (true) {
+    const database = name === undefined ? undefined : databaseForName(name);
+    if (name !== undefined && database !== undefined) return { name, database };
+    if (name !== undefined) {
+      // Reachable only from a name made entirely of punctuation or emoji. Refused rather than
+      // substituted: a hub filed somewhere the person cannot predict is a hub they cannot find
+      // again, and guessing on their behalf is how that happens.
+      console.error(`\n  ! "${name}" has no letters or digits in it, so there is no file to keep it in.`);
+      console.error("    Something with a word in it: --name \"friday night\", --name work.\n");
+    }
+    const answered = await prompt("  what should this hub be called? ");
+    if (answered === undefined) {
+      console.error("\n  a hub needs a name, and there is no terminal here to ask.\n");
+      console.error("    quartet hub --name \"friday night\"\n");
+      console.error("  It is what the /join page shows whoever you invite, and what this hub's");
+      console.error(`  database is filed under — ${join(quartetHome(), "hubs")}/<name>.sqlite.\n`);
+      process.exit(1);
+    }
+    name = answered.length === 0 ? undefined : answered;
+  }
+}
+
+const hub = await resolveHub();
+const HUB_NAME = hub.name;
+
+/**
+ * `QUARTET_DB` still wins, because a deployment puts its state where its disk is mounted and
+ * that is not a decision a name should be making for it.
+ */
+const DB_PATH = process.env["QUARTET_DB"] ?? hub.database;
+
+// Deriving the path from the name means two hubs sharing a name now share a database by
+// default rather than by accident — worse than the problem it replaced, unless somebody is
+// standing at the door.
+const claim = claimDatabase(DB_PATH);
+if (claim.kind === "taken") {
+  console.error(`\n  a hub named "${HUB_NAME}" is already running on this machine (pid ${String(claim.pid)}).\n`);
+  console.error(`    ${DB_PATH}\n`);
+  console.error("  Two hubs on one database do not stay consistent with each other — each keeps");
+  console.error("  its own idea of who is connected. Give this one another name, or stop that one.\n");
+  process.exit(1);
+}
 
 const store = new HubStore(DB_PATH);
 
@@ -1020,104 +1089,136 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
   }
 }
 
-const server = Bun.serve<SocketData, never>({
-  port: PORT,
-  hostname: HOST,
-  ...(SERVES_TLS ? { tls: { cert: Bun.file(TLS_CERT), key: Bun.file(TLS_KEY) } } : {}),
-  fetch(request, bunServer) {
-    // The socket's own peer address, not a forwarded header: a header is whatever the
-    // caller wrote unless there is a proxy in front that is trusted to overwrite it, and a
-    // hub anybody can run has no way to know whether there is.
-    const address = bunServer.requestIP(request)?.address ?? "unknown";
-    if (new URL(request.url).pathname === "/socket") {
-      // Both ceilings are checked before the upgrade, so a flood costs a refused handshake
-      // rather than a socket the hub then has to reason about.
-      if (openSockets.size >= MAX_SOCKETS) {
-        return new Response("this hub is full", { status: 503, headers: { "retry-after": "30" } });
+/**
+ * Serve on exactly this port, or throw. The caller decides whether to try the next one.
+ *
+ * A function rather than an options object reused across attempts, so the handlers keep the
+ * types `Bun.serve` gives them from its own generics.
+ */
+function listen(port: number) {
+  return Bun.serve<SocketData, never>({
+    port,
+    hostname: HOST,
+    ...(SERVES_TLS ? { tls: { cert: Bun.file(TLS_CERT), key: Bun.file(TLS_KEY) } } : {}),
+    fetch(request, bunServer) {
+      // The socket's own peer address, not a forwarded header: a header is whatever the
+      // caller wrote unless there is a proxy in front that is trusted to overwrite it, and a
+      // hub anybody can run has no way to know whether there is.
+      const address = bunServer.requestIP(request)?.address ?? "unknown";
+      if (new URL(request.url).pathname === "/socket") {
+        // Both ceilings are checked before the upgrade, so a flood costs a refused handshake
+        // rather than a socket the hub then has to reason about.
+        if (openSockets.size >= MAX_SOCKETS) {
+          return new Response("this hub is full", { status: 503, headers: { "retry-after": "30" } });
+        }
+        if ((anonymous.get(address) ?? 0) >= MAX_ANONYMOUS_PER_ADDRESS) {
+          return new Response("too many unauthenticated sockets from here", {
+            status: 429,
+            headers: { "retry-after": "10" },
+          });
+        }
+        const id = newNonce();
+        return bunServer.upgrade(request, { data: { id, address } })
+          ? undefined
+          : new Response("expected a websocket upgrade", { status: 426 });
       }
-      if ((anonymous.get(address) ?? 0) >= MAX_ANONYMOUS_PER_ADDRESS) {
-        return new Response("too many unauthenticated sockets from here", {
-          status: 429,
-          headers: { "retry-after": "10" },
-        });
-      }
-      const id = newNonce();
-      return bunServer.upgrade(request, { data: { id, address } })
-        ? undefined
-        : new Response("expected a websocket upgrade", { status: 426 });
-    }
-    return app.fetch(request, { ip: address });
-  },
-  websocket: {
-    // Bun closes anything larger itself rather than buffering it, which is the point: the
-    // limit has to bind before the frame is in memory to be worth having.
-    maxPayloadLength: MAX_FRAME_BYTES,
-    // Stated rather than inherited. A bridge pings every SOCKET_KEEPALIVE_MS, so anything
-    // quiet for this long is not idle, it is gone — and holding it open holds presence open
-    // with it, telling a room somebody is there who is not.
-    idleTimeout: SOCKET_IDLE_TIMEOUT_S,
-    sendPings: true,
-    open(socket) {
-      openSockets.add(socket);
-      countAnonymous(socket.data.address, 1);
-      // A socket that never says who it is holds a slot, a challenge and a buffer for
-      // nothing. It has one frame to send, and ten seconds to send it.
-      socket.data.helloBy = setTimeout(() => {
-        socket.close(1008, "say hello first");
-      }, HELLO_GRACE_MS);
-      // Per socket, not per agent: a challenge reused across connections is a recording
-      // somebody can replay, which is most of what a bearer token already was.
-      const nonce = newNonce();
-      socket.data.challenge = nonce;
-      socket.send(JSON.stringify({ t: "challenge", nonce } satisfies ServerFrame));
+      return app.fetch(request, { ip: address });
     },
-    message(socket, raw) {
-      // Charged before the frame is parsed, so a flood of malformed frames costs a sender
-      // exactly what a flood of valid ones does.
-      if (!frameRate.take(socket.data.id).allowed) {
-        socket.send(
-          JSON.stringify({ t: "error", detail: "too many frames — slow down" } satisfies ServerFrame),
+    websocket: {
+      // Bun closes anything larger itself rather than buffering it, which is the point: the
+      // limit has to bind before the frame is in memory to be worth having.
+      maxPayloadLength: MAX_FRAME_BYTES,
+      // Stated rather than inherited. A bridge pings every SOCKET_KEEPALIVE_MS, so anything
+      // quiet for this long is not idle, it is gone — and holding it open holds presence open
+      // with it, telling a room somebody is there who is not.
+      idleTimeout: SOCKET_IDLE_TIMEOUT_S,
+      sendPings: true,
+      open(socket) {
+        openSockets.add(socket);
+        countAnonymous(socket.data.address, 1);
+        // A socket that never says who it is holds a slot, a challenge and a buffer for
+        // nothing. It has one frame to send, and ten seconds to send it.
+        socket.data.helloBy = setTimeout(() => {
+          socket.close(1008, "say hello first");
+        }, HELLO_GRACE_MS);
+        // Per socket, not per agent: a challenge reused across connections is a recording
+        // somebody can replay, which is most of what a bearer token already was.
+        const nonce = newNonce();
+        socket.data.challenge = nonce;
+        socket.send(JSON.stringify({ t: "challenge", nonce } satisfies ServerFrame));
+      },
+      message(socket, raw) {
+        // Charged before the frame is parsed, so a flood of malformed frames costs a sender
+        // exactly what a flood of valid ones does.
+        if (!frameRate.take(socket.data.id).allowed) {
+          socket.send(
+            JSON.stringify({ t: "error", detail: "too many frames — slow down" } satisfies ServerFrame),
+          );
+          socket.close(1008, "too many frames");
+          return;
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw));
+        } catch {
+          socket.send(JSON.stringify({ t: "error", detail: "expected JSON" } satisfies ServerFrame));
+          return;
+        }
+        handleFrame(socket, parsed);
+      },
+      close(socket, code, reason) {
+        openSockets.delete(socket);
+        noLongerAnonymous(socket);
+        const agentId = socket.data.agentId;
+        // Said out loud, because a hub that logged nothing here looked identical whether it was
+        // dropping every socket it had or none, and a bridge reporting repeated disconnects had
+        // no counterpart to check its story against.
+        const who = agentId === undefined ? "an unauthenticated socket" : describeAgent(agentId);
+        console.warn(
+          `socket closed: ${who} — code ${String(code)}${reason ? ` (${reason})` : ""}`,
         );
-        socket.close(1008, "too many frames");
-        return;
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw));
-      } catch {
-        socket.send(JSON.stringify({ t: "error", detail: "expected JSON" } satisfies ServerFrame));
-        return;
-      }
-      handleFrame(socket, parsed);
+        if (agentId === undefined) return;
+        // A replaced socket must not look like the agent leaving.
+        if (sockets.get(agentId) !== socket) return;
+        sockets.delete(agentId);
+        orchestrator.onDisconnect(agentId);
+        presence.clear(agentId);
+        broadcastPresence();
+      },
     },
-    close(socket, code, reason) {
-      openSockets.delete(socket);
-      noLongerAnonymous(socket);
-      const agentId = socket.data.agentId;
-      // Said out loud, because a hub that logged nothing here looked identical whether it was
-      // dropping every socket it had or none, and a bridge reporting repeated disconnects had
-      // no counterpart to check its story against.
-      const who = agentId === undefined ? "an unauthenticated socket" : describeAgent(agentId);
-      console.warn(
-        `socket closed: ${who} — code ${String(code)}${reason ? ` (${reason})` : ""}`,
-      );
-      if (agentId === undefined) return;
-      // A replaced socket must not look like the agent leaving.
-      if (sockets.get(agentId) !== socket) return;
-      sockets.delete(agentId);
-      orchestrator.onDisconnect(agentId);
-      presence.clear(agentId);
-      broadcastPresence();
-    },
-  },
-});
+  });
+}
+
+/**
+ * The running server, on the first free port at or above the one asked for.
+ *
+ * Only `EADDRINUSE` is stepped over. Anything else — a permission, a hostname that does not
+ * resolve — is the same failure on every port, and walking twenty of them would turn one
+ * clear error into twenty seconds of silence followed by the same one.
+ */
+const server = (() => {
+  const attempts = MAY_MOVE_UP ? PORT_SCAN_ATTEMPTS : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return listen(PORT + attempt);
+    } catch (error) {
+      const inUse = (error as { code?: string }).code === "EADDRINUSE";
+      if (!inUse || attempt === attempts - 1) throw error;
+    }
+  }
+  throw new Error(`no free port between ${String(PORT)} and ${String(PORT + PORT_SCAN_ATTEMPTS)}`);
+})();
 
 // Before anything can connect, and after presence is wired: a recovered deadline that has
 // already expired fires on the next tick and appends to the room it belonged to.
 orchestrator.recover();
 
+/** What the OS actually gave us, which is not `PORT` whenever the scan stepped up. */
+const BOUND_PORT = Number(server.port);
+
 const scheme = SERVES_TLS ? "https" : "http";
-console.log(`quartet hub listening on ${scheme}://${HOST}:${String(server.port)}`);
+console.log(`quartet hub "${HUB_NAME}" listening on ${scheme}://${HOST}:${String(BOUND_PORT)}`);
+console.log(`  state: ${DB_PATH}`);
 
 // A friend's bridge dials out to this hub, same as yours does — it never needs to reach your
 // machine directly. What it needs is a URL that reaches *this* one, which `--tunnel` gets via
@@ -1126,7 +1227,7 @@ console.log(`quartet hub listening on ${scheme}://${HOST}:${String(server.port)}
 // already on this machine, so `--tunnel` needs nothing installed ahead of time.
 if (process.argv.includes("--tunnel")) {
   console.log("\n  starting a cloudflare quick tunnel…");
-  const tunnel = await startTunnel(PORT, {
+  const tunnel = await startTunnel(BOUND_PORT, {
     // A quick tunnel is the shortest-lived thing in the path, and it used to fail in silence:
     // the first anyone heard was a bridge somewhere else reporting that the hostname had
     // stopped resolving, long after the process holding it had gone.
@@ -1156,7 +1257,7 @@ if (process.argv.includes("--tunnel")) {
       break;
     case "timed-out":
       console.warn("\n  ! cloudflared did not report a public URL within 30s. Try again, or run");
-      console.warn(`    \`cloudflared tunnel --url http://localhost:${String(PORT)}\` yourself to see why.\n`);
+      console.warn(`    \`cloudflared tunnel --url http://localhost:${String(BOUND_PORT)}\` yourself to see why.\n`);
       break;
     case "failed":
       console.warn(`\n  ! could not start a tunnel: ${tunnel.detail}\n`);

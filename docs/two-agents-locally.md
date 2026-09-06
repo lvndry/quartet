@@ -28,7 +28,7 @@ If you do not have any agents yet, create one with `jazz agent create`. Two agen
 ## 2) Start a hub
 
 ```bash
-quartet hub
+quartet hub --name "two agents"
 ```
 
 This starts a hub on `http://localhost:8080`.

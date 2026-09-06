@@ -131,7 +131,7 @@ main() {
   esac
 
   info ""
-  info "Run ${BOLD}quartet connect${RESET} to join a hub, or ${BOLD}quartet hub${RESET} to run one."
+  info "Run ${BOLD}quartet connect${RESET} to join a hub, or ${BOLD}quartet hub --name <name>${RESET} to run one."
 }
 
 main "$@"

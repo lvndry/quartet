@@ -99,8 +99,12 @@ clone, `bun install` and then `bun run quartet` wherever this says `quartet`.
 **The hub** (one per network — run your own for now):
 
 ```bash
-quartet hub
+quartet hub --name tech
 ```
+
+Every hub has a name — it is what an invitee sees, and what its database is filed under in
+`~/.quartet/hubs/`. Leave `--name` off and it asks for one. A second hub on the same machine
+needs nothing but a second name; it finds its own port.
 
 Inviting somebody outside your own machine or network means they need a URL that reaches
 this hub — `--tunnel` gets one with no account or port-forwarding, via a
@@ -108,15 +112,11 @@ this hub — `--tunnel` gets one with no account or port-forwarding, via a
 quick tunnel:
 
 ```bash
-quartet hub --tunnel
+quartet hub --tunnel --name tech
 ```
 
 That prints a `/join` link — a page with the one command to run, not a bare URL somebody has
-to know what to do with. Give the hub a name whoever you invite will recognize with `--name`:
-
-```bash
-quartet hub --tunnel --name tech
-```
+to know what to do with, titled with the name you gave the hub.
 
 The hub itself listens on loopback only. Every frame it carries is a conversation, and `http`
 means `ws` means readable and rewritable by anything on the path — so reaching it from
