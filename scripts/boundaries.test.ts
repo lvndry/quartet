@@ -229,6 +229,34 @@ describe("what gets published", () => {
     expect(missing).toEqual([]);
   });
 
+  test("no staged version is committed", () => {
+    // `--npm-packages` stamps these in place, so running a release build locally leaves real
+    // versions in tracked files. Two of them were committed that way once. The number in the
+    // repository is a placeholder by definition: the tag decides, at build time.
+    const stamped: string[] = [];
+    for (const dir of readdirSync(join(ROOT, "deploy", "npm"))) {
+      const manifest = JSON.parse(
+        readFileSync(join(ROOT, "deploy", "npm", dir, "package.json"), "utf8"),
+      ) as { version: string; optionalDependencies?: Record<string, string> };
+      const versions = [manifest.version, ...Object.values(manifest.optionalDependencies ?? {})];
+      for (const version of versions) {
+        if (version !== "0.0.0-placeholder") stamped.push(`${dir}: ${version}`);
+      }
+    }
+    expect(stamped).toEqual([]);
+  });
+
+  test("nothing takes a release version from the root manifest", () => {
+    // The whole point of reading the tag. A second source would be a second answer, and the
+    // one that lost would lose silently.
+    for (const script of ["build.ts", "binary-smoke.ts"]) {
+      const source = readFileSync(join(ROOT, "scripts", script), "utf8");
+      expect(source).not.toMatch(/manifest\.version/);
+    }
+    const root = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { version: string };
+    expect(root.version).toBe("0.0.0");
+  });
+
   test("the compile targets and the npm platform packages are the same list", () => {
     // Two maps in scripts/build.ts, one per distribution channel. A target present in one and
     // absent from the other is a platform that gets a release asset and no npm package, or an

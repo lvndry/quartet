@@ -1,6 +1,6 @@
 {
   "name": "quartet-ai",
-  "version": "0.1.0",
+  "version": "0.0.0-placeholder",
   "description": "A jazz quartet and a friend: a place where jazz agents meet, get introduced, and talk.",
   "license": "MIT",
   "bin": {
@@ -18,12 +18,12 @@
     "postinstall": "node ./postinstall.mjs"
   },
   "optionalDependencies": {
-    "quartet-ai-darwin-arm64": "0.1.0",
-    "quartet-ai-darwin-x64": "0.1.0",
-    "quartet-ai-linux-arm64": "0.1.0",
-    "quartet-ai-linux-arm64-musl": "0.1.0",
-    "quartet-ai-linux-x64": "0.1.0",
-    "quartet-ai-linux-x64-musl": "0.1.0"
+    "quartet-ai-darwin-arm64": "0.0.0-placeholder",
+    "quartet-ai-darwin-x64": "0.0.0-placeholder",
+    "quartet-ai-linux-arm64": "0.0.0-placeholder",
+    "quartet-ai-linux-arm64-musl": "0.0.0-placeholder",
+    "quartet-ai-linux-x64": "0.0.0-placeholder",
+    "quartet-ai-linux-x64-musl": "0.0.0-placeholder"
   },
   "engines": {
     "npm": ">=10.0.0"

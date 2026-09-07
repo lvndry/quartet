@@ -250,9 +250,19 @@ bun run smoke:binary   # and check the compiled one still serves the app it carr
 two ways from the same bytes: attached to a GitHub release for `install.sh` to fetch, and as
 `quartet-ai` on npm, whose per-platform optional dependency carries the binary.
 
-Publishing a tag runs `.github/workflows/release-binaries.yml`, which compiles the six
+Publishing a release runs `.github/workflows/release-binaries.yml`, which compiles the six
 targets, attaches them gzipped with a `SHA256SUMS` the installer refuses to skip, and stages
-and publishes the npm packages. macOS binaries are built on macOS so they come out ad-hoc
+and publishes the npm packages. That is the whole process — there is no version to bump first:
+
+```bash
+gh release create v0.2.0 --title v0.2.0 --generate-notes
+```
+
+The tag is the only place a version is written. `scripts/version.ts` reads it, the binary is
+compiled carrying it, and the npm packages are stamped with it; the `0.0.0` in the root
+manifest is not a version and nothing reads it. A build with no tag describes itself instead
+— `0.1.0-3-g47c3f6e`, or a bare short SHA before the first tag — and refuses to stage an npm
+package at all, because a version a build worked out for itself is not one anybody chose. macOS binaries are built on macOS so they come out ad-hoc
 signed — an unsigned Mach-O is killed on sight by arm64 macOS — and the npm job reuses those
 exact files rather than recompiling, because that signature only applies on the machine that
 made it.

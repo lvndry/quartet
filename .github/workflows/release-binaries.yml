@@ -58,10 +58,13 @@ jobs:
       - name: Build the app
         run: bun run app:build
 
+      # The tag is the version. $TAG_NAME is in the environment for every job here, and
+      # scripts/version.ts reads it — passed explicitly anyway, so the command says what it
+      # is building rather than depending on what happens to be exported.
       - name: Compile binaries
         run: |
           for target in ${{ matrix.targets }}; do
-            bun run scripts/build.ts --skip-app-build --target "$target"
+            bun run scripts/build.ts --skip-app-build --version "$TAG_NAME" --target "$target"
           done
 
       - name: Sign macOS binaries
@@ -166,7 +169,7 @@ jobs:
       # references. This reuses the macOS-signed binaries the build job produced rather than
       # recompiling: an ad-hoc signature only applies on the OS that made it.
       - name: Stage npm packages
-        run: bun run scripts/build.ts --npm-packages-from-dir deploy/binaries
+        run: bun run scripts/build.ts --npm-packages-from-dir deploy/binaries --version "$TAG_NAME"
 
       # Must publish before quartet-ai, whose optionalDependencies pin this exact version.
       - name: Publish platform packages

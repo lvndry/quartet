@@ -14,13 +14,13 @@
  */
 
 import { usage } from "@quartet/bridge/usage";
-import { VERSION } from "./version";
+import { version } from "./version";
 
 const command = process.argv[2] ?? "connect";
 const wantsHelp = process.argv.includes("--help") || process.argv.includes("-h");
 
 if (command === "--version" || command === "-v" || command === "version") {
-  console.log(VERSION);
+  console.log(version());
 } else if (command === "hub") {
   if (wantsHelp) usage();
   else await import("@quartet/hub/main");
