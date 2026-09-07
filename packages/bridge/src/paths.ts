@@ -47,6 +47,16 @@ export function machineConfigPath(): string {
   return join(getRootDirectory(), "config.json");
 }
 
+/**
+ * Where a jazz daemon quartet started writes its output.
+ *
+ * At the root rather than under an identity: there is one jazz per machine, and every
+ * identity on it talks to the same one.
+ */
+export function jazzLogPath(): string {
+  return join(getRootDirectory(), "jazz-daemon.log");
+}
+
 /** Point this run at an identity directory directly, wherever it is. `--data-dir`. */
 export function setIdentityDirectory(path: string): void {
   identityOverride = expand(path);

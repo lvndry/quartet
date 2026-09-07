@@ -245,6 +245,50 @@ export function fetchJazzPersonas(
   });
 }
 
+/**
+ * Write a persona into `~/.jazz/personas/`.
+ *
+ * A 404 here means this jazz serves the list and not the writes, which is a different thing
+ * from "no such persona" — so it is read as `unsupported` and the app can say what to update
+ * rather than reporting a persona that was never named.
+ *
+ * Nothing validates the draft on the way past. A name that collides with a built-in, a body
+ * that is empty: jazz answers with the offending field, the same as it does for an agent.
+ */
+export function createJazzPersona(
+  daemon: DaemonSettings,
+  draft: {
+    readonly name: string;
+    readonly description: string;
+    readonly systemPrompt: string;
+    readonly tone?: string;
+    readonly style?: string;
+  },
+): Promise<JazzResult<JazzPersona>> {
+  return callJazz(
+    daemon,
+    "/personas",
+    (body) => {
+      const persona = body["persona"];
+      if (typeof persona !== "object" || persona === null) return undefined;
+      const record = persona as Record<string, unknown>;
+      const id = text(record, "id");
+      const name = text(record, "name");
+      if (id === undefined || name === undefined) return undefined;
+      const tone = text(record, "tone");
+      const style = text(record, "style");
+      return {
+        id,
+        name,
+        description: text(record, "description") ?? "",
+        ...(tone !== undefined ? { tone } : {}),
+        ...(style !== undefined ? { style } : {}),
+      };
+    },
+    { method: "POST", body: draft, missingMeans: "unsupported" },
+  );
+}
+
 export function fetchJazzTools(daemon: DaemonSettings): Promise<JazzResult<JazzTools>> {
   return callJazz(daemon, "/tools", (body) => {
     if (!Array.isArray(body["tools"])) return undefined;

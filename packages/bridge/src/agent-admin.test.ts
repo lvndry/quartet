@@ -336,3 +336,68 @@ describe("creating and editing", () => {
     }
   });
 });
+
+describe("writing a persona", () => {
+  it("hands back what jazz filed, so the picker can select it straight away", async () => {
+    const stub = healthyDaemon({
+      "POST /personas": () =>
+        Response.json({
+          ok: true,
+          persona: { id: "psn_sceptic", name: "sceptic", description: "Asks what must be true" },
+        }),
+    });
+    try {
+      const { admin } = adminFor(stub.url);
+      const result = await admin.createPersona({
+        name: "sceptic",
+        description: "Asks what must be true",
+        systemPrompt: "Name the assumption the claim rests on.",
+      });
+      expect(result).toEqual({
+        kind: "ok",
+        value: { id: "psn_sceptic", name: "sceptic", description: "Asks what must be true" },
+      });
+    } finally {
+      stub.stop();
+    }
+  });
+
+  // A jazz that lists personas and cannot write them answers the same 404 as one asked for a
+  // persona that is not there. Reading it as "no such persona" would tell somebody their
+  // brand-new name was taken; the form has to be able to withdraw the offer instead.
+  it("reads a missing route as unsupported rather than as a refusal", async () => {
+    const stub = healthyDaemon();
+    try {
+      const { admin } = adminFor(stub.url);
+      const result = await admin.createPersona({
+        name: "sceptic",
+        description: "",
+        systemPrompt: "Name the assumption.",
+      });
+      expect(result.kind).toBe("unsupported");
+    } finally {
+      stub.stop();
+    }
+  });
+
+  it("passes jazz's own refusal through with the field it names", async () => {
+    const stub = healthyDaemon({
+      "POST /personas": () =>
+        Response.json(
+          { ok: false, error: "\"default\" is a built-in persona", field: "name" },
+          { status: 400 },
+        ),
+    });
+    try {
+      const { admin } = adminFor(stub.url);
+      const result = await admin.createPersona({
+        name: "default",
+        description: "",
+        systemPrompt: "…",
+      });
+      expect(result).toMatchObject({ kind: "rejected", field: "name" });
+    } finally {
+      stub.stop();
+    }
+  });
+});

@@ -404,7 +404,13 @@ function fromJazz<T>(result: JazzResult<T>): Response {
     case "unauthorized":
       return json({ error: "jazz refused quartet's token. Re-run `quartet connect`." }, 502);
     case "unsupported":
-      return json({ error: "this jazz is too old to manage agents from here. Update it." }, 502);
+      // Carried as a field as well as prose: a form that has to react to "this jazz cannot do
+      // that at all" — by withdrawing the offer rather than repeating it — should not have to
+      // recognise a sentence.
+      return json(
+        { error: "this jazz is too old to do that from here. Update it.", reason: "unsupported" },
+        502,
+      );
     case "rejected":
       return json(
         {
@@ -735,6 +741,26 @@ async function handleApi(
 
     case "/api/agents/personas":
       return fromJazz(await agents.personas());
+
+    case "/api/agents/personas/create": {
+      const name = text("name");
+      if (name.length === 0) return json({ error: "a name is required", field: "name" }, 400);
+      const systemPrompt = text("systemPrompt");
+      if (systemPrompt.length === 0) {
+        return json({ error: "a persona needs a prompt", field: "systemPrompt" }, 400);
+      }
+      const tone = text("tone");
+      const style = text("style");
+      return fromJazz(
+        await agents.createPersona({
+          name,
+          description: text("description"),
+          systemPrompt,
+          ...(tone.length > 0 ? { tone } : {}),
+          ...(style.length > 0 ? { style } : {}),
+        }),
+      );
+    }
 
     case "/api/agents/tools":
       return fromJazz(await agents.tools());

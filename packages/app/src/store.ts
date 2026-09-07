@@ -88,6 +88,14 @@ export const token = readToken();
 
 let current: BridgeState = EMPTY;
 let socketLive = false;
+/**
+ * Whether a snapshot has ever landed.
+ *
+ * The empty state and "this machine has no agents" are the same value, so anything deciding
+ * what to show on the strength of an absence — the first-run screen most of all — would fire
+ * on first paint for everybody and then have to take itself back once the real state arrived.
+ */
+let stateArrived = false;
 let currentSocket: WebSocket | undefined;
 const listeners = new Set<() => void>();
 
@@ -112,6 +120,7 @@ function connect(): void {
       const parsed = JSON.parse(String(event.data)) as { t: string; state: BridgeState };
       if (parsed.t === "state") {
         current = parsed.state;
+        stateArrived = true;
         emit();
       }
     } catch {
@@ -150,6 +159,7 @@ function subscribe(listener: () => void): () => void {
 
 const readState = (): BridgeState => current;
 const readSocketLive = (): boolean => socketLive;
+const readStateArrived = (): boolean => stateArrived;
 
 export function useBridge(): BridgeState {
   return useSyncExternalStore(subscribe, readState);
@@ -157,6 +167,10 @@ export function useBridge(): BridgeState {
 
 export function useSocketLive(): boolean {
   return useSyncExternalStore(subscribe, readSocketLive);
+}
+
+export function useStateArrived(): boolean {
+  return useSyncExternalStore(subscribe, readStateArrived);
 }
 
 export async function call(path: string, body: Record<string, unknown>): Promise<string | undefined> {
@@ -182,6 +196,8 @@ export interface Refusal {
   readonly error: string;
   readonly field?: string;
   readonly suggestion?: string;
+  /** Set when jazz has no such route at all, rather than having refused what was sent. */
+  readonly reason?: "unsupported";
 }
 
 /**
@@ -205,7 +221,7 @@ export async function read<T>(
     return { refused: { error: "the bridge is not answering" } };
   }
   const detail = (await response.json().catch(() => null)) as
-    | { value?: T; error?: string; field?: string; suggestion?: string }
+    | { value?: T; error?: string; field?: string; suggestion?: string; reason?: "unsupported" }
     | null;
 
   if (!response.ok || detail === null) {
@@ -214,6 +230,7 @@ export async function read<T>(
         error: detail?.error ?? `request failed (${String(response.status)})`,
         ...(detail?.field !== undefined ? { field: detail.field } : {}),
         ...(detail?.suggestion !== undefined ? { suggestion: detail.suggestion } : {}),
+        ...(detail?.reason !== undefined ? { reason: detail.reason } : {}),
       },
     };
   }
