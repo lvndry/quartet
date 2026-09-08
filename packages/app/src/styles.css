@@ -264,6 +264,27 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
   cursor: pointer;
 }
 
+/* Two keys wearing one name. Shares the alarm's shape and none of its hue, because the
+   palette rule is that hue means state: vermilion means needs-you, and this needs nothing
+   from you — there is no button and no decision, only a fact and the two fingerprints that
+   settle it. Painting it red would make the one banner that does demand a decision cheaper
+   every time somebody's friend picked a popular name. */
+.key-note {
+  padding: 0.7rem 1rem; font-size: 0.8rem; line-height: 1.5;
+  color: var(--cream-dim); background: var(--ink-raised);
+  border-top: 1px solid var(--rule);
+  display: flex; flex-direction: column; gap: 0.6rem;
+}
+.key-note strong { color: var(--cream); }
+.key-note-keys { margin: 0.45rem 0 0; padding-left: 1.1rem; }
+/* The whole subject of this note is two values being hard to tell apart, so the full
+   fingerprint gets its own line and does not wrap mid-group. */
+.key-note-keys li { margin-top: 0.15rem; }
+.key-note-keys code {
+  font-family: var(--mono); font-size: 0.72rem; color: var(--cream);
+  white-space: nowrap;
+}
+
 /* ---------- chat ----------
 
    The conversation is a column, not a track. `.md` has always held prose to ~68 characters,

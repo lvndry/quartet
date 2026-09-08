@@ -336,6 +336,7 @@ export class Bridge {
       verdicts: Object.fromEntries(this.verdicts),
       opened: Object.fromEntries(this.opened),
       keyConflicts: this.known.all(),
+      sharedHandles: this.known.sharedHandles(),
       labels: this.labels(),
       fingerprints: this.fingerprints(),
       ...(keyStoreProblem !== undefined ? { keyStoreProblem } : {}),
@@ -394,6 +395,13 @@ export class Bridge {
    * Every key this bridge can put a name to, paired with the full tag for that name.
    *
    * One place, so a room, the directory and a log line cannot disagree about who somebody is.
+   *
+   * The pin file's share of a name is in here for a reason that only shows up when two keys
+   * wear one: `labels` writes as much fingerprint as it takes to separate the keys in this
+   * map, so a key missing from it is a key nothing gets separated from. Two @mira with only
+   * one of them listed — the other offline, or dropped from a hostile hub the moment the
+   * second was added — would otherwise render as a bare, unqualified `@mira` on the same
+   * screen as a note saying two keys wear that name.
    */
   private taggedNames(): Map<string, string> {
     const pairs = new Map<string, string>();
@@ -405,6 +413,12 @@ export class Bridge {
     if (this.me !== undefined) note(this.me.handle, this.attestor.did);
     for (const entry of this.directory) note(entry.agent.handle, entry.agent.did);
     for (const entry of this.connections) note(entry.withAgent.handle, entry.withAgent.did);
+    // Filling gaps only, never overwriting: for a key mid-rename the pin holds the old name
+    // and the directory holds the new one, and quietly preferring the pin here would put a
+    // sidebar that still says @mira next to an alarm saying it now says @robin.
+    for (const shared of this.known.sharedHandles()) {
+      for (const did of shared.dids) if (!pairs.has(did)) note(shared.handle, did);
+    }
     return pairs;
   }
 
@@ -428,7 +442,17 @@ export class Bridge {
     return this.labels()[did] ?? `a key with fingerprint ${fingerprint(did) ?? "unknown"}`;
   }
 
-  /** Short forms for every key on screen: mine, the directory's, and any that was renamed. */
+  /**
+   * Short forms for every key on screen: mine, the directory's, and any the pin file has
+   * something to say about.
+   *
+   * The last group is not decoration. A key that shares a handle may not be in the directory
+   * at all — the other @mira could have gone offline, or been removed from a hostile hub the
+   * moment the second one was listed — and a note naming two keys while this map could only
+   * name one would be the note at its least useful and most alarming. It also widens what
+   * the app tells apart: the short form it displays grows until it separates the keys it can
+   * see, so a key it cannot see is a key it will not lengthen a prefix against.
+   */
   private fingerprints(): Record<string, string> {
     const dids = [
       this.attestor.did,
@@ -437,6 +461,7 @@ export class Bridge {
         entry.withAgent.did !== undefined ? [entry.withAgent.did] : [],
       ),
       ...this.known.all().map((conflict) => conflict.did),
+      ...this.known.sharedHandles().flatMap((shared) => shared.dids),
     ];
     const out: Record<string, string> = {};
     for (const did of dids) {
@@ -472,11 +497,22 @@ export class Bridge {
     ];
     for (const { handle, did } of seen) {
       if (did === undefined || did === this.attestor.did) continue;
-      const conflict = this.known.offer(did, handle);
-      if (conflict !== undefined) {
+      const notice = this.known.offer(did, handle);
+      if (notice?.kind === "renamed") {
         hubLog.error(
-          `the key this machine knows as @${conflict.known} is now calling itself ` +
-            `@${conflict.offered}. Compare fingerprints before treating it as either.`,
+          `the key this machine knows as @${notice.conflict.known} is now calling itself ` +
+            `@${notice.conflict.offered}. Compare fingerprints before treating it as either.`,
+        );
+      }
+      // Warn rather than error, and the difference is the point: two people are allowed the
+      // same name here, so this is not something that went wrong. What is worth a line at
+      // all is that the bare handle has stopped naming one key.
+      if (notice?.kind === "shared") {
+        hubLog.warn(
+          `a second key is now calling itself @${notice.shared.handle} here. Both are pinned, ` +
+            `neither is refused: ${notice.shared.dids
+              .map((other) => fingerprint(other) ?? "unknown")
+              .join(" and ")}. Use the tag rather than the bare handle from here.`,
         );
       }
     }

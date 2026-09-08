@@ -19,6 +19,7 @@ import {
   type KeyConflict,
   type Limit,
   type PeerPresence,
+  type SharedHandle,
   type ToolCall,
   type Opened,
   type Verdict,
@@ -747,6 +748,11 @@ function Quartet(): React.JSX.Element {
       )}
       {state.hubRefusal !== undefined && <HubRefused refusal={state.hubRefusal} />}
       <KeyAlarm conflicts={state.keyConflicts} fingerprints={state.fingerprints} onAct={act} />
+      <SharedNames
+        shared={state.sharedHandles}
+        labels={state.labels}
+        fingerprints={state.fingerprints}
+      />
 
       {(error ?? state.lastError) !== undefined && (
         <div className="error">{error ?? state.lastError}</div>
@@ -1096,6 +1102,58 @@ function KeyAlarm({
           >
             They renamed themselves — accept it
           </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * More than one key wearing one name, and both fingerprints so a person can tell which.
+ *
+ * Deliberately not a `KeyAlarm`. That one says a key changed its name, which nothing
+ * innocent does, and it holds the screen until somebody decides. This says two keys wear
+ * one name, which is what a handle being a label rather than a claim looks like — so it
+ * makes no accusation, offers no button, and asks for no decision. There is nothing to
+ * accept: the second @mira is not a thing that happened to the first one.
+ *
+ * What it does do is show both fingerprints in full, next to each other, on one line each.
+ * Everywhere else in this app a fingerprint is shortened to the least that separates the
+ * keys on screen, which is the right bargain for a list and the wrong one here: this is the
+ * one place whose entire subject is two keys being hard to tell apart, and the comparison a
+ * person makes against what they were read out of band is against the whole value.
+ */
+function SharedNames({
+  shared,
+  labels,
+  fingerprints,
+}: {
+  shared: readonly SharedHandle[];
+  labels: Names;
+  fingerprints: Record<string, string>;
+}): React.JSX.Element | null {
+  if (shared.length === 0) return null;
+  return (
+    <div className="key-note">
+      {shared.map((name) => (
+        <div key={name.handle}>
+          <strong>
+            {name.dids.length} keys here call themselves @{name.handle}.
+          </strong>{" "}
+          Allowed, and not refused: two people who have never met are both entitled to the
+          name, and a hub that handed out @{name.handle}2 instead would be rationing names it
+          has no standing to ration. It also looks exactly like somebody arriving wearing a
+          name that already means someone to you, and only you can tell those apart. Write to
+          the tag rather than to @{name.handle} on its own, and check these against what you
+          were read out loud.
+          <ul className="key-note-keys">
+            {name.dids.map((did) => (
+              <li key={did}>
+                {labels[did] ?? `@${name.handle}`}{" "}
+                <code>{fingerprints[did] ?? "fingerprint unknown"}</code>
+              </li>
+            ))}
+          </ul>
         </div>
       ))}
     </div>

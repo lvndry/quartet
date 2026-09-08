@@ -78,3 +78,43 @@ would be the quietest attack available.
 A changed key is surfaced, not resolved. It is a new device or a reinstall about as often as
 it is an attack, and a bridge cannot tell the two apart — but a person comparing a fingerprint
 can, and they cannot do that if nobody tells them.
+
+### Two keys wearing one name
+
+The bridge asks one question of every key a hub mentions: *has a key I know started wearing a
+different name*. It deliberately does not ask the mirror of it, because the mirror has an
+innocent answer — a second @mira is a second person — and a hub cannot ration names it has no
+standing to ration. That stands. The second @mira is pinned, nothing is refused, and no
+alarm goes off.
+
+What was missing is that nobody was told. A handle sitting in a list looks the same whether
+one key wears it or three, so the machine held the collision and the person did not know
+there was one to know about. That is the cheap half of an impersonation: `mira_`, `m1ra` and
+`rnira` are all free and all distinct, and the name that needs no trick at all is `mira`.
+
+So the pin file is indexed both ways — key to name, and name to every key wearing it — and a
+key pinned onto a name somebody here already answers to produces a **note**, which is a
+different thing from a conflict and is kept apart from one for the same reason `unsigned` and
+`broken` are:
+
+- A **conflict** says *this key is wearing a different name*. Nothing innocent needs that. It
+  holds the screen in the colour that means needs-you, and it clears only when a person says
+  the rename was real.
+- A **note** says *this name is worn by more than one key*. That is ordinary, so it accuses
+  nobody, offers no button, and asks for no decision — there is nothing to accept, because
+  the second @mira is not something that happened to the first one. It carries both keys and
+  both fingerprints in full, which is the only part a person can actually act on.
+
+The note is read off the index every time rather than latched when it happens, because it is
+a standing fact about this address book and not an event: while two keys here wear @mira,
+somebody writing to @mira is choosing between them whether or not anybody said so. Latching
+it would mean a restart quietly dropped the note with both keys still on file.
+
+Full fingerprints in the note, and only there. Everywhere else a fingerprint is shortened to
+the least that tells apart the keys currently on screen — the short-commit-hash bargain, safe
+because the short form labels something already identified. It stays safe under grinding
+because the shortening is adaptive: a key ground to match the first group of somebody else's
+fingerprint does not get to be indistinguishable from them, it forces both to be written out
+further. But the note is the one surface whose entire subject is two keys being hard to tell
+apart, and what a person compares against a fingerprint read to them out of band is the whole
+value, so the note declines the bargain.

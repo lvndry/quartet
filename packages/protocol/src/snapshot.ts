@@ -155,6 +155,33 @@ export interface Conflict {
   readonly offered: string;
 }
 
+/**
+ * One name this machine has seen more than one key wearing.
+ *
+ * Kept apart from `Conflict` because they are opposite statements and collapsing them would
+ * make both useless. A conflict says *this key is wearing a different name* — nothing
+ * innocent needs that. This says *this name is being worn by more than one key*, which is
+ * ordinary: a handle is a label, and two people who never met are both entitled to @mira.
+ *
+ * It is still worth saying out loud, because the innocent version and the impersonating one
+ * look identical from here, and the person who can tell them apart is the one who knows
+ * which fingerprint they meant. So this carries the keys rather than a count — a note that
+ * said "two keys wear this name" without saying which would leave the reader with the alarm
+ * and none of what settles it.
+ */
+export interface SharedHandle {
+  readonly handle: string;
+  /**
+   * Every key this machine has pinned to that name, in a stable order and no other.
+   *
+   * Not "the one you knew first, then the newcomer": the pin file records a name per key and
+   * nothing about when, so after a restart this machine genuinely cannot say which arrived
+   * first. Ranking them would be inventing that, and it would be the wrong posture anyway —
+   * neither of two @mira is the counterfeit by virtue of having been slower.
+   */
+  readonly dids: readonly string[];
+}
+
 /** One line this machine sent, as its own durable record of it. */
 export interface LedgerEntry {
   /** The hub's id for the message. Dedupes replays and reconnects. */
@@ -324,6 +351,16 @@ export interface BridgeState {
    * cannot do that if nobody tells them.
    */
   readonly keyConflicts: readonly Conflict[];
+  /**
+   * Names this machine has seen more than one key wearing.
+   *
+   * Not a conflict and deliberately not styled as one. Two @mira is what a handle being a
+   * label rather than a claim actually looks like from here, and refusing the second one
+   * would be the hub rationing names it has no standing to ration. What the bridge owes the
+   * person is the fact and both fingerprints, so the next time they pick a @mira they are
+   * picking rather than accepting whichever one the hub listed first.
+   */
+  readonly sharedHandles: readonly SharedHandle[];
   /**
    * How to write each key on screen, by did: `@mira` alone, or `@mira#4f2a` where two share
    * the name. Computed here so every surface renders one name for one key.
