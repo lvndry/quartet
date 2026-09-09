@@ -265,7 +265,7 @@ export class Bridge {
     private readonly daemon: DaemonSettings,
     private readonly attestor: Attestor,
     private readonly sealer: Sealer,
-    private readonly known: KnownKeys = new KnownKeys(),
+    private readonly known: KnownKeys = new KnownKeys(hubUrl),
   ) {}
 
   /** `AgentAdmin` owns the roster; this holds the copy the snapshot is built from. */
@@ -336,7 +336,6 @@ export class Bridge {
       verdicts: Object.fromEntries(this.verdicts),
       opened: Object.fromEntries(this.opened),
       keyConflicts: this.known.all(),
-      sharedHandles: this.known.sharedHandles(),
       labels: this.labels(),
       fingerprints: this.fingerprints(),
       ...(keyStoreProblem !== undefined ? { keyStoreProblem } : {}),
@@ -416,8 +415,8 @@ export class Bridge {
     // Filling gaps only, never overwriting: for a key mid-rename the pin holds the old name
     // and the directory holds the new one, and quietly preferring the pin here would put a
     // sidebar that still says @mira next to an alarm saying it now says @robin.
-    for (const shared of this.known.sharedHandles()) {
-      for (const did of shared.dids) if (!pairs.has(did)) note(shared.handle, did);
+    for (const contested of this.known.contestedNames()) {
+      for (const did of contested.dids) if (!pairs.has(did)) note(contested.handle, did);
     }
     return pairs;
   }
@@ -461,7 +460,7 @@ export class Bridge {
         entry.withAgent.did !== undefined ? [entry.withAgent.did] : [],
       ),
       ...this.known.all().map((conflict) => conflict.did),
-      ...this.known.sharedHandles().flatMap((shared) => shared.dids),
+      ...this.known.contestedNames().flatMap((contested) => contested.dids),
     ];
     const out: Record<string, string> = {};
     for (const did of dids) {
@@ -497,22 +496,11 @@ export class Bridge {
     ];
     for (const { handle, did } of seen) {
       if (did === undefined || did === this.attestor.did) continue;
-      const notice = this.known.offer(did, handle);
-      if (notice?.kind === "renamed") {
+      const conflict = this.known.offer(did, handle);
+      if (conflict !== undefined) {
         hubLog.error(
-          `the key this machine knows as @${notice.conflict.known} is now calling itself ` +
-            `@${notice.conflict.offered}. Compare fingerprints before treating it as either.`,
-        );
-      }
-      // Warn rather than error, and the difference is the point: two people are allowed the
-      // same name here, so this is not something that went wrong. What is worth a line at
-      // all is that the bare handle has stopped naming one key.
-      if (notice?.kind === "shared") {
-        hubLog.warn(
-          `a second key is now calling itself @${notice.shared.handle} here. Both are pinned, ` +
-            `neither is refused: ${notice.shared.dids
-              .map((other) => fingerprint(other) ?? "unknown")
-              .join(" and ")}. Use the tag rather than the bare handle from here.`,
+          `the key this machine knows as @${conflict.known} is now calling itself ` +
+            `@${conflict.offered}. Compare fingerprints before treating it as either.`,
         );
       }
     }
@@ -587,13 +575,32 @@ export class Bridge {
     // go by @mira is the ordinary case now, and picking one of them silently would be this
     // bridge choosing somebody's correspondent for them.
     const wearing = this.directory.filter((entry) => entry.agent.handle === parsed.handle);
-    if (wearing.length > 1 && parsed.fingerprint === undefined) {
-      const choices = wearing
-        .map((entry) => (entry.agent.did === undefined ? undefined : tag(parsed.handle, entry.agent.did)))
-        .filter((named): named is string => named !== undefined);
+
+    // The directory is the hub's own answer, so on its own it lets the hub decide how many
+    // candidates this check sees. Drop the @mira somebody pinned last week at the moment you
+    // list a stranger wearing the name and exactly one candidate is left, which buys silence
+    // from the one guard here that speaks. So the pins count too: a pinned key is one this
+    // machine met for itself, and no hub gets to withdraw it by leaving it out of a frame.
+    const candidates = new Set([
+      ...wearing.flatMap((entry) => (entry.agent.did !== undefined ? [entry.agent.did] : [])),
+      ...this.known.wearersOf(parsed.handle),
+    ]);
+    if (candidates.size > 1 && parsed.fingerprint === undefined) {
+      const here = new Set(wearing.map((entry) => entry.agent.did));
+      const choices = [...candidates]
+        .map((did) => {
+          const named = tag(parsed.handle, did);
+          if (named === undefined) return undefined;
+          // Saying which are reachable matters: an absent candidate is either somebody
+          // offline or somebody this hub is not mentioning, and those want opposite
+          // reactions from the person reading it.
+          return here.has(did) ? named : `${named} (not listed here right now)`;
+        })
+        .filter((named): named is string => named !== undefined)
+        .sort();
       return {
         error:
-          `${String(wearing.length)} agents here go by @${parsed.handle}. ` +
+          `${String(candidates.size)} keys go by @${parsed.handle} on this hub. ` +
           `Say which: ${choices.join(", ")}`,
       };
     }
@@ -609,7 +616,7 @@ export class Bridge {
       )?.agent.did;
       if (wanted !== undefined) {
         // Checked by a person, so it supersedes anything pinned on a hub's say-so alone.
-        void this.known.repin(parsed.handle, wanted);
+        void this.known.repin(wanted, parsed.handle);
         this.send({
           t: "invite.send",
           toDid: wanted,
@@ -626,7 +633,7 @@ export class Bridge {
         };
       }
       // Checked by a person, so it supersedes anything pinned on a hub's say-so alone.
-      void this.known.repin(parsed.handle, offered);
+      void this.known.repin(offered, parsed.handle);
     }
 
     // Resolved here rather than on the hub: by the time a frame is built the sender has

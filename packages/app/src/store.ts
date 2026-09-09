@@ -32,7 +32,6 @@ export type {
   JazzTools,
   LedgerEntry,
   Opened,
-  SharedHandle,
   ToolCall,
   Verdict,
 } from "@quartet/protocol/app";
@@ -55,7 +54,6 @@ const EMPTY: BridgeState = {
   verdicts: {},
   opened: {},
   keyConflicts: [],
-  sharedHandles: [],
   labels: {},
   fingerprints: {},
 };
