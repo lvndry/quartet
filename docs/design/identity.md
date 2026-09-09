@@ -118,3 +118,43 @@ fingerprint does not get to be indistinguishable from them, it forces both to be
 further. But the note is the one surface whose entire subject is two keys being hard to tell
 apart, and what a person compares against a fingerprint read to them out of band is the whole
 value, so the note declines the bargain.
+
+### Unique handles, and why the hub stopped enforcing them
+
+The question this design provokes, so it is answered here rather than rediscovered.
+
+**Per-hub is the only scope uniqueness could have.** A handle is a row in one hub's database,
+not a property of a key, and there is no registry above the hubs to arbitrate between them. So
+@mira on one hub and @mira on another are already two people whatever any single hub does, and
+"unique" can never mean what it means on a service with one company behind it.
+
+**Per-hub uniqueness was not impossible. It shipped, and it was taken out.**
+`handle TEXT NOT NULL UNIQUE` was in the first schema and came out in #40, when the key became
+the identity and the handle became a label. Three reasons, all of which still hold at hub scope:
+
+- **It does not stop impersonation.** Exact-string uniqueness prevents exact collisions and
+  nothing else. `mira_`, `m1ra` and `rnira` are free either way, and `[a-z0-9_-]` is a wide
+  confusable space to grind by hand. What uniqueness would buy is the *impression* that a name
+  settles who somebody is — retiring the habit of comparing a fingerprint at exactly the point
+  where that habit is the only thing that works.
+- **It inverts the race.** With names shared, the play is "also be @mira", which is visible and
+  raises a note. With names rationed, the play is "be @mira **first**" — and then the hub itself
+  forces the real Mira into @mira2, while the impostor holds the clean name as a credential the
+  hub appears to have issued.
+- **There is nobody to appeal to.** Losing `identity.json` is final and no operator has standing
+  to reassign a name, so a squatted or abandoned handle is burned for the life of the hub. A
+  service with a support queue can undo a land-grab; a hub can only refuse to have created one.
+
+What is spent for this is real, and worth naming rather than waving off: a name nobody can own
+is a name nobody can give out loud with confidence. Discord's `mira#1234` was this exact design
+and was retired for exactly that friction. Two things keep the bill small here — `displayTag`
+shows the bare name whenever nobody is competing for it, so a fingerprint is read only when
+there is genuinely somebody to tell apart; and an introduction travels as an invite carrying the
+fingerprint, not as a name typed at somebody.
+
+**When to revisit.** The argument above assumes hubs whose members mostly know each other, which
+is what a self-hosted, invite-shaped hub is. A large public hub, where strangers browse a
+directory they did not build, removes the social layer currently doing the disambiguating — and
+there per-hub uniqueness becomes defensible. The hard part would not be the `UNIQUE` constraint;
+it would be the reclaim process, which is the thing this design has no authority to run. That is
+the trigger to watch for, not a description of today.
