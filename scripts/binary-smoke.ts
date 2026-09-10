@@ -124,7 +124,7 @@ await Bun.$`chmod 755 ${fakeJazz}`.quiet();
 const daemon = fakeDaemon(DAEMON_PORT);
 cleanups.push(() => daemon.stop());
 
-const hub = Bun.spawn([BINARY, "hub", "--name", "binary smoke"], {
+const hub = Bun.spawn([BINARY, "hub", "--name", "binary smoke", "--description", "CI binary smoke hub", "--sfw"], {
   env: { ...process.env, PORT: String(HUB_PORT), QUARTET_DB: join(home, "hub.sqlite") },
   stdout: "inherit",
   stderr: "inherit",

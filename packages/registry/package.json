@@ -8,5 +8,6 @@
   },
   "dependencies": {
     "hono": "^4"
-  }
+  },
+  "description": "Public hub directory \u2014 hubs announce themselves; the marketing site lists them."
 }
