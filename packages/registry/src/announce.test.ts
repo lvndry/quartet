@@ -59,6 +59,32 @@ describe("open directory announce", () => {
       const hubs = (await listed.json()) as { hubs: { name: string }[] };
       expect(hubs.hubs.some((hub) => hub.name === "example")).toBe(true);
 
+      const clash = await fetch(`http://127.0.0.1:${String(port)}/announce`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          url: "https://other-hub.example.com",
+          name: "Example",
+          description: "same name, different url",
+          nsfw: false,
+        }),
+      });
+      expect(clash.status).toBe(409);
+
+      const sameUrl = await fetch(`http://127.0.0.1:${String(port)}/announce`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          url: "https://example-hub.trycloudflare.com",
+          name: "example",
+          description: "refresh same listing",
+          nsfw: false,
+          agents: 2,
+          online: 1,
+        }),
+      });
+      expect(sameUrl.status).toBe(200);
+
       const local = await fetch(`http://127.0.0.1:${String(port)}/announce`, {
         method: "POST",
         headers: { "content-type": "application/json" },
