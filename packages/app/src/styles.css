@@ -616,10 +616,19 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
 .dash-hint.dash-inline { margin: 0; }
 
 .dash-tools { margin-top: 0.5rem; }
+.dash-tool-cat-row {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem;
+  margin: 0.75rem 0 0.25rem;
+}
 .dash-tool-cat {
   font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.12em; text-transform: uppercase;
-  color: var(--slate); margin: 0.75rem 0 0.25rem;
+  color: var(--slate); margin: 0;
 }
+.dash-tool-all {
+  font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--signal); background: none; border: none; padding: 0; cursor: pointer;
+}
+.dash-tool-all:hover { text-decoration: underline; }
 .dash-tool { display: flex; align-items: center; gap: 0.55rem; padding: 0.16rem 0; cursor: pointer; }
 .dash-tool input { accent-color: var(--signal); margin: 0; }
 .dash-tool-name { font-family: var(--mono); font-size: 0.79rem; color: var(--cream-dim); }

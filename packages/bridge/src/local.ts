@@ -19,6 +19,7 @@ import type { AppBundle } from "./app-bundle";
 import type { Bridge, BridgeState } from "./bridge";
 import type { DeviceRegistry, PairedDevice } from "./devices";
 import type { JazzResult } from "./jazz-admin";
+import { setJazzLlmApiKey } from "./jazz-secrets";
 import type { ServerWebSocket } from "bun";
 
 /** The cookie a paired device presents. Never readable by a script on the page. */
@@ -698,6 +699,24 @@ async function handleApi(
       return fromJazz(
         role.length > 0 ? await agents.models(provider, role) : await agents.models(provider),
       );
+    }
+
+    case "/api/agents/api-key": {
+      // Jazz will not take llmApiKeys over its agent HTTP API — keys go in the keyring via
+      // `jazz config set`. The agents page has nowhere else to put one on first run.
+      const provider = text("provider");
+      const key = text("key");
+      if (provider.length === 0) {
+        return json({ error: "provider is required", field: "provider" }, 400);
+      }
+      if (key.length === 0) {
+        return json({ error: "api key is required", field: "apiKey" }, 400);
+      }
+      const result = await setJazzLlmApiKey({ provider, key });
+      if (result.kind !== "ok") {
+        return json({ error: result.detail, field: "apiKey" }, 400);
+      }
+      return json({ ok: true, value: { provider } });
     }
 
     // Paired devices. Reachable by a paired device as well as from this machine, because
