@@ -14,6 +14,8 @@
  */
 
 import { usage } from "@quartet/bridge/usage";
+import { maybeAutoUpdate } from "./auto-update";
+import { runUpdate } from "./update";
 import { version } from "./version";
 
 const command = process.argv[2] ?? "connect";
@@ -21,9 +23,33 @@ const wantsHelp = process.argv.includes("--help") || process.argv.includes("-h")
 
 if (command === "--version" || command === "-v" || command === "version") {
   console.log(version());
+} else if (command === "update") {
+  if (wantsHelp) {
+    console.log(
+      [
+        "quartet update — install the latest release over this binary",
+        "",
+        "  Replaces the running quartet with the newest GitHub release for this",
+        "  platform (same assets as install.sh). Set QUARTET_NO_UPDATE=1 to disable",
+        "  the quiet auto-update that runs before other commands.",
+      ].join("\n"),
+    );
+  } else {
+    try {
+      await runUpdate();
+    } catch (error) {
+      console.error(`  ! update failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(1);
+    }
+  }
 } else if (command === "hub") {
   if (wantsHelp) usage();
-  else await import("@quartet/hub/main");
+  else {
+    await maybeAutoUpdate();
+    await import("@quartet/hub/main");
+  }
 } else {
+  // Skip auto-update for help so `quartet --help` stays instant and offline.
+  if (!wantsHelp && command !== "help") await maybeAutoUpdate();
   await import("@quartet/bridge/main");
 }

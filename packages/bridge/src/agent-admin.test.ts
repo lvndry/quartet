@@ -61,7 +61,7 @@ afterEach(() => {
 });
 
 function settings(url: string): DaemonSettings {
-  return { url, webhook: "quartet", token: "daemon-token" };
+  return { url, webhook: "quartet", token: "webhook-token", adminToken: "daemon-token" };
 }
 
 function adminFor(url: string): { admin: AgentAdmin; published: JazzRoster[] } {

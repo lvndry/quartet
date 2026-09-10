@@ -345,10 +345,14 @@ export async function answerParkedRun(
   const startedAt = Date.now();
   let response: Response;
   try {
+    const adminToken = daemon.adminToken;
+    if (adminToken === undefined || adminToken.length === 0) {
+      return { kind: "failed", reason: "jazz daemon token is missing — re-run `quartet connect`" };
+    }
     response = await fetch(`${daemon.url}/runs/${encodeURIComponent(runId)}/answer`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${daemon.token}`,
+        authorization: `Bearer ${adminToken}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({

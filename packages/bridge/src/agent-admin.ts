@@ -72,7 +72,7 @@ export class AgentAdmin {
    */
   async refresh(): Promise<JazzRoster> {
     const [listing, catalog, myAgentId] = await Promise.all([
-      fetchJazzAgents(this.daemon.url, this.daemon.token),
+      fetchJazzAgents(this.daemon.url, this.daemon.adminToken),
       fetchJazzCatalog(this.daemon),
       agentIdFor(this.daemon.webhook),
     ]);

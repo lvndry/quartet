@@ -66,6 +66,7 @@ import {
   type JazzAgent,
 } from "./jazz-agents";
 import { resolveJazzDaemonToken } from "./jazz-daemon-token";
+import { normalizeHubUrl } from "./hub-url";
 import { currentLogLevel, logger, parseLogLevel, setLogLevel } from "./log";
 import { startLocalServer } from "./local";
 import { usage } from "./usage";
@@ -492,7 +493,17 @@ async function ensureDaemon(
       ...(agentId !== undefined ? { agentId } : {}),
       webhook: { name: webhookName, token },
     };
-    return { machine, config: updated, daemon: { url: daemonUrl, webhook: webhookName, token } };
+    const adminToken = await resolveJazzDaemonToken();
+    return {
+      machine,
+      config: updated,
+      daemon: {
+        url: daemonUrl,
+        webhook: webhookName,
+        token,
+        ...(adminToken !== undefined ? { adminToken } : {}),
+      },
+    };
   }
 
   console.log("\nQuartet talks to your agent through a jazz webhook.\n");
@@ -528,6 +539,7 @@ async function ensureDaemon(
   const token = await resolveOrMintToken(webhookName);
   if (token === undefined) return undefined;
 
+  const adminToken = await resolveJazzDaemonToken();
   return {
     machine: { ...machine, daemonUrl: chosenDaemon },
     config: {
@@ -535,7 +547,12 @@ async function ensureDaemon(
       ...(choice.kind === "agent" ? { agentId: choice.agentId } : {}),
       webhook: { name: webhookName, token },
     },
-    daemon: { url: chosenDaemon, webhook: webhookName, token },
+    daemon: {
+      url: chosenDaemon,
+      webhook: webhookName,
+      token,
+      ...(adminToken !== undefined ? { adminToken } : {}),
+    },
   };
 }
 
@@ -896,14 +913,15 @@ async function chooseIdentity(
  * better answer than a hang.
  */
 async function chooseHub(stored: string | undefined): Promise<string> {
-  const fallback = stored ?? process.env["QUARTET_HUB"] ?? DEFAULT_HUB_URL;
+  const fallback = normalizeHubUrl(stored ?? process.env["QUARTET_HUB"] ?? DEFAULT_HUB_URL);
   const fromFlag = argValue("hub");
-  if (fromFlag !== undefined) return fromFlag;
+  if (fromFlag !== undefined) return normalizeHubUrl(fromFlag);
 
   // No answer and an empty answer both mean the fallback here, which is the one case where
   // they legitimately coincide: the default is printed, and taking it is what enter does.
   const answer = await prompt(`\n  hub URL [${fallback}]: `);
-  return answer === undefined || answer === "" ? fallback : answer;
+  const chosen = answer === undefined || answer === "" ? fallback : answer;
+  return normalizeHubUrl(chosen);
 }
 
 async function connect(): Promise<void> {
