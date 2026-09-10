@@ -50,15 +50,15 @@ export interface DaemonSettings {
   readonly url: string;
   /** Which webhook wakes the agent quartet talks through. */
   readonly webhook: string;
-  /** That webhook's bearer token. Used only for POST /webhooks/… — never sent to the hub. */
-  readonly token: string;
+  /** Bearer for POST /webhooks/… only. Never sent to the hub. */
+  readonly webhookToken: string;
   /**
-   * Jazz's daemon admin bearer (`JAZZ_DAEMON_TOKEN` / keyring `daemon.token`).
+   * Jazz daemon bearer (`JAZZ_DAEMON_TOKEN` / keyring `daemon.token`).
    *
    * Required for /agents, /catalog, /runs/… — those doors sit behind the daemon token, not
    * the webhook's. Absent means the UI can open but cannot list or edit agents.
    */
-  readonly adminToken?: string;
+  readonly daemonToken?: string;
 }
 
 /** True of the host, not of any one identity. */

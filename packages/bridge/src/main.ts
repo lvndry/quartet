@@ -250,7 +250,7 @@ function isLocalDaemonUrl(daemonUrl: string): boolean {
  * started from here — if they are down, say so and leave it.
  */
 async function ensureJazzRunning(daemonUrl: string): Promise<void> {
-  if (await daemonReachable({ url: daemonUrl, webhook: "", token: "" })) return;
+  if (await daemonReachable({ url: daemonUrl, webhook: "", webhookToken: "" })) return;
 
   const jazzCli = argValue("jazz") ?? "jazz";
   if (!isLocalDaemonUrl(daemonUrl)) {
@@ -289,7 +289,7 @@ async function startJazzDaemon(jazzCli: string, daemonUrl: string): Promise<void
 
   for (let attempt = 0; attempt < JAZZ_START_ATTEMPTS; attempt += 1) {
     await Bun.sleep(JAZZ_START_POLL_MS);
-    if (await daemonReachable({ url: daemonUrl, webhook: "", token: "" })) {
+    if (await daemonReachable({ url: daemonUrl, webhook: "", webhookToken: "" })) {
       console.log(`\n  ✓ jazz daemon up on ${daemonUrl} (pid ${String(daemon.pid)})`);
       console.log(`    log → ${logPath}`);
       console.log("    it stops when quartet does. To keep it: sudo jazz daemon install");
@@ -493,15 +493,15 @@ async function ensureDaemon(
       ...(agentId !== undefined ? { agentId } : {}),
       webhook: { name: webhookName, token },
     };
-    const adminToken = await resolveJazzDaemonToken();
+    const daemonToken = await resolveJazzDaemonToken();
     return {
       machine,
       config: updated,
       daemon: {
         url: daemonUrl,
         webhook: webhookName,
-        token,
-        ...(adminToken !== undefined ? { adminToken } : {}),
+        webhookToken: token,
+        ...(daemonToken !== undefined ? { daemonToken } : {}),
       },
     };
   }
@@ -539,7 +539,7 @@ async function ensureDaemon(
   const token = await resolveOrMintToken(webhookName);
   if (token === undefined) return undefined;
 
-  const adminToken = await resolveJazzDaemonToken();
+  const daemonToken = await resolveJazzDaemonToken();
   return {
     machine: { ...machine, daemonUrl: chosenDaemon },
     config: {
@@ -550,8 +550,8 @@ async function ensureDaemon(
     daemon: {
       url: chosenDaemon,
       webhook: webhookName,
-      token,
-      ...(adminToken !== undefined ? { adminToken } : {}),
+      webhookToken: token,
+      ...(daemonToken !== undefined ? { daemonToken } : {}),
     },
   };
 }

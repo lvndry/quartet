@@ -43,7 +43,7 @@ async function bridgeKnowing(pins: readonly [string, string][], hub = HUB): Prom
   for (const [did, handle] of pins) known.offer(did, handle);
   return new Bridge(
     hub,
-    { url: "http://127.0.0.1:1", webhook: "quartet", token: "t" },
+    { url: "http://127.0.0.1:1", webhook: "quartet", webhookToken: "t" },
     new Attestor(generateKeypair()),
     new Sealer({ current: generateSealingKeypair(), retired: [] }),
     known,
@@ -125,7 +125,7 @@ describe("inviting by a name more than one key answers to", () => {
 
     const bridge = new Bridge(
       "https://sport.example",
-      { url: "http://127.0.0.1:1", webhook: "quartet", token: "t" },
+      { url: "http://127.0.0.1:1", webhook: "quartet", webhookToken: "t" },
       new Attestor(generateKeypair()),
       new Sealer({ current: generateSealingKeypair(), retired: [] }),
       onSport,

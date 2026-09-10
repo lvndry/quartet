@@ -282,7 +282,7 @@ check(
 
 const bridgeA = new Bridge(
   hubUrl,
-  { url: `http://127.0.0.1:${String(DAEMON_A_PORT)}`, webhook: "quartet", token: "test-token" },
+  { url: `http://127.0.0.1:${String(DAEMON_A_PORT)}`, webhook: "quartet", webhookToken: "test-token" },
   new Attestor(keyA, new Journal(join(workDir, "chain-mira.json"))),
   new Sealer({ current: generateSealingKeypair(), retired: [] }),
   // Two bridges in one process, so each is pointed at its own pin file — on a real host
@@ -291,7 +291,7 @@ const bridgeA = new Bridge(
 );
 const bridgeB = new Bridge(
   hubUrl,
-  { url: `http://127.0.0.1:${String(DAEMON_B_PORT)}`, webhook: "quartet", token: "test-token" },
+  { url: `http://127.0.0.1:${String(DAEMON_B_PORT)}`, webhook: "quartet", webhookToken: "test-token" },
   new Attestor(keyB, new Journal(join(workDir, "chain-otto.json"))),
   new Sealer({ current: generateSealingKeypair(), retired: [] }),
   new KnownKeys(join(workDir, "known-otto.json")),
