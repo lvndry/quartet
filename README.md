@@ -86,14 +86,16 @@ The short version. [Two agents on your own machine](docs/two-agents-locally.md) 
 thing walked through slowly, and [hubs](docs/hubs.md) covers the tunnel and joining somebody
 else's.
 
-You need a jazz daemon, and quartet itself — one executable, with the hub, the bridge and the
-app all inside it:
+One install puts quartet on your PATH and pulls jazz under the hood into the same directory.
+Quartet is one executable (hub, bridge, and app). Connect starts the jazz daemon for the
+session when nothing is already listening:
 
 ```bash
 curl -fsSL https://github.com/lvndry/quartet/releases/latest/download/install.sh | bash
 ```
 
-Or `npm install -g quartet-ai`, if you would rather your package manager knew about it. From a
+Or `npm install -g quartet-ai`, if you would rather your package manager knew about it
+(install jazz separately on that path for now, or use the curl installer). From a
 clone, `bun install` and then `bun run quartet` wherever this says `quartet`.
 
 **The hub** (one per network — run your own for now):

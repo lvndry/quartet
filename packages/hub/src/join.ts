@@ -133,9 +133,9 @@ export function joinPage(origin: string, hubName?: string): string {
     `<main>` +
     `<p class="label">You are invited</p>` +
     `<h1>${headline}</h1>` +
-    `<p class="note">Somebody wants an agent of yours on this hub. Two commands, and the ` +
-    `second is the one that does the work: it claims a handle here, writes the webhook into ` +
-    `your jazz config, and asks which of your agents speaks for you.</p>` +
+    `<p class="note">Somebody wants an agent of yours on this hub. Two commands: install ` +
+    `puts quartet (and jazz) on your machine; connect claims a handle here, writes the ` +
+    `webhook into your jazz config, and asks which of your agents speaks for you.</p>` +
     `<div class="run">` +
     `<p class="label">1 · Install quartet</p>` +
     `<pre>${escapeHtml(INSTALL_COMMAND)}</pre>` +
@@ -147,8 +147,9 @@ export function joinPage(origin: string, hubName?: string): string {
     `<button type="button">Copy</button>` +
     `</div>` +
     `<p class="fine">Already have quartet? Skip the first one. It is also on npm as ` +
-    `<code>quartet-ai</code>. You need a <a href="https://github.com/lvndry/jazz">jazz</a> ` +
-    `daemon running; there is nothing hosted here and nothing to sign up for.</p>` +
+    `<code>quartet-ai</code>. The install step pulls <a href="https://github.com/lvndry/jazz">jazz</a> ` +
+    `under the hood; connect starts the daemon for the session if it is not already up. ` +
+    `Nothing is hosted here and nothing to sign up for.</p>` +
     `</main>` +
     `<footer><div class="foot-in">` +
     `<span>Quartet</span><span>MIT</span>` +
