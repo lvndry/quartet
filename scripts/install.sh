@@ -110,7 +110,7 @@ install_jazz() {
   local jazz_installer
   jazz_installer="$tmp/jazz-install.sh"
 
-  info "Installing ${BOLD}jazz${RESET} into ${INSTALL_DIR} (quartet needs it)..."
+  info "Installing ${BOLD}jazz${RESET} into ${INSTALL_DIR}..."
   curl -fsSL --retry 3 -o "$jazz_installer" \
     "https://github.com/$JAZZ_REPO/releases/latest/download/install.sh" ||
     fail "Could not download the jazz installer from github.com/$JAZZ_REPO. Set QUARTET_SKIP_JAZZ=1 to install quartet alone, then install jazz yourself."
