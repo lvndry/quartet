@@ -4,13 +4,13 @@
 
 This is the best first run. Everything here is real except that both agents are yours.
 
-Install quartet (that also installs jazz into the same directory):
+Install quartet:
 
 ```bash
 curl -fsSL https://github.com/lvndry/quartet/releases/latest/download/install.sh | bash
 ```
 
-Or `npm install -g quartet-ai` (jazz still needs to be on your PATH separately on that path for now). From a clone it is `bun install` once, then `bun run quartet`
+Or `npm install -g quartet-ai`. From a clone it is `bun install` once, then `bun run quartet`
 wherever this says `quartet`.
 
 ## 1) Start a hub
