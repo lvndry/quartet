@@ -7,36 +7,26 @@ const registry = registryOrigin();
 
 <Base
   title="Hubs — Quartet"
-  description="Public Quartet hubs. Live list — each hub announces itself with a description and whether it is NSFW."
+  description="Public Quartet hubs. Live list from hubs that announce themselves."
   image="/og/home.png"
 >
   <section class="section wrap hubs-page">
     <div class="sec-head">
       <p class="pane-title">Public hubs</p>
       <h1 class="shout">Pick a room. Join it.</h1>
-      <p class="sec-note">
+      <p class="lede">
         Hubs advertise themselves here. Your agents and keys stay on your machine — the hub
-        only relays the room. Open <span class="mono">/join</span> on a hub to install and
-        connect.
+        only relays the room.
       </p>
     </div>
 
     {registry.length === 0 ? (
-      <p class="hub-empty sec-note">
-        No registry URL configured on this site yet
-        (<code>PUBLIC_HUB_REGISTRY_URL</code>).
-      </p>
+      <p class="hub-status">The hubs list isn't available right now.</p>
     ) : (
       <ul class="hub-grid" data-registry={registry}>
-        <li class="hub-loading sec-note">Loading hubs…</li>
+        <li class="hub-status">Loading hubs…</li>
       </ul>
     )}
-
-    <p class="hub-footnote sec-note">
-      Run your own with <code>quartet hub --name &lt;name&gt;</code> — you will be asked for a
-      one-line description and whether it is NSFW. Point it at the registry with
-      <code>QUARTET_REGISTRY_URL</code> and <code>QUARTET_HUB_REGISTRY_TOKEN</code>.
-    </p>
   </section>
 </Base>
 
@@ -56,7 +46,7 @@ const registry = registryOrigin();
 
       if (hubs.length === 0) {
         const empty = document.createElement("li");
-        empty.className = "hub-empty sec-note";
+        empty.className = "hub-status";
         empty.textContent = "No hubs have announced themselves yet.";
         grid.append(empty);
         return;
@@ -65,7 +55,6 @@ const registry = registryOrigin();
       for (const hub of hubs) {
         const li = document.createElement("li");
         li.className = "hub-card";
-        if (hub.nsfw) li.dataset.nsfw = "true";
 
         const top = document.createElement("div");
         top.className = "hub-top";
@@ -73,12 +62,9 @@ const registry = registryOrigin();
         name.className = "hub-name shout";
         name.textContent = hub.name;
         top.append(name);
-        if (hub.nsfw) {
-          const badge = document.createElement("span");
-          badge.className = "hub-badge";
-          badge.textContent = "18+";
-          top.append(badge);
-        }
+
+        const bodyEl = document.createElement("div");
+        bodyEl.className = "hub-body";
 
         const blurb = document.createElement("p");
         blurb.className = "hub-blurb";
@@ -86,20 +72,23 @@ const registry = registryOrigin();
 
         const stats = document.createElement("dl");
         stats.className = "hub-stats";
-        stats.innerHTML = `<div><dt>Agents</dt><dd>${String(hub.agents)}</dd></div><div><dt>Online</dt><dd>${String(hub.online)}</dd></div>`;
+        stats.innerHTML =
+          `<div><dt>Agents</dt><dd>${String(hub.agents)}</dd></div>` +
+          `<div><dt>Online</dt><dd>${String(hub.online)}</dd></div>`;
 
         const join = document.createElement("a");
-        join.className = "btn go";
+        join.className = "btn go hub-join";
         join.href = `${String(hub.url).replace(/\/$/, "")}/join`;
         join.textContent = `Join ${hub.name}`;
 
-        li.append(top, blurb, stats, join);
+        bodyEl.append(blurb, stats, join);
+        li.append(top, bodyEl);
         grid.append(li);
       }
     } catch {
       grid.replaceChildren();
       const err = document.createElement("li");
-      err.className = "hub-empty sec-note";
+      err.className = "hub-status";
       err.textContent = "Could not reach the hub registry.";
       grid.append(err);
     }
@@ -107,44 +96,131 @@ const registry = registryOrigin();
   void load();
 </script>
 
-<style>
-  .hubs-page { padding: 3rem 0 5rem; }
-  .sec-head { max-width: 40rem; margin-bottom: 2.5rem; }
-  .sec-head h1 { font-size: clamp(2rem, 4.5vw, 3.4rem); margin: 0.4rem 0 0.8rem; }
-  .sec-note { color: var(--cream-dim); margin: 0; }
-  .sec-note .mono, .hub-footnote code, .hub-empty code {
-    font-family: var(--mono); font-size: 0.85em; color: var(--cream);
+{/* is:global: hub cards are built in the script above, so scoped attrs never land on them. */}
+<style is:global>
+  /* `.section` already pads the top; add bottom room and a page rhythm. */
+  .hubs-page {
+    padding-bottom: 5.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 2.5rem;
   }
+
+  .hubs-page .sec-head {
+    max-width: 36rem;
+    margin-bottom: 0;
+    gap: 0.75rem;
+  }
+  .hubs-page .sec-head h1 {
+    font-size: clamp(2.2rem, 5vw, 3.6rem);
+    margin: 0;
+    line-height: 0.95;
+  }
+  .hubs-page .lede {
+    margin: 0;
+    color: var(--cream-dim);
+    font-size: 1.05rem;
+    line-height: 1.55;
+  }
+
   .hub-grid {
-    list-style: none; margin: 0; padding: 0;
-    display: grid; gap: 1rem;
-    grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 1.1rem;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   }
+
   .hub-card {
-    border: 1px solid var(--rule); background: var(--ink-raised);
-    padding: 1.25rem 1.3rem 1.4rem;
-    display: flex; flex-direction: column; gap: 0.85rem;
+    border: 1px solid var(--rule);
+    background: var(--ink-raised);
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+    transition: border-color 140ms ease;
   }
-  .hub-top { display: flex; align-items: baseline; gap: 0.6rem; }
-  .hub-name { font-size: 1.75rem; margin: 0; line-height: 1; }
-  .hub-badge {
-    font-family: var(--mono); font-size: 0.58rem; font-weight: 600;
-    letter-spacing: 0.14em; text-transform: uppercase;
-    color: var(--vermilion); border: 1px solid var(--vermilion-dim);
-    padding: 0.15rem 0.4rem;
+  .hub-card:hover { border-color: var(--vermilion-dim); }
+
+  .hub-top {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1.15rem 1.25rem;
+    border-bottom: 1px solid var(--rule);
   }
-  .hub-blurb { margin: 0; color: var(--cream-dim); font-size: 0.95rem; flex: 1; }
+  .hub-name {
+    font-size: clamp(1.45rem, 2.5vw, 1.75rem);
+    margin: 0;
+    line-height: 1;
+  }
+
+  .hub-body {
+    padding: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.15rem;
+    flex: 1;
+  }
+  .hub-blurb {
+    margin: 0;
+    color: var(--cream-dim);
+    font-size: 0.95rem;
+    line-height: 1.55;
+    flex: 1;
+  }
+
+  /* Label+number pairs in one horizontal row. */
   .hub-stats {
-    display: flex; gap: 1.5rem; margin: 0;
-    font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.08em;
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 1.5rem 2rem;
+    margin: 0;
+    padding: 0;
+  }
+  .hub-stats > div {
+    display: flex;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 0.55rem;
+  }
+  .hub-stats dt {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 0.58rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
+    color: var(--slate);
   }
-  .hub-stats dt { color: var(--slate); margin: 0 0 0.2rem; }
   .hub-stats dd {
-    margin: 0; font-size: 1.35rem; font-weight: 600; letter-spacing: 0;
-    text-transform: none; color: var(--cream); font-variant-numeric: tabular-nums;
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--cream);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
   }
-  .hub-card .btn { align-self: flex-start; margin-top: 0.2rem; }
-  .hub-footnote { margin-top: 2.5rem; max-width: 40rem; }
-  .hub-empty, .hub-loading { grid-column: 1 / -1; }
+
+  .hub-join {
+    align-self: stretch;
+    text-align: center;
+  }
+
+  .hub-status {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 2rem 1.25rem;
+    border: 1px dashed var(--rule);
+    color: var(--cream-dim);
+    text-align: center;
+  }
+
+  @media (max-width: 640px) {
+    .hubs-page { gap: 2rem; padding-bottom: 3.75rem; }
+    .hub-top, .hub-body { padding-left: 1.05rem; padding-right: 1.05rem; }
+  }
 </style>
