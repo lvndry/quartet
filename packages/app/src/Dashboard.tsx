@@ -167,7 +167,12 @@ function configFrom(draft: Draft, stored: Record<string, unknown> = {}): Record<
 
   text("summarizerModel", draft.summarizerModel);
   text("reasoningEffort", draft.reasoningEffort);
-  text("webSearchProvider", draft.webSearchProvider);
+  // "builtin" is UI-only: Jazz stores no provider and uses the LLM's native search.
+  if (draft.webSearchProvider === "builtin") {
+    if (wasSet("webSearchProvider")) config["webSearchProvider"] = null;
+  } else {
+    text("webSearchProvider", draft.webSearchProvider);
+  }
   number("temperature", draft.temperature);
   number("maxContextTokens", draft.maxContextTokens);
   number("numCtx", draft.numCtx);
@@ -276,6 +281,20 @@ const BLANK_PERSONA: PersonaDraft = {
 };
 
 /** First five characters visible; the rest masked. Never used for a key we do not hold. */
+/** LLM providers Jazz can run with native (builtin) web search. */
+const NATIVE_WEB_SEARCH_PROVIDERS = new Set([
+  "openai",
+  "anthropic",
+  "google",
+  "xai",
+  "groq",
+  "openrouter",
+]);
+
+function llmSupportsBuiltinWebSearch(provider: string): boolean {
+  return NATIVE_WEB_SEARCH_PROVIDERS.has(provider.trim().toLowerCase());
+}
+
 function maskApiKey(value: string): string {
   if (value.length === 0) return "";
   if (value.length <= 5) return value;
@@ -353,6 +372,11 @@ export function Dashboard({
   const [modelsProblem, setModelsProblem] = useState<string | undefined>(undefined);
   const [refusal, setRefusal] = useState<Refusal | undefined>(undefined);
   const [apiKeyInput, setApiKeyInput] = useState("");
+  const [llmKeyOnFile, setLlmKeyOnFile] = useState(false);
+  const [editingLlmKey, setEditingLlmKey] = useState(false);
+  const [webSearchApiKeyInput, setWebSearchApiKeyInput] = useState("");
+  const [webSearchKeyOnFile, setWebSearchKeyOnFile] = useState(false);
+  const [editingWebSearchKey, setEditingWebSearchKey] = useState(false);
   const [busy, setBusy] = useState(false);
   const [showEverything, setShowEverything] = useState(false);
   const [personaDraft, setPersonaDraft] = useState<PersonaDraft | undefined>(undefined);
@@ -416,6 +440,55 @@ export function Dashboard({
     };
   }, [draft.llmProvider]);
 
+  // Whether jazz already has an LLM key for this provider (global keyring / env).
+  useEffect(() => {
+    if (draft.llmProvider.length === 0 || draft.llmProvider === "ollama") {
+      setLlmKeyOnFile(false);
+      setEditingLlmKey(false);
+      return;
+    }
+    let current = true;
+    setLlmKeyOnFile(false);
+    setEditingLlmKey(false);
+    void read<{ configured: boolean }>("agents/api-key/status", {
+      kind: "llm",
+      provider: draft.llmProvider,
+    }).then((result) => {
+      if (!current) return;
+      if ("value" in result) {
+        setLlmKeyOnFile(result.value.configured);
+        // Per-agent override also means a key is on file for this editor.
+        if (detail?.apiKeyProviders?.includes(draft.llmProvider) === true) setLlmKeyOnFile(true);
+      }
+    });
+    return () => {
+      current = false;
+    };
+  }, [draft.llmProvider, detail?.apiKeyProviders]);
+
+  // Whether jazz already has a web-search key for the selected external provider.
+  useEffect(() => {
+    const provider = draft.webSearchProvider;
+    if (provider.length === 0 || provider === "builtin") {
+      setWebSearchKeyOnFile(false);
+      setEditingWebSearchKey(false);
+      return;
+    }
+    let current = true;
+    setWebSearchKeyOnFile(false);
+    setEditingWebSearchKey(false);
+    void read<{ configured: boolean }>("agents/api-key/status", {
+      kind: "web_search",
+      provider,
+    }).then((result) => {
+      if (!current) return;
+      if ("value" in result) setWebSearchKeyOnFile(result.value.configured);
+    });
+    return () => {
+      current = false;
+    };
+  }, [draft.webSearchProvider]);
+
   const chosenModel = models?.find((model) => model.id === draft.llmModel);
   const defaults = tools?.defaultTools ?? [];
   const onStage = detail !== undefined && detail.id === state.myAgentId;
@@ -445,6 +518,7 @@ export function Dashboard({
         return;
       }
       const keyed = await read<{ provider: string }>("agents/api-key", {
+        kind: "llm",
         provider: draft.llmProvider,
         key: pastedKey,
       });
@@ -454,6 +528,34 @@ export function Dashboard({
         return;
       }
       setApiKeyInput("");
+      setLlmKeyOnFile(true);
+      setEditingLlmKey(false);
+    }
+
+    const pastedSearchKey = webSearchApiKeyInput.trim();
+    if (pastedSearchKey.length > 0) {
+      const searchProvider = draft.webSearchProvider;
+      if (searchProvider.length === 0 || searchProvider === "builtin") {
+        setBusy(false);
+        setRefusal({
+          error: "pick an external web search provider before saving its API key",
+          field: "config.webSearchProvider",
+        });
+        return;
+      }
+      const keyed = await read<{ provider: string }>("agents/api-key", {
+        kind: "web_search",
+        provider: searchProvider,
+        key: pastedSearchKey,
+      });
+      if ("refused" in keyed) {
+        setBusy(false);
+        setRefusal(keyed.refused);
+        return;
+      }
+      setWebSearchApiKeyInput("");
+      setWebSearchKeyOnFile(true);
+      setEditingWebSearchKey(false);
     }
 
     const config = configFrom(draft, detail?.config);
@@ -517,6 +619,11 @@ export function Dashboard({
     setDetail(undefined);
     setRefusal(undefined);
     setApiKeyInput("");
+    setLlmKeyOnFile(false);
+    setEditingLlmKey(false);
+    setWebSearchApiKeyInput("");
+    setWebSearchKeyOnFile(false);
+    setEditingWebSearchKey(false);
     setDraft({ ...BLANK, llmProvider: catalog?.providers[0] ?? "" });
   }
 
@@ -777,17 +884,36 @@ export function Dashboard({
                   <label className="dash-label" htmlFor="agent-api-key">
                     {draft.llmProvider} API key
                   </label>
-                  <ApiKeyField
-                    id="agent-api-key"
-                    className={fieldError("apiKey") !== undefined ? "field wrong" : "field"}
-                    placeholder={
-                      detail?.apiKeyProviders.includes(draft.llmProvider)
-                        ? "paste to replace the key on file"
-                        : "paste your API key"
-                    }
-                    value={apiKeyInput}
-                    onChange={setApiKeyInput}
-                  />
+                  {llmKeyOnFile && !editingLlmKey && apiKeyInput.length === 0 ? (
+                    <div className="dash-key-on-file">
+                      <input
+                        id="agent-api-key"
+                        className="field"
+                        readOnly
+                        value="•••••••••••• (on file)"
+                        aria-label={`${draft.llmProvider} API key on file`}
+                      />
+                      <button
+                        className="btn"
+                        type="button"
+                        onClick={() => setEditingLlmKey(true)}
+                      >
+                        Replace
+                      </button>
+                    </div>
+                  ) : (
+                    <ApiKeyField
+                      id="agent-api-key"
+                      className={fieldError("apiKey") !== undefined ? "field wrong" : "field"}
+                      placeholder={
+                        llmKeyOnFile
+                          ? "paste to replace the key on file"
+                          : "paste your API key"
+                      }
+                      value={apiKeyInput}
+                      onChange={setApiKeyInput}
+                    />
+                  )}
                   {fieldNote("apiKey")}
                   <p className="dash-hint">
                     Treated like a password: while you paste it is hidden; after that only the
@@ -962,9 +1088,18 @@ export function Dashboard({
                   className="field"
                   value={draft.webSearchProvider}
                   disabled={!editable}
-                  onChange={(event) => setDraft({ ...draft, webSearchProvider: event.target.value })}
+                  onChange={(event) => {
+                    setDraft({ ...draft, webSearchProvider: event.target.value });
+                    setWebSearchApiKeyInput("");
+                    setEditingWebSearchKey(false);
+                  }}
                 >
                   <option value="">none</option>
+                  {llmSupportsBuiltinWebSearch(draft.llmProvider) && (
+                    <option value="builtin">
+                      builtin ({draft.llmProvider} native)
+                    </option>
+                  )}
                   {(catalog?.webSearchProviders ?? []).map((provider) => (
                     <option key={provider} value={provider}>
                       {provider}
@@ -972,6 +1107,56 @@ export function Dashboard({
                   ))}
                 </select>
                 {fieldNote("config.webSearchProvider")}
+                {draft.webSearchProvider.length > 0 &&
+                  draft.webSearchProvider !== "builtin" &&
+                  editable && (
+                    <>
+                      <label className="dash-label" htmlFor="agent-websearch-key">
+                        {draft.webSearchProvider} search API key
+                      </label>
+                      {webSearchKeyOnFile &&
+                      !editingWebSearchKey &&
+                      webSearchApiKeyInput.length === 0 ? (
+                        <div className="dash-key-on-file">
+                          <input
+                            id="agent-websearch-key"
+                            className="field"
+                            readOnly
+                            value="•••••••••••• (on file)"
+                            aria-label={`${draft.webSearchProvider} search API key on file`}
+                          />
+                          <button
+                            className="btn"
+                            type="button"
+                            onClick={() => setEditingWebSearchKey(true)}
+                          >
+                            Replace
+                          </button>
+                        </div>
+                      ) : (
+                        <ApiKeyField
+                          id="agent-websearch-key"
+                          className={
+                            fieldError("webSearchApiKey") !== undefined
+                              ? "field wrong"
+                              : "field"
+                          }
+                          placeholder={
+                            webSearchKeyOnFile
+                              ? "paste to replace the key on file"
+                              : "paste your API key"
+                          }
+                          value={webSearchApiKeyInput}
+                          onChange={setWebSearchApiKeyInput}
+                        />
+                      )}
+                      {fieldNote("webSearchApiKey")}
+                      <p className="dash-hint">
+                        Saved as jazz <code>web_search.{draft.webSearchProvider}.api_key</code> —
+                        same keyring as LLM keys, never sent to the hub.
+                      </p>
+                    </>
+                  )}
                 </>
               )}
 
