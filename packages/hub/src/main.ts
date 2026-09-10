@@ -1370,6 +1370,8 @@ if (openTunnel) {
   });
   switch (tunnel.kind) {
     case "ok": {
+      // Announce before the invite lines so the directory ping is not buried under the join URL.
+      if (announceIntent !== undefined) beginAnnouncing(announceIntent, tunnel.url);
       console.log(`\n  ✓ reachable at ${tunnel.url}`);
       console.log(`    give this to whoever you're inviting: ${tunnel.url}/join`);
       console.log("    it's a page with the one command to run, not a bare URL.\n");
@@ -1379,7 +1381,6 @@ if (openTunnel) {
       };
       process.on("SIGINT", stopTunnel);
       process.on("SIGTERM", stopTunnel);
-      if (announceIntent !== undefined) beginAnnouncing(announceIntent, tunnel.url);
       break;
     }
     case "download-failed":
