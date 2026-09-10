@@ -613,6 +613,8 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
 .dash-wrong { font-size: 0.78rem; color: var(--vermilion); margin: 0.25rem 0 0; }
 /* A statement of fact, not a failure: cream-dim would read as instruction, vermilion as error. */
 .dash-hint { font-size: 0.78rem; color: var(--slate); margin: 0.35rem 0 0; max-width: 58ch; }
+.dash-key-on-file { display: flex; gap: 0.5rem; align-items: center; }
+.dash-key-on-file .field { flex: 1; min-width: 0; color: var(--slate); }
 .dash-hint.dash-inline { margin: 0; }
 
 .dash-tools { margin-top: 0.5rem; }

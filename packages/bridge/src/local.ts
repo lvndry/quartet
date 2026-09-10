@@ -19,7 +19,7 @@ import type { AppBundle } from "./app-bundle";
 import type { Bridge, BridgeState } from "./bridge";
 import type { DeviceRegistry, PairedDevice } from "./devices";
 import type { JazzResult } from "./jazz-admin";
-import { setJazzLlmApiKey } from "./jazz-secrets";
+import { hasJazzProviderApiKey, setJazzProviderApiKey, type SecretKind } from "./jazz-secrets";
 import type { ServerWebSocket } from "bun";
 
 /** The cookie a paired device presents. Never readable by a script on the page. */
@@ -702,21 +702,38 @@ async function handleApi(
     }
 
     case "/api/agents/api-key": {
-      // Jazz will not take llmApiKeys over its agent HTTP API — keys go in the keyring via
+      // Jazz will not take secrets over its agent HTTP API — keys go in the keyring via
       // `jazz config set`. The agents page has nowhere else to put one on first run.
+      // kind: "llm" (default) or "web_search".
       const provider = text("provider");
       const key = text("key");
+      const kindRaw = text("kind");
+      const kind: SecretKind = kindRaw === "web_search" ? "web_search" : "llm";
+      const field = kind === "web_search" ? "webSearchApiKey" : "apiKey";
       if (provider.length === 0) {
         return json({ error: "provider is required", field: "provider" }, 400);
       }
       if (key.length === 0) {
-        return json({ error: "api key is required", field: "apiKey" }, 400);
+        return json({ error: "api key is required", field }, 400);
       }
-      const result = await setJazzLlmApiKey({ provider, key });
+      const result = await setJazzProviderApiKey({ kind, provider, key });
       if (result.kind !== "ok") {
-        return json({ error: result.detail, field: "apiKey" }, 400);
+        return json({ error: result.detail, field }, 400);
       }
-      return json({ ok: true, value: { provider } });
+      return json({ ok: true, value: { provider, kind } });
+    }
+
+    case "/api/agents/api-key/status": {
+      // Boolean only — never echo the secret. Lets the form show "on file / replace"
+      // instead of an empty input that looks unset.
+      const provider = text("provider");
+      const kindRaw = text("kind");
+      const kind: SecretKind = kindRaw === "web_search" ? "web_search" : "llm";
+      if (provider.length === 0) {
+        return json({ error: "provider is required", field: "provider" }, 400);
+      }
+      const configured = await hasJazzProviderApiKey({ kind, provider });
+      return json({ ok: true, value: { provider, kind, configured } });
     }
 
     // Paired devices. Reachable by a paired device as well as from this machine, because

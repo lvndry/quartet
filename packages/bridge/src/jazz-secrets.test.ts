@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { setJazzLlmApiKey } from "./jazz-secrets";
+import { hasJazzProviderApiKey, setJazzLlmApiKey, setJazzProviderApiKey } from "./jazz-secrets";
 
-describe("setJazzLlmApiKey", () => {
+describe("setJazzProviderApiKey", () => {
   it("refuses an empty provider or key without spawning jazz", async () => {
-    expect(await setJazzLlmApiKey({ provider: "", key: "sk" })).toEqual({
+    expect(await setJazzProviderApiKey({ kind: "llm", provider: "", key: "sk" })).toEqual({
       kind: "failed",
       detail: "provider is required",
     });
@@ -14,7 +14,14 @@ describe("setJazzLlmApiKey", () => {
   });
 
   it("refuses a provider name that is not a simple identifier", async () => {
-    const result = await setJazzLlmApiKey({ provider: "../etc", key: "sk" });
+    const result = await setJazzProviderApiKey({ kind: "web_search", provider: "../etc", key: "sk" });
     expect(result.kind).toBe("failed");
+  });
+});
+
+describe("hasJazzProviderApiKey", () => {
+  it("returns false for an empty or illegal provider without spawning jazz", async () => {
+    expect(await hasJazzProviderApiKey({ kind: "llm", provider: "" })).toBe(false);
+    expect(await hasJazzProviderApiKey({ kind: "web_search", provider: "../etc" })).toBe(false);
   });
 });
