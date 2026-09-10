@@ -7,7 +7,7 @@ const registry = registryOrigin();
 
 <Base
   title="Hubs — Quartet"
-  description="Public Quartet hubs. Live list — each hub announces itself with a description and whether it is NSFW."
+  description="Public Quartet hubs. Live list from hubs that announce themselves."
   image="/og/home.png"
 >
   <section class="section wrap hubs-page">
@@ -21,23 +21,12 @@ const registry = registryOrigin();
     </div>
 
     {registry.length === 0 ? (
-      <p class="hub-status">
-        No registry URL configured on this site yet (<code>PUBLIC_HUB_REGISTRY_URL</code>).
-      </p>
+      <p class="hub-status">The hubs list isn't available right now.</p>
     ) : (
       <ul class="hub-grid" data-registry={registry}>
         <li class="hub-status">Loading hubs…</li>
       </ul>
     )}
-
-    <aside class="hub-footnote">
-      <p class="pane-title">Run your own</p>
-      <p>
-        <code>quartet hub --name &lt;name&gt;</code> asks for a one-line description and whether
-        it is NSFW. Point it at the registry with <code>QUARTET_REGISTRY_URL</code> and
-        <code>QUARTET_HUB_REGISTRY_TOKEN</code>.
-      </p>
-    </aside>
   </section>
 </Base>
 
@@ -53,8 +42,6 @@ const registry = registryOrigin();
       if (!response.ok) throw new Error(String(response.status));
       const body = await response.json();
       const hubs = Array.isArray(body.hubs) ? body.hubs : [];
-      // SFW first, then 18+ — keeps the adult room from leading the grid.
-      hubs.sort((a, b) => Number(a.nsfw) - Number(b.nsfw) || String(a.name).localeCompare(String(b.name)));
       grid.replaceChildren();
 
       if (hubs.length === 0) {
@@ -68,7 +55,6 @@ const registry = registryOrigin();
       for (const hub of hubs) {
         const li = document.createElement("li");
         li.className = "hub-card";
-        if (hub.nsfw) li.dataset.nsfw = "true";
 
         const top = document.createElement("div");
         top.className = "hub-top";
@@ -76,12 +62,6 @@ const registry = registryOrigin();
         name.className = "hub-name shout";
         name.textContent = hub.name;
         top.append(name);
-        if (hub.nsfw) {
-          const badge = document.createElement("span");
-          badge.className = "hub-badge";
-          badge.textContent = "18+";
-          top.append(badge);
-        }
 
         const bodyEl = document.createElement("div");
         bodyEl.className = "hub-body";
@@ -116,7 +96,8 @@ const registry = registryOrigin();
   void load();
 </script>
 
-<style>
+{/* is:global: hub cards are built in the script above, so scoped attrs never land on them. */}
+<style is:global>
   /* `.section` already pads the top; add bottom room and a page rhythm. */
   .hubs-page {
     padding-bottom: 5.5rem;
@@ -125,17 +106,17 @@ const registry = registryOrigin();
     gap: 2.5rem;
   }
 
-  .sec-head {
+  .hubs-page .sec-head {
     max-width: 36rem;
     margin-bottom: 0;
     gap: 0.75rem;
   }
-  .sec-head h1 {
+  .hubs-page .sec-head h1 {
     font-size: clamp(2.2rem, 5vw, 3.6rem);
     margin: 0;
     line-height: 0.95;
   }
-  .lede {
+  .hubs-page .lede {
     margin: 0;
     color: var(--cream-dim);
     font-size: 1.05rem;
@@ -160,12 +141,10 @@ const registry = registryOrigin();
     transition: border-color 140ms ease;
   }
   .hub-card:hover { border-color: var(--vermilion-dim); }
-  .hub-card[data-nsfw="true"] { border-color: color-mix(in srgb, var(--vermilion) 35%, var(--rule)); }
 
   .hub-top {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 0.75rem;
     padding: 1.15rem 1.25rem;
     border-bottom: 1px solid var(--rule);
@@ -175,23 +154,12 @@ const registry = registryOrigin();
     margin: 0;
     line-height: 1;
   }
-  .hub-badge {
-    flex: none;
-    font-family: var(--mono);
-    font-size: 0.58rem;
-    font-weight: 600;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--vermilion);
-    border: 1px solid var(--vermilion-dim);
-    padding: 0.2rem 0.45rem;
-  }
 
   .hub-body {
     padding: 1.25rem;
     display: flex;
     flex-direction: column;
-    gap: 1.25rem;
+    gap: 1.15rem;
     flex: 1;
   }
   .hub-blurb {
@@ -202,17 +170,24 @@ const registry = registryOrigin();
     flex: 1;
   }
 
+  /* Label+number pairs in one horizontal row. */
   .hub-stats {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 0.75rem;
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 1.5rem 2rem;
     margin: 0;
-    padding: 0.85rem 1rem;
-    background: var(--ink-sunk);
-    border-left: 2px solid var(--rule);
+    padding: 0;
+  }
+  .hub-stats > div {
+    display: flex;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 0.55rem;
   }
   .hub-stats dt {
-    margin: 0 0 0.25rem;
+    margin: 0;
     font-family: var(--mono);
     font-size: 0.58rem;
     font-weight: 600;
@@ -223,7 +198,7 @@ const registry = registryOrigin();
   .hub-stats dd {
     margin: 0;
     font-family: var(--mono);
-    font-size: 1.4rem;
+    font-size: 1.25rem;
     font-weight: 600;
     color: var(--cream);
     font-variant-numeric: tabular-nums;
@@ -242,32 +217,6 @@ const registry = registryOrigin();
     border: 1px dashed var(--rule);
     color: var(--cream-dim);
     text-align: center;
-  }
-  .hub-status code {
-    font-family: var(--mono);
-    font-size: 0.85em;
-    color: var(--cream);
-  }
-
-  .hub-footnote {
-    margin: 0;
-    padding: 1.25rem 1.35rem;
-    border-top: 1px solid var(--rule);
-    max-width: 40rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.55rem;
-  }
-  .hub-footnote p {
-    margin: 0;
-    color: var(--cream-dim);
-    font-size: 0.92rem;
-    line-height: 1.55;
-  }
-  .hub-footnote code {
-    font-family: var(--mono);
-    font-size: 0.86em;
-    color: var(--cream);
   }
 
   @media (max-width: 640px) {
