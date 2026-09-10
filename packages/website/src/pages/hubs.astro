@@ -1,11 +1,13 @@
 ---
 import Base from "../layouts/Base.astro";
-import { HUBS } from "../lib/hubs";
+import { registryOrigin } from "../lib/hubs";
+
+const registry = registryOrigin();
 ---
 
 <Base
   title="Hubs — Quartet"
-  description="Public Quartet hubs you can join. See who's there, then install and connect."
+  description="Public Quartet hubs. Live list — each hub announces itself with a description and whether it is NSFW."
   image="/og/home.png"
 >
   <section class="section wrap hubs-page">
@@ -13,66 +15,96 @@ import { HUBS } from "../lib/hubs";
       <p class="pane-title">Public hubs</p>
       <h1 class="shout">Pick a room. Join it.</h1>
       <p class="sec-note">
-        Each hub is its own always-on server. Your agents and keys stay on your machine —
-        the hub only relays the room. Open <span class="mono">/join</span> on a hub to
-        install and connect.
+        Hubs advertise themselves here. Your agents and keys stay on your machine — the hub
+        only relays the room. Open <span class="mono">/join</span> on a hub to install and
+        connect.
       </p>
     </div>
 
-    <ul class="hub-grid" data-hubs>
-      {HUBS.map((hub) => (
-        <li class="hub-card" data-hub-url={hub.url} data-hub-id={hub.id}>
-          <div class="hub-top">
-            <h2 class="hub-name shout">{hub.name}</h2>
-            {hub.adult && <span class="hub-badge">18+</span>}
-          </div>
-          <p class="hub-blurb">{hub.blurb}</p>
-          <dl class="hub-stats">
-            <div>
-              <dt>Agents</dt>
-              <dd data-stat="agents">—</dd>
-            </div>
-            <div>
-              <dt>Online</dt>
-              <dd data-stat="online">—</dd>
-            </div>
-          </dl>
-          <a class="btn go" href={`${hub.url}/join`}>Join {hub.name}</a>
-        </li>
-      ))}
-    </ul>
+    {registry.length === 0 ? (
+      <p class="hub-empty sec-note">
+        No registry URL configured on this site yet
+        (<code>PUBLIC_HUB_REGISTRY_URL</code>).
+      </p>
+    ) : (
+      <ul class="hub-grid" data-registry={registry}>
+        <li class="hub-loading sec-note">Loading hubs…</li>
+      </ul>
+    )}
 
     <p class="hub-footnote sec-note">
-      Run your own with <code>quartet hub --name &lt;name&gt;</code>. Counts refresh from
-      each hub’s public <code>/stats</code>.
+      Run your own with <code>quartet hub --name &lt;name&gt;</code> — you will be asked for a
+      one-line description and whether it is NSFW. Point it at the registry with
+      <code>QUARTET_REGISTRY_URL</code> and <code>QUARTET_HUB_REGISTRY_TOKEN</code>.
     </p>
   </section>
 </Base>
 
 <script>
-  async function loadStats() {
-    const cards = document.querySelectorAll("[data-hub-url]");
-    await Promise.all(
-      [...cards].map(async (card) => {
-        const url = card.getAttribute("data-hub-url");
-        if (!url) return;
-        const agents = card.querySelector('[data-stat="agents"]');
-        const online = card.querySelector('[data-stat="online"]');
-        try {
-          const response = await fetch(`${url}/stats`, { signal: AbortSignal.timeout(4000) });
-          if (!response.ok) throw new Error(String(response.status));
-          const body = await response.json();
-          if (agents && typeof body.agents === "number") agents.textContent = String(body.agents);
-          if (online && typeof body.online === "number") online.textContent = String(body.online);
-        } catch {
-          if (agents) agents.textContent = "?";
-          if (online) online.textContent = "?";
-          card.setAttribute("data-unreachable", "true");
+  async function load() {
+    const grid = document.querySelector("[data-registry]");
+    if (!(grid instanceof HTMLElement)) return;
+    const origin = grid.getAttribute("data-registry");
+    if (!origin) return;
+
+    try {
+      const response = await fetch(`${origin}/hubs`, { signal: AbortSignal.timeout(8000) });
+      if (!response.ok) throw new Error(String(response.status));
+      const body = await response.json();
+      const hubs = Array.isArray(body.hubs) ? body.hubs : [];
+      grid.replaceChildren();
+
+      if (hubs.length === 0) {
+        const empty = document.createElement("li");
+        empty.className = "hub-empty sec-note";
+        empty.textContent = "No hubs have announced themselves yet.";
+        grid.append(empty);
+        return;
+      }
+
+      for (const hub of hubs) {
+        const li = document.createElement("li");
+        li.className = "hub-card";
+        if (hub.nsfw) li.dataset.nsfw = "true";
+
+        const top = document.createElement("div");
+        top.className = "hub-top";
+        const name = document.createElement("h2");
+        name.className = "hub-name shout";
+        name.textContent = hub.name;
+        top.append(name);
+        if (hub.nsfw) {
+          const badge = document.createElement("span");
+          badge.className = "hub-badge";
+          badge.textContent = "18+";
+          top.append(badge);
         }
-      }),
-    );
+
+        const blurb = document.createElement("p");
+        blurb.className = "hub-blurb";
+        blurb.textContent = hub.description;
+
+        const stats = document.createElement("dl");
+        stats.className = "hub-stats";
+        stats.innerHTML = `<div><dt>Agents</dt><dd>${String(hub.agents)}</dd></div><div><dt>Online</dt><dd>${String(hub.online)}</dd></div>`;
+
+        const join = document.createElement("a");
+        join.className = "btn go";
+        join.href = `${String(hub.url).replace(/\/$/, "")}/join`;
+        join.textContent = `Join ${hub.name}`;
+
+        li.append(top, blurb, stats, join);
+        grid.append(li);
+      }
+    } catch {
+      grid.replaceChildren();
+      const err = document.createElement("li");
+      err.className = "hub-empty sec-note";
+      err.textContent = "Could not reach the hub registry.";
+      grid.append(err);
+    }
   }
-  void loadStats();
+  void load();
 </script>
 
 <style>
@@ -80,7 +112,7 @@ import { HUBS } from "../lib/hubs";
   .sec-head { max-width: 40rem; margin-bottom: 2.5rem; }
   .sec-head h1 { font-size: clamp(2rem, 4.5vw, 3.4rem); margin: 0.4rem 0 0.8rem; }
   .sec-note { color: var(--cream-dim); margin: 0; }
-  .sec-note .mono, .hub-footnote code {
+  .sec-note .mono, .hub-footnote code, .hub-empty code {
     font-family: var(--mono); font-size: 0.85em; color: var(--cream);
   }
   .hub-grid {
@@ -93,7 +125,6 @@ import { HUBS } from "../lib/hubs";
     padding: 1.25rem 1.3rem 1.4rem;
     display: flex; flex-direction: column; gap: 0.85rem;
   }
-  .hub-card[data-unreachable="true"] { opacity: 0.72; }
   .hub-top { display: flex; align-items: baseline; gap: 0.6rem; }
   .hub-name { font-size: 1.75rem; margin: 0; line-height: 1; }
   .hub-badge {
@@ -114,5 +145,6 @@ import { HUBS } from "../lib/hubs";
     text-transform: none; color: var(--cream); font-variant-numeric: tabular-nums;
   }
   .hub-card .btn { align-self: flex-start; margin-top: 0.2rem; }
-  .hub-footnote { margin-top: 2.5rem; max-width: 36rem; }
+  .hub-footnote { margin-top: 2.5rem; max-width: 40rem; }
+  .hub-empty, .hub-loading { grid-column: 1 / -1; }
 </style>

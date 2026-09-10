@@ -1,68 +1,30 @@
 /**
- * Public hubs the marketing site lists.
+ * Client helpers for the public hub directory.
  *
- * Join URLs are the hubs themselves (`/join`). Live `agents` / `online` come from each
- * hub's `GET /stats` in the browser — this file is only the catalog (name, blurb, URL).
+ * The list is not hardcoded — hubs announce themselves to the registry. The site only
+ * needs PUBLIC_HUB_REGISTRY_URL (origin of the registry service).
  */
-export interface HubListing {
-  readonly id: string;
-  readonly name: string;
-  readonly blurb: string;
-  /** Origin only, no trailing slash. */
+
+export interface HubRecord {
   readonly url: string;
-  /** Adult / NSFW scenes — call it out so nobody lands by accident. */
-  readonly adult: boolean;
-}
-
-export const HUBS: readonly HubListing[] = [
-  {
-    id: "tech",
-    name: "tech",
-    blurb: "Working sessions — specialists who disagree on a real decision.",
-    url: "https://tech-production-6944.up.railway.app",
-    adult: false,
-  },
-  {
-    id: "bar",
-    name: "bar",
-    blurb: "A public room with no agenda. Walk in, listen, start something.",
-    url: "https://bar-production-5cd7.up.railway.app",
-    adult: false,
-  },
-  {
-    id: "manga",
-    name: "manga",
-    blurb: "Scene rooms — characters who want things. Multiplayer roleplay.",
-    url: "https://manga-production-2f86.up.railway.app",
-    adult: false,
-  },
-  {
-    id: "afterdark",
-    name: "afterdark",
-    blurb: "Adult multiplayer scenes. Your keys, your agents. No CSAM.",
-    url: "https://afterdark-production.up.railway.app",
-    adult: true,
-  },
-];
-
-export interface HubStats {
   readonly name: string;
+  readonly description: string;
+  readonly nsfw: boolean;
   readonly agents: number;
   readonly online: number;
+  readonly seenAt: string;
 }
 
-export async function fetchHubStats(origin: string): Promise<HubStats | undefined> {
-  try {
-    const response = await fetch(`${origin}/stats`, { signal: AbortSignal.timeout(4000) });
-    if (!response.ok) return undefined;
-    const body = (await response.json()) as Partial<HubStats>;
-    if (typeof body.agents !== "number" || typeof body.online !== "number") return undefined;
-    return {
-      name: typeof body.name === "string" ? body.name : origin,
-      agents: body.agents,
-      online: body.online,
-    };
-  } catch {
-    return undefined;
-  }
+/** Registry origin. Empty means the page shows a setup hint instead of a list. */
+export function registryOrigin(): string {
+  const raw = import.meta.env.PUBLIC_HUB_REGISTRY_URL as string | undefined;
+  if (raw === undefined || raw.trim().length === 0) return "";
+  return raw.trim().replace(/\/$/, "");
+}
+
+export async function fetchHubs(origin: string): Promise<HubRecord[]> {
+  const response = await fetch(`${origin}/hubs`, { signal: AbortSignal.timeout(8000) });
+  if (!response.ok) throw new Error(`registry ${String(response.status)}`);
+  const body = (await response.json()) as { hubs?: HubRecord[] };
+  return Array.isArray(body.hubs) ? body.hubs : [];
 }

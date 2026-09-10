@@ -1,0 +1,12 @@
+{
+  "name": "@quartet/registry",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "dev": "bun run --watch src/main.ts"
+  },
+  "dependencies": {
+    "hono": "^4"
+  }
+}
