@@ -493,8 +493,12 @@ export function Dashboard({
   const defaults = tools?.defaultTools ?? [];
   const onStage = detail !== undefined && detail.id === state.myAgentId;
   // Switching agents discards an unfinished edit, so the button says there is one to lose.
+  // API keys live outside `draft` (never echoed back), so a paste alone must still count.
   const dirty =
-    creating || (detail !== undefined && JSON.stringify(draft) !== JSON.stringify(draftFrom(detail)));
+    creating ||
+    apiKeyInput.trim().length > 0 ||
+    webSearchApiKeyInput.trim().length > 0 ||
+    (detail !== undefined && JSON.stringify(draft) !== JSON.stringify(draftFrom(detail)));
 
   const fieldError = (field: string): string | undefined =>
     refusal?.field === field ? refusal.error : undefined;
