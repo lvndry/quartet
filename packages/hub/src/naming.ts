@@ -65,22 +65,33 @@ export type Claim =
  * refuses to start because of its own previous crash is a hub somebody has to know to go and
  * delete a file to recover, which is the kind of thing nobody remembers at 2am.
  */
+/** Paths this process has already claimed — survives PID reuse across container restarts. */
+const heldPaths = new Set<string>();
+
 export function claimDatabase(path: string): Claim {
   const lock = `${path}.lock`;
   const holder = readHolder(lock);
-  // A recycled PID after a container restart looks "alive" (often pid 1 again) even though
-  // the previous hub is gone. Same-number-as-us means take over, not refuse.
-  if (holder !== undefined && holder !== process.pid && isAlive(holder)) {
-    return { kind: "taken", pid: holder };
+  if (holder !== undefined && isAlive(holder)) {
+    // Same pid as us: either we already hold it in this process, or a previous container
+    // left a lock whose pid was recycled (Railway/Docker often restart as pid 1 again).
+    if (holder === process.pid && heldPaths.has(path)) {
+      return { kind: "taken", pid: holder };
+    }
+    if (holder !== process.pid) {
+      return { kind: "taken", pid: holder };
+    }
+    // Recycled pid, previous container gone — fall through and take over.
   }
 
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(lock, String(process.pid), "utf8");
+  heldPaths.add(path);
 
   let released = false;
   const release = (): void => {
     if (released) return;
     released = true;
+    heldPaths.delete(path);
     // Only if it is still ours. Something took it over while we were running means our own
     // claim is already gone, and deleting theirs would hand the database to a third hub.
     if (readHolder(lock) === process.pid) rmSync(lock, { force: true });

@@ -75,10 +75,22 @@ describe("only one hub at a time may hold a database", () => {
 
   it("reports the holder rather than opening the same database twice", () => {
     const path = join(workDir(), "hub.sqlite");
-    writeFileSync(`${path}.lock`, String(process.pid), "utf8");
+    const first = claimDatabase(path);
+    expect(first.kind).toBe("held");
     const claim = claimDatabase(path);
     expect(claim.kind).toBe("taken");
     if (claim.kind === "taken") expect(claim.pid).toBe(process.pid);
+    if (first.kind === "held") first.release();
+  });
+
+  it("takes over a lock left by a previous container with a recycled pid", () => {
+    const path = join(workDir(), "hub.sqlite");
+    // Simulate a prior deploy: lock file still says our pid number, but this process never
+    // claimed it — the usual Railway/Docker case after restart as pid 1 again.
+    writeFileSync(`${path}.lock`, String(process.pid), "utf8");
+    const claim = claimDatabase(path);
+    expect(claim.kind).toBe("held");
+    if (claim.kind === "held") claim.release();
   });
 
   /**
