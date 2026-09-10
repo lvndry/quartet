@@ -50,6 +50,8 @@ export function usage(): void {
       "  quartet hub                 run the meeting point itself — one per network",
       "    --tunnel                   get a public https URL for it, no account needed",
       "    --name <text>              what a /join page calls this hub",
+      "    --announce                 list it on the public directory (or answer the prompt)",
+      "    --public-url <url>         public origin to advertise when listing",
       "                               $PORT, $QUARTET_DB and the TLS variables are in",
       "                               docs/hubs.md; the hub refuses a non-loopback bind",
       "                               without TLS in front of it",
