@@ -5,9 +5,9 @@
 #   curl -fsSL https://github.com/lvndry/quartet/releases/latest/download/install.sh | bash
 #
 # Installs the quartet binary and, under the hood, the jazz binary into the same
-# directory. Join stays a separate step: run `quartet connect` (or
-# `quartet connect --hub …`) afterwards. This does not start a daemon and does
-# not run `jazz daemon install`.
+# directory, then starts `jazz daemon` in the background (no prompt). Join stays
+# a separate step: `quartet connect` (or `quartet connect --hub …`). Does not run
+# `sudo jazz daemon install`.
 #
 # Environment variables:
 #   QUARTET_INSTALL_DIR   Directory to install into (default: $HOME/.local/bin)
@@ -97,8 +97,7 @@ verify_checksum() {
 
 # Fetches jazz into the same directory via jazz's own installer (checksums stay on the
 # jazz release). Output is muted — that installer ends with "Run jazz to get started",
-# which is the wrong next step after a quartet install. `quartet connect` starts the
-# daemon when needed; this script does not.
+# which is the wrong next step after a quartet install. The daemon is started below.
 install_jazz() {
   if [ "${QUARTET_SKIP_JAZZ:-}" = "1" ]; then
     warn "Skipping jazz (QUARTET_SKIP_JAZZ=1)."
@@ -128,6 +127,40 @@ install_jazz() {
   fi
 
   success "Jazz installed to $INSTALL_DIR/jazz"
+}
+
+# Start jazz daemon in the background if nothing is already answering on :4747.
+# No prompt — a first-time install should leave the machine ready for `quartet connect`.
+start_jazz_daemon() {
+  if [ "${QUARTET_SKIP_JAZZ:-}" = "1" ]; then
+    return 0
+  fi
+  if [ ! -x "$INSTALL_DIR/jazz" ]; then
+    return 0
+  fi
+
+  local jazz_bin="$INSTALL_DIR/jazz"
+  local health="http://127.0.0.1:4747/health"
+
+  if curl -fsS --max-time 1 "$health" >/dev/null 2>&1; then
+    success "Jazz daemon already up on http://localhost:4747"
+    return 0
+  fi
+
+  info "Starting jazz daemon..."
+  nohup "$jazz_bin" daemon >/dev/null 2>&1 &
+  disown $! 2>/dev/null || true
+
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if curl -fsS --max-time 1 "$health" >/dev/null 2>&1; then
+      success "Jazz daemon up on http://localhost:4747"
+      return 0
+    fi
+    sleep 0.5
+  done
+
+  warn "Jazz daemon did not answer on :4747 yet — start it later with: $jazz_bin daemon"
 }
 
 main() {
@@ -166,6 +199,7 @@ main() {
   success "Quartet installed to $INSTALL_DIR/quartet"
 
   install_jazz
+  start_jazz_daemon
 
   case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
