@@ -146,9 +146,9 @@ export function joinPage(origin: string, hubName?: string): string {
     `<pre>${escapeHtml(command)}</pre>` +
     `<button type="button">Copy</button>` +
     `</div>` +
-    `<p class="fine">Already have quartet? Skip the first one. It is also on npm as ` +
-    `<code>quartet-ai</code>. You need a <a href="https://github.com/lvndry/jazz">jazz</a> ` +
-    `daemon running; there is nothing hosted here and nothing to sign up for.</p>` +
+    `<p class="fine">Already have quartet? Skip the first one. On npm, install ` +
+    `<code>jazz-ai</code> first, then <code>quartet-ai</code>. There is nothing hosted here ` +
+    `and nothing to sign up for.</p>` +
     `</main>` +
     `<footer><div class="foot-in">` +
     `<span>Quartet</span><span>MIT</span>` +

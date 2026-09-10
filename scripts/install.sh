@@ -4,13 +4,21 @@
 #
 #   curl -fsSL https://github.com/lvndry/quartet/releases/latest/download/install.sh | bash
 #
+# Installs the quartet binary and, under the hood, the jazz binary into the same
+# directory. Join stays a separate step: run `quartet connect` (or
+# `quartet connect --hub …`) afterwards. This does not start a daemon and does
+# not run `jazz daemon install`.
+#
 # Environment variables:
 #   QUARTET_INSTALL_DIR   Directory to install into (default: $HOME/.local/bin)
-#   QUARTET_VERSION       Version to install, e.g. v0.2.0 (default: latest)
+#   QUARTET_VERSION       Quartet version to install, e.g. v0.2.0 (default: latest)
+#   JAZZ_VERSION          Jazz version to install, e.g. v0.13.12 (default: latest)
+#   QUARTET_SKIP_JAZZ     Set to 1 to install quartet only (escape hatch)
 
 set -euo pipefail
 
 REPO="lvndry/quartet"
+JAZZ_REPO="lvndry/jazz"
 INSTALL_DIR="${QUARTET_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${QUARTET_VERSION:-latest}"
 
@@ -87,6 +95,36 @@ verify_checksum() {
   [ "$expected" = "$actual" ] || fail "Checksum mismatch for $name — refusing to install."
 }
 
+# Jazz is what answers turns. Quartet without it cannot connect, so a normal install
+# fetches jazz's own installer and points it at the same directory. That keeps checksums
+# and asset names owned by the jazz release, rather than duplicated here.
+#
+# Does not start the daemon and does not install a system service — `quartet connect`
+# starts jazz for the session when nothing is listening.
+install_jazz() {
+  if [ "${QUARTET_SKIP_JAZZ:-}" = "1" ]; then
+    warn "Skipping jazz (QUARTET_SKIP_JAZZ=1)."
+    return 0
+  fi
+
+  local jazz_installer
+  jazz_installer="$tmp/jazz-install.sh"
+
+  info "Installing ${BOLD}jazz${RESET} into ${INSTALL_DIR} (quartet needs it)..."
+  curl -fsSL --retry 3 -o "$jazz_installer" \
+    "https://github.com/$JAZZ_REPO/releases/latest/download/install.sh" ||
+    fail "Could not download the jazz installer from github.com/$JAZZ_REPO. Set QUARTET_SKIP_JAZZ=1 to install quartet alone, then install jazz yourself."
+
+  # Same dir as quartet so one PATH entry covers both. JAZZ_VERSION passes through if set.
+  if ! JAZZ_INSTALL_DIR="$INSTALL_DIR" bash "$jazz_installer"; then
+    fail "Jazz install failed. Quartet needs jazz next to it — fix that, or set QUARTET_SKIP_JAZZ=1 and install jazz yourself."
+  fi
+
+  if [ ! -x "$INSTALL_DIR/jazz" ]; then
+    fail "Jazz installer finished but $INSTALL_DIR/jazz is missing. Install jazz yourself, then re-run."
+  fi
+}
+
 main() {
   require curl
   require gzip
@@ -122,6 +160,8 @@ main() {
 
   success "Quartet installed to $INSTALL_DIR/quartet"
 
+  install_jazz
+
   case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *)
@@ -131,7 +171,8 @@ main() {
   esac
 
   info ""
-  info "Run ${BOLD}quartet connect${RESET} to join a hub, or ${BOLD}quartet hub --name <name>${RESET} to run one."
+  info "Next: ${BOLD}quartet connect${RESET} to join a hub, or ${BOLD}quartet hub --name <name>${RESET} to run one."
+  info "Connect will start the jazz daemon for the session if it is not already up."
 }
 
 main "$@"
