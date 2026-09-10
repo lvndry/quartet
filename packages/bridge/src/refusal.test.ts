@@ -65,7 +65,7 @@ function refusingHub(reason: RefusalReason, detail: string) {
 function bridgeFor(hubUrl: string): Bridge {
   return new Bridge(
     hubUrl,
-    { url: "http://127.0.0.1:1", webhook: "quartet", token: "t" },
+    { url: "http://127.0.0.1:1", webhook: "quartet", webhookToken: "t" },
     new Attestor(generateKeypair()),
     new Sealer({ current: generateSealingKeypair(), retired: [] }),
   );

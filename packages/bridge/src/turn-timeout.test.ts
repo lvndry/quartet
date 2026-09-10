@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import { createIdleWatchdog, runTurn } from "./jazz";
 
-const daemon = { url: "http://127.0.0.1:1", webhook: "quartet", token: "t" } as const;
+const daemon = { url: "http://127.0.0.1:1", webhook: "quartet", webhookToken: "t" } as const;
 
 describe("createIdleWatchdog", () => {
   test("counts progress and reports how long the daemon has been silent", async () => {

@@ -187,7 +187,7 @@ export async function runTurn(
     response = await fetch(`${daemon.url}/webhooks/${encodeURIComponent(daemon.webhook)}`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${daemon.token}`,
+        authorization: `Bearer ${daemon.webhookToken}`,
         "content-type": "application/json",
         "x-jazz-thread": threadKey,
         ...(progressUrl !== undefined ? { [PROGRESS_HEADER]: progressUrl } : {}),
@@ -345,10 +345,14 @@ export async function answerParkedRun(
   const startedAt = Date.now();
   let response: Response;
   try {
+    const daemonToken = daemon.daemonToken;
+    if (daemonToken === undefined || daemonToken.length === 0) {
+      return { kind: "failed", reason: "jazz daemon token is missing — re-run `quartet connect`" };
+    }
     response = await fetch(`${daemon.url}/runs/${encodeURIComponent(runId)}/answer`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${daemon.token}`,
+        authorization: `Bearer ${daemonToken}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({

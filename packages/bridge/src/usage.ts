@@ -54,6 +54,10 @@ export function usage(): void {
       "                               docs/hubs.md; the hub refuses a non-loopback bind",
       "                               without TLS in front of it",
       "",
+      "  quartet update              install the latest release over this binary",
+      "                               also runs quietly before other commands when a",
+      "                               newer release exists (QUARTET_NO_UPDATE=1 to skip)",
+      "",
       "  quartet --version           which build this is",
     ].join("\n"),
   );

@@ -77,10 +77,14 @@ async function callJazz<T>(
 ): Promise<JazzResult<T>> {
   let response: Response;
   try {
+    const daemonToken = daemon.daemonToken;
+    if (daemonToken === undefined || daemonToken.length === 0) {
+      return { kind: "unauthorized" };
+    }
     response = await fetch(new URL(path, daemon.url), {
       method: options.method ?? "GET",
       headers: {
-        authorization: `Bearer ${daemon.token}`,
+        authorization: `Bearer ${daemonToken}`,
         ...(options.body !== undefined ? { "content-type": "application/json" } : {}),
       },
       ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),

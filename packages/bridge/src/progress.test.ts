@@ -25,7 +25,7 @@ afterAll(async () => {
 function bridge(): Bridge {
   return new Bridge(
     "http://127.0.0.1:1",
-    { url: "http://127.0.0.1:1", webhook: "quartet", token: "t" },
+    { url: "http://127.0.0.1:1", webhook: "quartet", webhookToken: "t" },
     new Attestor(generateKeypair()),
     new Sealer({ current: generateSealingKeypair(), retired: [] }),
   );
