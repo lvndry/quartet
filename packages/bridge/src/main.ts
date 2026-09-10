@@ -65,6 +65,7 @@ import {
   toolRarity,
   type JazzAgent,
 } from "./jazz-agents";
+import { resolveJazzDaemonToken } from "./jazz-daemon-token";
 import { currentLogLevel, logger, parseLogLevel, setLogLevel } from "./log";
 import { startLocalServer } from "./local";
 import { usage } from "./usage";
@@ -324,7 +325,9 @@ type AgentChoice =
  * rather than writing a webhook pointing at nothing.
  */
 async function chooseAgent(daemonUrl: string): Promise<AgentChoice> {
-  const listing = await fetchJazzAgents(daemonUrl);
+  // Jazz serves /agents behind its daemon token on every bind, loopback included.
+  const daemonToken = await resolveJazzDaemonToken();
+  const listing = await fetchJazzAgents(daemonUrl, daemonToken);
 
   if (listing.kind !== "ok") {
     console.log(`\n  ! Could not ask ${daemonUrl} which agents it has.`);
@@ -334,8 +337,14 @@ async function chooseAgent(daemonUrl: string): Promise<AgentChoice> {
         console.log("    this again to pick from a list.");
         break;
       case "unauthorized":
-        console.log("    It wants a bearer token. That is jazz's daemon token, which quartet");
-        console.log("    does not hold — a daemon on loopback needs none.");
+        console.log("    It wants jazz's daemon bearer token.");
+        if (daemonToken === undefined) {
+          console.log("    Quartet could not find one — set JAZZ_DAEMON_TOKEN, or make sure");
+          console.log("    jazz stored it in the OS keyring (service jazz, account daemon.token).");
+        } else {
+          console.log("    The token on hand was refused — re-export JAZZ_DAEMON_TOKEN from");
+          console.log("    whatever jazz printed when the daemon first started, or from the keyring.");
+        }
         break;
       case "unsupported":
         console.log("    That jazz does not serve GET /agents yet. Update it to pick from a list.");
@@ -1312,7 +1321,7 @@ async function info(): Promise<void> {
   if (agentFlag === undefined) {
     console.log(`jazz agent none on file — pass --agent, or run connect once to set one`);
   } else {
-    const listing = await fetchJazzAgents(daemonUrl);
+    const listing = await fetchJazzAgents(daemonUrl, await resolveJazzDaemonToken());
     if (listing.kind !== "ok") {
       console.log(`jazz agent "${agentFlag}" — could not ask ${daemonUrl} (${listing.kind})`);
     } else {
