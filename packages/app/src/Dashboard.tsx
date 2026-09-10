@@ -275,6 +275,52 @@ const BLANK_PERSONA: PersonaDraft = {
   systemPrompt: "",
 };
 
+/** First five characters visible; the rest masked. Never used for a key we do not hold. */
+function maskApiKey(value: string): string {
+  if (value.length === 0) return "";
+  if (value.length <= 5) return value;
+  return `${value.slice(0, 5)}${"•".repeat(value.length - 5)}`;
+}
+
+/**
+ * API key field: hidden while editing, first-five + bullets when you leave the field.
+ *
+ * The real value stays in React state only until save; jazz never echoes a stored key back,
+ * so a key already on file cannot be previewed — only replaced by pasting a new one.
+ */
+function ApiKeyField({
+  id,
+  value,
+  className,
+  placeholder,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  className: string;
+  placeholder: string;
+  onChange: (next: string) => void;
+}): ReactElement {
+  const [focused, setFocused] = useState(false);
+  return (
+    <input
+      id={id}
+      className={className}
+      type={focused ? "password" : "text"}
+      autoComplete="off"
+      spellCheck={false}
+      placeholder={placeholder}
+      // Blurred: show a mask derived from state, not the secret itself as the controlled value
+      // path people screenshot. Focused: password so the paste is not shoulder-readable.
+      value={focused ? value : maskApiKey(value)}
+      readOnly={!focused && value.length > 0}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  );
+}
+
 function problemText(problem: BridgeState["jazzProblem"]): string {
   switch (problem) {
     case "unreachable":
@@ -731,24 +777,22 @@ export function Dashboard({
                   <label className="dash-label" htmlFor="agent-api-key">
                     {draft.llmProvider} API key
                   </label>
-                  <input
+                  <ApiKeyField
                     id="agent-api-key"
                     className={fieldError("apiKey") !== undefined ? "field wrong" : "field"}
-                    type="password"
-                    autoComplete="off"
-                    spellCheck={false}
                     placeholder={
                       detail?.apiKeyProviders.includes(draft.llmProvider)
                         ? "paste to replace the key on file"
                         : "paste your API key"
                     }
                     value={apiKeyInput}
-                    onChange={(event) => setApiKeyInput(event.target.value)}
+                    onChange={setApiKeyInput}
                   />
                   {fieldNote("apiKey")}
                   <p className="dash-hint">
-                    Stored in jazz&apos;s keyring via `jazz config set` — never shown again, never
-                    sent to the hub. Required before the agent can call {draft.llmProvider}.
+                    Treated like a password: while you paste it is hidden; after that only the
+                    first five characters stay visible. Stored in jazz&apos;s keyring — never
+                    sent to the hub, never echoed back once saved.
                   </p>
                 </>
               )}
