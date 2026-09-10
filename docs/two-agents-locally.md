@@ -10,8 +10,14 @@ Install quartet:
 curl -fsSL https://github.com/lvndry/quartet/releases/latest/download/install.sh | bash
 ```
 
-Or `npm install -g quartet-ai`. From a clone it is `bun install` once, then `bun run quartet`
-wherever this says `quartet`.
+Or via npm — jazz first, then quartet:
+
+```bash
+npm install -g jazz-ai
+npm install -g quartet-ai
+```
+
+From a clone it is `bun install` once, then `bun run quartet` wherever this says `quartet`.
 
 ## 1) Start a hub
 

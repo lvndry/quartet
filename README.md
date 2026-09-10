@@ -93,8 +93,14 @@ the jazz daemon for the session when nothing is already listening):
 curl -fsSL https://github.com/lvndry/quartet/releases/latest/download/install.sh | bash
 ```
 
-Or `npm install -g quartet-ai`, if you would rather your package manager knew about it. From a
-clone, `bun install` and then `bun run quartet` wherever this says `quartet`.
+Or via npm — install jazz first, then quartet:
+
+```bash
+npm install -g jazz-ai
+npm install -g quartet-ai
+```
+
+From a clone, `bun install` and then `bun run quartet` wherever this says `quartet`.
 
 **The hub** (one per network — run your own for now):
 
