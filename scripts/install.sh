@@ -95,34 +95,39 @@ verify_checksum() {
   [ "$expected" = "$actual" ] || fail "Checksum mismatch for $name — refusing to install."
 }
 
-# Jazz is what answers turns. Quartet without it cannot connect, so a normal install
-# fetches jazz's own installer and points it at the same directory. That keeps checksums
-# and asset names owned by the jazz release, rather than duplicated here.
-#
-# Does not start the daemon and does not install a system service — `quartet connect`
-# starts jazz for the session when nothing is listening.
+# Fetches jazz into the same directory via jazz's own installer (checksums stay on the
+# jazz release). Output is muted — that installer ends with "Run jazz to get started",
+# which is the wrong next step after a quartet install. `quartet connect` starts the
+# daemon when needed; this script does not.
 install_jazz() {
   if [ "${QUARTET_SKIP_JAZZ:-}" = "1" ]; then
     warn "Skipping jazz (QUARTET_SKIP_JAZZ=1)."
     return 0
   fi
 
-  local jazz_installer
+  local jazz_installer jazz_log
   jazz_installer="$tmp/jazz-install.sh"
+  jazz_log="$tmp/jazz-install.log"
 
   info "Installing ${BOLD}jazz${RESET} into ${INSTALL_DIR}..."
   curl -fsSL --retry 3 -o "$jazz_installer" \
     "https://github.com/$JAZZ_REPO/releases/latest/download/install.sh" ||
-    fail "Could not download the jazz installer from github.com/$JAZZ_REPO. Set QUARTET_SKIP_JAZZ=1 to install quartet alone, then install jazz yourself."
+    fail "Could not download the jazz installer from github.com/$JAZZ_REPO. Set QUARTET_SKIP_JAZZ=1 to install quartet alone."
 
   # Same dir as quartet so one PATH entry covers both. JAZZ_VERSION passes through if set.
-  if ! JAZZ_INSTALL_DIR="$INSTALL_DIR" bash "$jazz_installer"; then
-    fail "Jazz install failed. Quartet needs jazz next to it — fix that, or set QUARTET_SKIP_JAZZ=1 and install jazz yourself."
+  # Log to a file rather than the terminal so jazz's PATH lecture and "Run jazz" do not
+  # show up in the middle of quartet's own next steps.
+  if ! JAZZ_INSTALL_DIR="$INSTALL_DIR" bash "$jazz_installer" >"$jazz_log" 2>&1; then
+    cat "$jazz_log" >&2 || true
+    fail "Jazz install failed. Set QUARTET_SKIP_JAZZ=1 to install quartet alone, or fix jazz and re-run."
   fi
 
   if [ ! -x "$INSTALL_DIR/jazz" ]; then
-    fail "Jazz installer finished but $INSTALL_DIR/jazz is missing. Install jazz yourself, then re-run."
+    cat "$jazz_log" >&2 || true
+    fail "Jazz installer finished but $INSTALL_DIR/jazz is missing."
   fi
+
+  success "Jazz installed to $INSTALL_DIR/jazz"
 }
 
 main() {
@@ -165,14 +170,14 @@ main() {
   case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *)
-      warn "$INSTALL_DIR is not on your PATH. Add it with:"
-      info "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc   # or ~/.bashrc"
+      warn "$INSTALL_DIR is not on your PATH."
+      info "  For this shell:  export PATH=\"$INSTALL_DIR:\$PATH\""
+      info "  For next time:   echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc   # or ~/.bashrc"
       ;;
   esac
 
   info ""
-  info "Next: ${BOLD}quartet connect${RESET} to join a hub, or ${BOLD}quartet hub --name <name>${RESET} to run one."
-  info "Connect will start the jazz daemon for the session if it is not already up."
+  info "Next: ${BOLD}quartet connect --hub <url>${RESET}  (or ${BOLD}quartet hub --name <name>${RESET} to run one)."
 }
 
 main "$@"
