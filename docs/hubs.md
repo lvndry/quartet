@@ -49,26 +49,28 @@ run your own registry.
 list this hub on the public directory? [y/N]
 ```
 
-Say yes, and give a public URL if one is not already known. Localhost alone cannot be listed —
-use `--tunnel` (the tunnel URL is used automatically) or pass `--public-url`.
+Say yes. If the hub already has a public origin (Railway's `$RAILWAY_PUBLIC_DOMAIN`,
+`$QUARTET_PUBLIC_URL`, or `--public-url`), that is what gets listed. Otherwise `quartet hub`
+opens a Cloudflare quick tunnel automatically — same as `--tunnel` — and lists that URL. You
+are never asked to type an `https://…` by hand.
+
+Durable hubs stay on Railway (or any fixed host); the tunnel is for laptop / throwaway listing.
 
 **Flags / unattended.**
 
 ```bash
-quartet hub --name "friday night" --tunnel --announce
+quartet hub --name "friday night" --announce
 quartet hub --name work --announce --public-url https://hub.example.com
 ```
 
 | | |
 |---|---|
-| `--announce` | Opt into listing (skips the y/N question). |
+| `--announce` | Opt into listing (skips the y/N question). Opens a tunnel when no public URL is known yet. |
 | `--public-url <url>` | Public origin to advertise. Also `$QUARTET_PUBLIC_URL` or `$RAILWAY_PUBLIC_DOMAIN`. |
-| `--tunnel` | Supplies the public URL once the quick tunnel is up. |
+| `--tunnel` | Open a quick tunnel even when not listing. Listing without a public URL does this for you. |
 | `--registry-url <url>` | Optional. Only for a self-hosted registry. Default is Quartet's. `$QUARTET_REGISTRY_URL` also opts in (so existing Railway hubs keep listing). |
 | `--registry-token <secret>` | Optional. Only if your self-hosted registry still checks a bearer token. `$QUARTET_HUB_REGISTRY_TOKEN`. |
 | `QUARTET_ANNOUNCE=1` | Same as `--announce` for unattended hosts. |
-
-A localhost-only hub without a tunnel warns and skips listing rather than failing silently.
 
 ## Join someone else's hub
 

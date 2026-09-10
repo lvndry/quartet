@@ -1349,8 +1349,17 @@ function beginAnnouncing(intent: AnnounceIntent, tunnelUrl?: string): void {
 // a cloudflared quick tunnel rather than asking anyone to deploy or forward a port just to
 // invite one person. The `cloudflared` binary itself is fetched on first use if it is not
 // already on this machine, so `--tunnel` needs nothing installed ahead of time.
-if (process.argv.includes("--tunnel")) {
-  console.log("\n  starting a cloudflare quick tunnel…");
+// Listing on the public directory without a Railway/public URL also opens a tunnel — same path,
+// so nobody is asked to invent an https:// URL for a laptop hub.
+const openTunnel =
+  process.argv.includes("--tunnel") ||
+  (announceIntent !== undefined && announceIntent.awaitTunnel);
+if (openTunnel) {
+  if (!process.argv.includes("--tunnel") && announceIntent?.awaitTunnel === true) {
+    console.log("\n  listing publicly — opening a cloudflare quick tunnel for the URL…");
+  } else {
+    console.log("\n  starting a cloudflare quick tunnel…");
+  }
   const tunnel = await startTunnel(BOUND_PORT, {
     // A quick tunnel is the shortest-lived thing in the path, and it used to fail in silence:
     // the first anyone heard was a bridge somewhere else reporting that the hostname had

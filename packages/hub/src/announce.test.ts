@@ -118,27 +118,39 @@ describe("resolveAnnounceIntent", () => {
     });
   });
 
-  it("refuses a localhost public URL without a tunnel", async () => {
-    const warnings: string[] = [];
-    const original = console.warn;
-    console.warn = (...args: unknown[]) => {
-      warnings.push(args.map(String).join(" "));
-    };
-    try {
-      const intent = await resolveAnnounceIntent({
-        announceFlag: true,
-        publicUrlFlag: "http://127.0.0.1:8080",
-        wantsTunnel: false,
-        env: {},
-        ask: async () => {
-          throw new Error("should not ask");
-        },
-      });
-      expect(intent).toBeUndefined();
-      expect(warnings.join("\n")).toContain("localhost");
-    } finally {
-      console.warn = original;
-    }
+  it("auto-tunnels when listing with no public URL (no freeform URL ask)", async () => {
+    const questions: string[] = [];
+    const intent = await resolveAnnounceIntent({
+      announceFlag: false,
+      wantsTunnel: false,
+      env: {},
+      ask: async (q) => {
+        questions.push(q);
+        if (q.includes("public directory")) return "y";
+        throw new Error(`unexpected question: ${q}`);
+      },
+    });
+    expect(intent).toEqual({
+      registryUrl: DEFAULT_REGISTRY_URL,
+      awaitTunnel: true,
+    });
+    expect(questions).toHaveLength(1);
+  });
+
+  it("treats a localhost --public-url as need-a-tunnel, not a typed URL ask", async () => {
+    const intent = await resolveAnnounceIntent({
+      announceFlag: true,
+      publicUrlFlag: "http://127.0.0.1:8080",
+      wantsTunnel: false,
+      env: {},
+      ask: async () => {
+        throw new Error("should not ask");
+      },
+    });
+    expect(intent).toEqual({
+      registryUrl: DEFAULT_REGISTRY_URL,
+      awaitTunnel: true,
+    });
   });
 });
 
