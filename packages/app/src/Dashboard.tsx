@@ -218,6 +218,21 @@ function toggleTool(tool: string, draft: Draft, defaults: readonly string[]): Dr
   };
 }
 
+/** Turn every tool in a category on or off, respecting default vs extra semantics. */
+function setCategoryTools(
+  names: readonly string[],
+  turnOn: boolean,
+  draft: Draft,
+  defaults: readonly string[],
+): Draft {
+  let next = draft;
+  for (const tool of names) {
+    if (toolIsOn(tool, next, defaults) === turnOn) continue;
+    next = toggleTool(tool, next, defaults);
+  }
+  return next;
+}
+
 /**
  * The roles jazz serves, gathered by their action half.
  *
@@ -260,6 +275,52 @@ const BLANK_PERSONA: PersonaDraft = {
   systemPrompt: "",
 };
 
+/** First five characters visible; the rest masked. Never used for a key we do not hold. */
+function maskApiKey(value: string): string {
+  if (value.length === 0) return "";
+  if (value.length <= 5) return value;
+  return `${value.slice(0, 5)}${"•".repeat(value.length - 5)}`;
+}
+
+/**
+ * API key field: hidden while editing, first-five + bullets when you leave the field.
+ *
+ * The real value stays in React state only until save; jazz never echoes a stored key back,
+ * so a key already on file cannot be previewed — only replaced by pasting a new one.
+ */
+function ApiKeyField({
+  id,
+  value,
+  className,
+  placeholder,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  className: string;
+  placeholder: string;
+  onChange: (next: string) => void;
+}): ReactElement {
+  const [focused, setFocused] = useState(false);
+  return (
+    <input
+      id={id}
+      className={className}
+      type={focused ? "password" : "text"}
+      autoComplete="off"
+      spellCheck={false}
+      placeholder={placeholder}
+      // Blurred: show a mask derived from state, not the secret itself as the controlled value
+      // path people screenshot. Focused: password so the paste is not shoulder-readable.
+      value={focused ? value : maskApiKey(value)}
+      readOnly={!focused && value.length > 0}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  );
+}
+
 function problemText(problem: BridgeState["jazzProblem"]): string {
   switch (problem) {
     case "unreachable":
@@ -291,6 +352,7 @@ export function Dashboard({
   const [models, setModels] = useState<JazzModel[] | undefined>(undefined);
   const [modelsProblem, setModelsProblem] = useState<string | undefined>(undefined);
   const [refusal, setRefusal] = useState<Refusal | undefined>(undefined);
+  const [apiKeyInput, setApiKeyInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [showEverything, setShowEverything] = useState(false);
   const [personaDraft, setPersonaDraft] = useState<PersonaDraft | undefined>(undefined);
@@ -328,6 +390,7 @@ export function Dashboard({
       if ("value" in result) {
         setDetail(result.value);
         setDraft(draftFrom(result.value));
+        setApiKeyInput("");
       } else {
         setRefusal(result.refused);
       }
@@ -373,6 +436,26 @@ export function Dashboard({
     setRefusal(undefined);
     // Read before the await: creating the agent is what makes this false.
     const isTheFirst = creating && noAgentsYet;
+
+    const pastedKey = apiKeyInput.trim();
+    if (pastedKey.length > 0) {
+      if (draft.llmProvider.length === 0) {
+        setBusy(false);
+        setRefusal({ error: "pick a provider before saving an API key", field: "provider" });
+        return;
+      }
+      const keyed = await read<{ provider: string }>("agents/api-key", {
+        provider: draft.llmProvider,
+        key: pastedKey,
+      });
+      if ("refused" in keyed) {
+        setBusy(false);
+        setRefusal(keyed.refused);
+        return;
+      }
+      setApiKeyInput("");
+    }
+
     const config = configFrom(draft, detail?.config);
     const result = creating
       ? await read<JazzAgentDetail>("agents/create", {
@@ -433,6 +516,7 @@ export function Dashboard({
     setShowEverything(false);
     setDetail(undefined);
     setRefusal(undefined);
+    setApiKeyInput("");
     setDraft({ ...BLANK, llmProvider: catalog?.providers[0] ?? "" });
   }
 
@@ -634,9 +718,10 @@ export function Dashboard({
                 className="field"
                 value={draft.llmProvider}
                 disabled={!editable}
-                onChange={(event) =>
-                  setDraft({ ...draft, llmProvider: event.target.value, llmModel: "" })
-                }
+                onChange={(event) => {
+                  setDraft({ ...draft, llmProvider: event.target.value, llmModel: "" });
+                  setApiKeyInput("");
+                }}
               >
                 <option value="">pick one</option>
                 {(catalog?.providers ?? []).map((provider) => (
@@ -686,6 +771,31 @@ export function Dashboard({
                 </select>
               )}
               {fieldNote("config.llmModel")}
+
+              {draft.llmProvider.length > 0 && draft.llmProvider !== "ollama" && editable && (
+                <>
+                  <label className="dash-label" htmlFor="agent-api-key">
+                    {draft.llmProvider} API key
+                  </label>
+                  <ApiKeyField
+                    id="agent-api-key"
+                    className={fieldError("apiKey") !== undefined ? "field wrong" : "field"}
+                    placeholder={
+                      detail?.apiKeyProviders.includes(draft.llmProvider)
+                        ? "paste to replace the key on file"
+                        : "paste your API key"
+                    }
+                    value={apiKeyInput}
+                    onChange={setApiKeyInput}
+                  />
+                  {fieldNote("apiKey")}
+                  <p className="dash-hint">
+                    Treated like a password: while you paste it is hidden; after that only the
+                    first five characters stay visible. Stored in jazz&apos;s keyring — never
+                    sent to the hub, never echoed back once saved.
+                  </p>
+                </>
+              )}
 
               {!folded && (
                 <>
@@ -755,7 +865,7 @@ export function Dashboard({
                   defaults={defaults}
                   draft={draft}
                   editable={editable}
-                  onToggle={(tool) => setDraft(toggleTool(tool, draft, defaults))}
+                  onChange={setDraft}
                 />
 
                 <div className="dash-group">What it delegates to</div>
@@ -877,9 +987,8 @@ export function Dashboard({
 
               {detail !== undefined && detail.apiKeyProviders.length > 0 && (
                 <p className="dash-hint">
-                  A per-agent API key is set for {detail.apiKeyProviders.join(", ")}. Keys are
-                  never shown here — change one with `jazz agent edit`, which puts it in the
-                  keyring.
+                  A per-agent API key override is set for {detail.apiKeyProviders.join(", ")}.
+                  Paste a new key above to replace the global one jazz uses for this provider.
                 </p>
               )}
 
@@ -952,13 +1061,13 @@ function ToolPicker({
   defaults,
   draft,
   editable,
-  onToggle,
+  onChange,
 }: {
   tools: JazzTools | undefined;
   defaults: readonly string[];
   draft: Draft;
   editable: boolean;
-  onToggle: (tool: string) => void;
+  onChange: (next: Draft) => void;
 }): ReactElement | null {
   if (tools === undefined) return null;
 
@@ -974,29 +1083,43 @@ function ToolPicker({
         Unchecking a default tool denies it to this agent alone. Everything else is an extra it
         only gets if you ask.
       </p>
-      {groups.map(([category, names]) => (
-        <div className="dash-tools" key={category}>
-          <div className="dash-tool-cat">{category}</div>
-          {names.map((tool) => {
-            const on = toolIsOn(tool, draft, defaults);
-            const denied = draft.deniedTools.includes(tool);
-            return (
-              <label className={on ? "dash-tool" : "dash-tool off"} key={tool}>
-                <input
-                  type="checkbox"
-                  checked={on}
-                  disabled={!editable}
-                  onChange={() => onToggle(tool)}
-                />
-                <span className="dash-tool-name">{tool}</span>
-                <span className={denied ? "dash-tool-tag denied" : "dash-tool-tag"}>
-                  {denied ? "denied" : defaults.includes(tool) ? "default" : "extra"}
-                </span>
-              </label>
-            );
-          })}
-        </div>
-      ))}
+      {groups.map(([category, names]) => {
+        const allOn = names.length > 0 && names.every((tool) => toolIsOn(tool, draft, defaults));
+        return (
+          <div className="dash-tools" key={category}>
+            <div className="dash-tool-cat-row">
+              <div className="dash-tool-cat">{category}</div>
+              {editable && names.length > 0 && (
+                <button
+                  type="button"
+                  className="dash-tool-all"
+                  onClick={() => onChange(setCategoryTools(names, !allOn, draft, defaults))}
+                >
+                  {allOn ? "Clear" : "Select all"}
+                </button>
+              )}
+            </div>
+            {names.map((tool) => {
+              const on = toolIsOn(tool, draft, defaults);
+              const denied = draft.deniedTools.includes(tool);
+              return (
+                <label className={on ? "dash-tool" : "dash-tool off"} key={tool}>
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    disabled={!editable}
+                    onChange={() => onChange(toggleTool(tool, draft, defaults))}
+                  />
+                  <span className="dash-tool-name">{tool}</span>
+                  <span className={denied ? "dash-tool-tag denied" : "dash-tool-tag"}>
+                    {denied ? "denied" : defaults.includes(tool) ? "default" : "extra"}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        );
+      })}
     </>
   );
 }
