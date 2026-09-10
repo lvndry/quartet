@@ -159,6 +159,21 @@ app.post("/announce", async (c) => {
   const online = typeof body["online"] === "number" && Number.isFinite(body["online"]) ? Math.max(0, Math.floor(body["online"])) : 0;
 
   const store = await load();
+  const now = Date.now();
+  const nameKey = name.toLowerCase();
+  // Names are unique among live listings. The same URL may keep or rename itself;
+  // a different URL may not steal a still-fresh name.
+  for (const [key, hub] of Object.entries(store)) {
+    if (key === url) continue;
+    if (now - Date.parse(hub.seenAt) > STALE_MS) continue;
+    if (hub.name.toLowerCase() === nameKey) {
+      return c.json(
+        { error: `name "${name}" is already taken — pick another` },
+        409,
+      );
+    }
+  }
+
   const record: HubRecord = {
     url,
     name,
@@ -170,7 +185,6 @@ app.post("/announce", async (c) => {
   };
   store[url] = record;
   // Drop very old entries so the file does not grow forever.
-  const now = Date.now();
   for (const [key, hub] of Object.entries(store)) {
     if (now - Date.parse(hub.seenAt) > STALE_MS * 4) delete store[key];
   }
