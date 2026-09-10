@@ -345,6 +345,19 @@ const app = new Hono<{ Bindings: { ip: string } }>();
 
 app.get("/health", (context) => context.json({ ok: true }));
 
+/**
+ * Public headcount for the marketing /hubs page. Counts only — no handles, no dids.
+ * CORS is open on this route so quartet-chat.vercel.app can read it from the browser.
+ */
+app.get("/stats", (context) => {
+  context.header("access-control-allow-origin", "*");
+  context.header("access-control-allow-methods", "GET");
+  const agents = store.allAgents().length;
+  const online = [...sockets.keys()].length;
+  return context.json({ name: HUB_NAME, agents, online });
+});
+
+
 app.get("/join", (context) =>
   context.html(joinPage(new URL(context.req.url).origin, HUB_NAME)),
 );
