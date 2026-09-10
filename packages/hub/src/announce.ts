@@ -131,8 +131,9 @@ export type ResolveAnnounceOptions = {
 /**
  * Decide whether to list, and gather registry + public URL pieces.
  *
- * Never asks for a registry URL (baked-in default) or a token. On TTY, asks only whether to
- * list and — when neither tunnel nor env/flag already has one — for a public URL.
+ * Never asks for a registry URL (baked-in default), a token, or a freeform public URL.
+ * On TTY, asks only whether to list. With no Railway/public URL yet, the hub opens a quick
+ * tunnel so listing has something public to advertise (same as `--tunnel`).
  */
 export async function resolveAnnounceIntent(
   options: ResolveAnnounceOptions,
@@ -154,33 +155,21 @@ export async function resolveAnnounceIntent(
   let publicOrigin =
     originFromUrl(options.publicUrlFlag) ?? publicOriginFromEnv(env);
 
-  if (publicOrigin === undefined && !options.wantsTunnel) {
-    const answered = await ask("  public URL for this hub (https://…)? ");
-    if (answered === undefined) {
-      console.warn(
-        "  ! listing skipped — need a public URL (pass --public-url, set QUARTET_PUBLIC_URL, or use --tunnel)",
-      );
-      return undefined;
-    }
-    publicOrigin = originFromUrl(answered);
-    if (publicOrigin === undefined) {
-      console.warn("  ! listing skipped — that did not look like a URL");
-      return undefined;
-    }
-  }
-
-  if (publicOrigin !== undefined && isLocalOrigin(publicOrigin) && !options.wantsTunnel) {
-    console.warn(
-      "  ! listing skipped — a localhost URL cannot be listed; use --tunnel or a public --public-url",
-    );
-    return undefined;
+  // Localhost (or nothing) cannot be listed as-is — open a tunnel instead of asking for a URL.
+  // Railway / --public-url / QUARTET_PUBLIC_URL already have a real origin and skip the tunnel.
+  let awaitTunnel = options.wantsTunnel;
+  if (publicOrigin === undefined) {
+    awaitTunnel = true;
+  } else if (isLocalOrigin(publicOrigin)) {
+    publicOrigin = undefined;
+    awaitTunnel = true;
   }
 
   return {
     registryUrl,
     ...(token !== undefined ? { token } : {}),
     ...(publicOrigin !== undefined ? { publicOrigin } : {}),
-    awaitTunnel: options.wantsTunnel && (publicOrigin === undefined || isLocalOrigin(publicOrigin)),
+    awaitTunnel,
   };
 }
 
