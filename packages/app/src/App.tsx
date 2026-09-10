@@ -1,7 +1,7 @@
 import type React from "react";
 import Pairing from "./Pairing";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { BridgeState, Conversation, Message } from "@quartet/protocol/app";
+import type { BridgeState, Conversation, DirectoryEntry, Message } from "@quartet/protocol/app";
 import { Dashboard } from "./Dashboard";
 import {
   DEFAULT_TURN_BUDGET,
@@ -136,6 +136,66 @@ function WhoAmI({
         </button>
       )}
     </span>
+  );
+}
+
+/**
+ * Directory agent card: persona name + description (bio), with an invite affordance.
+ * Opened from the monogram so the row can still fill the invite field without opening it.
+ */
+function AgentCard({
+  entry,
+  fingerprint,
+  onClose,
+  onInvite,
+}: {
+  entry: DirectoryEntry;
+  fingerprint: string | undefined;
+  onClose: () => void;
+  onInvite: () => void;
+}): React.JSX.Element {
+  const { agent } = entry;
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div className="agent-card-scrim" role="presentation" onClick={onClose}>
+      <div
+        className="agent-card"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${agent.displayName} agent card`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button type="button" className="agent-card-close" aria-label="Close" onClick={onClose}>
+          ×
+        </button>
+        <div className={agent.online ? "monogram on agent-card-mono" : "monogram agent-card-mono"}>
+          {monogram(agent.handle)}
+        </div>
+        <h2 className="agent-card-name">{agent.displayName}</h2>
+        <p className="agent-card-handle">
+          @{agent.handle}
+          {fingerprint !== undefined ? ` · #${fingerprint}` : ""}
+        </p>
+        <p className="agent-card-status">
+          {agent.online ? "online" : "offline"}
+          {entry.connected ? " · connected" : entry.invitePending ? " · invite pending" : ""}
+        </p>
+        <p className="agent-card-bio">
+          {agent.bio !== undefined && agent.bio.trim().length > 0
+            ? agent.bio
+            : "No description yet."}
+        </p>
+        <button type="button" className="btn agent-card-invite" onClick={onInvite}>
+          Use for invite
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -828,6 +888,7 @@ function Sidebar({
 }): React.JSX.Element {
   const nobodyOnStage = state.myAgentId === undefined;
   const [toHandle, setToHandle] = useState("");
+  const [cardFor, setCardFor] = useState<DirectoryEntry | undefined>();
   const [purpose, setPurpose] = useState("");
   const [limit, setLimit] = useState<Limit>({ kind: "turns", turns: DEFAULT_TURN_BUDGET });
   const [menuFor, setMenuFor] = useState<string | undefined>();
@@ -1007,40 +1068,67 @@ function Sidebar({
         {state.directory.length === 0 && <div className="empty">Nobody else here yet.</div>}
         {/* A row fills in the tag rather than the bare handle: clicking somebody should hand
             you the form that gets checked, not the shorter one that quietly does not. */}
-        {state.directory.map((entry) => (
-          <button
-            key={entry.agent.id}
-            type="button"
-            className="row"
-            onClick={() =>
-              setToHandle(
-                entry.agent.did !== undefined && state.fingerprints[entry.agent.did] !== undefined
-                  ? `${entry.agent.handle}#${state.fingerprints[entry.agent.did] ?? ""}`
-                  : entry.agent.handle,
-              )
-            }
-          >
-            <span className={entry.agent.online ? "monogram on" : "monogram"}>
-              {monogram(entry.agent.handle)}
-            </span>
-            <span className="row-main">
-              <span className="row-title">{entry.agent.displayName}</span>
-              <span className="row-sub">
-                @{entry.agent.handle}
-                {entry.connected ? " · connected" : entry.invitePending ? " · invited" : ""}
-                {entry.agent.online ? "" : " · offline"}
-              </span>
-              {entry.agent.bio !== undefined && entry.agent.bio.length > 0 && (
-                <span className="row-sub bio">{entry.agent.bio}</span>
-              )}
-              {entry.agent.did !== undefined && (
-                <span className="row-sub fingerprint">
-                  #{shortFingerprints[entry.agent.did] ?? "unkeyed"}
+        {state.directory.map((entry) => {
+          const tag =
+            entry.agent.did !== undefined && state.fingerprints[entry.agent.did] !== undefined
+              ? `${entry.agent.handle}#${state.fingerprints[entry.agent.did] ?? ""}`
+              : entry.agent.handle;
+          return (
+            <div key={entry.agent.id} className="row directory-row">
+              <button
+                type="button"
+                className={entry.agent.online ? "monogram on" : "monogram"}
+                aria-label={`Open card for ${entry.agent.displayName}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setCardFor(entry);
+                }}
+              >
+                {monogram(entry.agent.handle)}
+              </button>
+              <button
+                type="button"
+                className="row-main directory-pick"
+                onClick={() => setToHandle(tag)}
+              >
+                <span className="row-title">{entry.agent.displayName}</span>
+                <span className="row-sub">
+                  @{entry.agent.handle}
+                  {entry.connected ? " · connected" : entry.invitePending ? " · invited" : ""}
+                  {entry.agent.online ? "" : " · offline"}
                 </span>
-              )}
-            </span>
-          </button>
-        ))}
+                {entry.agent.bio !== undefined && entry.agent.bio.length > 0 && (
+                  <span className="row-sub bio">{entry.agent.bio}</span>
+                )}
+                {entry.agent.did !== undefined && (
+                  <span className="row-sub fingerprint">
+                    #{shortFingerprints[entry.agent.did] ?? "unkeyed"}
+                  </span>
+                )}
+              </button>
+            </div>
+          );
+        })}
+        {cardFor !== undefined && (
+          <AgentCard
+            entry={cardFor}
+            fingerprint={
+              cardFor.agent.did !== undefined
+                ? (shortFingerprints[cardFor.agent.did] ?? state.fingerprints[cardFor.agent.did])
+                : undefined
+            }
+            onClose={() => setCardFor(undefined)}
+            onInvite={() => {
+              const tag =
+                cardFor.agent.did !== undefined &&
+                state.fingerprints[cardFor.agent.did] !== undefined
+                  ? `${cardFor.agent.handle}#${state.fingerprints[cardFor.agent.did] ?? ""}`
+                  : cardFor.agent.handle;
+              setToHandle(tag);
+              setCardFor(undefined);
+            }}
+          />
+        )}
       </div>
     </aside>
   );

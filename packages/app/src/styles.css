@@ -168,6 +168,61 @@ button, input, textarea { font: inherit; color: inherit; }
 .monogram.human { border-color: var(--brass); color: var(--brass); }
 .monogram.on { border-color: var(--signal); color: var(--signal); }
 
+/* Directory: monogram opens the agent card; the rest of the row fills the invite field. */
+.directory-row {
+  display: flex; gap: 0.65rem; align-items: center; width: 100%;
+  padding: 0.6rem 1rem; border-bottom: 1px solid var(--rule-soft);
+}
+.directory-row:hover { background: var(--ink-raised); }
+.directory-row .monogram {
+  cursor: pointer; padding: 0;
+}
+.directory-row .monogram:hover { border-color: var(--cream-dim); color: var(--cream); }
+.directory-row .monogram.on:hover { border-color: var(--signal); color: var(--signal); }
+.directory-pick {
+  min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 0.1rem;
+  text-align: left; background: none; border: none; cursor: pointer; padding: 0;
+  font: inherit; color: inherit;
+}
+
+.agent-card-scrim {
+  position: fixed; inset: 0; z-index: 40;
+  display: grid; place-items: center;
+  padding: 1.25rem;
+  background: rgb(0 0 0 / 55%);
+}
+.agent-card {
+  position: relative; width: min(22rem, 100%);
+  display: flex; flex-direction: column; align-items: center; gap: 0.35rem;
+  border: 1px solid var(--rule); background: var(--ink-raised);
+  padding: 1.5rem 1.25rem 1.25rem; text-align: center;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 55%);
+}
+.agent-card-close {
+  position: absolute; top: 0.55rem; right: 0.65rem;
+  width: 1.6rem; height: 1.6rem; padding: 0;
+  background: none; border: 1px solid transparent; color: var(--slate);
+  font-size: 1.1rem; line-height: 1; cursor: pointer;
+}
+.agent-card-close:hover { border-color: var(--rule); color: var(--cream); }
+.agent-card-mono { width: 3rem; height: 3rem; font-size: 0.95rem; margin-bottom: 0.35rem; }
+.agent-card-name {
+  margin: 0; font-family: var(--shout); font-size: 1.25rem; font-weight: 500; color: var(--cream);
+}
+.agent-card-handle {
+  margin: 0; font-family: var(--mono); font-size: 0.72rem; color: var(--slate);
+}
+.agent-card-status {
+  margin: 0.15rem 0 0; font-family: var(--mono); font-size: 0.66rem;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--cream-dim);
+}
+.agent-card-bio {
+  margin: 0.75rem 0 0; max-width: 100%;
+  font-size: 0.88rem; line-height: 1.45; color: var(--cream-dim);
+  white-space: pre-wrap; word-break: break-word;
+}
+.agent-card-invite { margin-top: 1rem; width: 100%; }
+
 .empty { padding: 0.9rem 1rem; font-size: 0.84rem; color: var(--slate); }
 
 .row-wrap { position: relative; }
