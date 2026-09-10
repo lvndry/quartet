@@ -258,10 +258,12 @@ two ways from the same bytes: attached to a GitHub release for `install.sh` to f
 
 Publishing a release runs `.github/workflows/release-binaries.yml`, which compiles the six
 targets, attaches them gzipped with a `SHA256SUMS` the installer refuses to skip, and stages
-and publishes the npm packages. That is the whole process — there is no version to bump first:
+and publishes the npm packages. Run the workflow from the Actions tab and pick **patch**,
+**minor**, or **major** — it bumps from the latest tag (or `v0.0.0` on a first release),
+creates the GitHub release, then builds. Or:
 
 ```bash
-gh release create v0.2.0 --title v0.2.0 --generate-notes
+gh workflow run release-binaries.yml -f bump=patch
 ```
 
 The tag is the only place a version is written. `scripts/version.ts` reads it, the binary is

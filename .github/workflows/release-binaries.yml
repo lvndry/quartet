@@ -1,27 +1,107 @@
 name: Release Binaries
 
 on:
+  # Rebuild / attach for an already-published release (tag already exists).
   release:
     types:
       - published
+  # Normal path: pick a semver bump; the workflow creates the tag and release.
   workflow_dispatch:
     inputs:
-      tag_name:
-        description: "Tag to build binaries for (e.g. v0.2.0)"
+      bump:
+        description: "Semver bump from the latest tag (first release starts at v0.0.0)"
         required: true
-        type: string
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
 
 permissions:
   contents: write
   id-token: write
 
-env:
-  TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.event.release.tag_name }}
-
 jobs:
+  prepare:
+    name: Resolve version
+    # A workflow_dispatch run creates the release with GITHUB_TOKEN, which fires a second
+    # `release: published` run. That duplicate would rebuild everything; skip it.
+    if: github.event_name != 'release' || github.event.release.author.login != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Need full history so the latest tag is visible for bumping.
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          BUMP: ${{ github.event.inputs.bump }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "release" ]; then
+            tag="$RELEASE_TAG"
+            echo "Using published release tag $tag"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Latest semver tag, or v0.0.0 when this repo has never been tagged.
+          latest="$(git tag -l 'v[0-9]*' --sort=-v:refname | head -n 1 || true)"
+          if [ -z "$latest" ]; then
+            latest="v0.0.0"
+          fi
+          ver="${latest#v}"
+          major="${ver%%.*}"
+          rest="${ver#*.}"
+          minor="${rest%%.*}"
+          patch="${rest#*.}"
+          patch="${patch%%[^0-9]*}"
+
+          case "$BUMP" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+            *)
+              echo "::error::Unknown bump '$BUMP'"
+              exit 1
+              ;;
+          esac
+
+          tag="v${major}.${minor}.${patch}"
+          echo "Bumping $latest → $tag ($BUMP) at $SHA"
+
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "::error::Tag $tag already exists"
+            exit 1
+          fi
+
+          # Create the GitHub release (and tag) on this commit. Same run continues to build
+          # and upload; we do not rely on the `release: published` trigger for this path
+          # because that would start a second workflow.
+          gh release create "$tag" \
+            --title "$tag" \
+            --generate-notes \
+            --target "$SHA"
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.name }}
+    needs: prepare
     runs-on: ${{ matrix.runner }}
+    env:
+      TAG_NAME: ${{ needs.prepare.outputs.tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -96,8 +176,10 @@ jobs:
 
   publish:
     name: Attach binaries to the release
-    needs: build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
+    env:
+      TAG_NAME: ${{ needs.prepare.outputs.tag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -128,8 +210,10 @@ jobs:
 
   publish-npm:
     name: Publish npm packages
-    needs: build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
+    env:
+      TAG_NAME: ${{ needs.prepare.outputs.tag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
