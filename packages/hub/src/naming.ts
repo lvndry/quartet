@@ -68,7 +68,11 @@ export type Claim =
 export function claimDatabase(path: string): Claim {
   const lock = `${path}.lock`;
   const holder = readHolder(lock);
-  if (holder !== undefined && isAlive(holder)) return { kind: "taken", pid: holder };
+  // A recycled PID after a container restart looks "alive" (often pid 1 again) even though
+  // the previous hub is gone. Same-number-as-us means take over, not refuse.
+  if (holder !== undefined && holder !== process.pid && isAlive(holder)) {
+    return { kind: "taken", pid: holder };
+  }
 
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(lock, String(process.pid), "utf8");
