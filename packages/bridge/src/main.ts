@@ -244,10 +244,8 @@ function isLocalDaemonUrl(daemonUrl: string): boolean {
 /**
  * Make sure something is answering at the daemon's address.
  *
- * Local default (:4747): start `jazz daemon` under the hood with no prompt — install is
- * supposed to have done this already, and connect should not interrogate the person about
- * a machine-local process. Remote `--daemon` URLs are never started from here; if they are
- * down, say so and leave it.
+ * Local (:4747): start `jazz daemon` if it is down. Remote `--daemon` URLs are never
+ * started from here — if they are down, say so and leave it.
  */
 async function ensureJazzRunning(daemonUrl: string): Promise<void> {
   if (await daemonReachable({ url: daemonUrl, webhook: "", token: "" })) return;
@@ -490,9 +488,7 @@ async function ensureDaemon(
 
   console.log("\nQuartet talks to your agent through a jazz webhook.\n");
 
-  // Local :4747 is the default. Asking "where is your daemon?" was a first-run trap — the
-  // answer is almost always the machine-local one install already started. A remote jazz
-  // is opt-in via `--daemon <url>` (or a stored machine.daemonUrl from a prior setup).
+  // Default local :4747. Override with `--daemon <url>` or a stored machine.daemonUrl.
   const fromFlag = argValue("daemon");
   const chosenDaemon = (fromFlag ?? daemonUrl ?? DEFAULT_DAEMON_URL).trim() || DEFAULT_DAEMON_URL;
 

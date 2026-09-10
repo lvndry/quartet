@@ -87,8 +87,7 @@ thing walked through slowly, and [hubs](docs/hubs.md) covers the tunnel and join
 else's.
 
 Quartet is one executable — hub, bridge, and app. Install pulls in jazz and starts the
-daemon on `:4747` with no prompts. Then connect (local jazz is assumed; pass
-`--daemon <url>` only for a remote one):
+daemon on `:4747`. Then connect (use `--daemon <url>` for a remote jazz):
 
 ```bash
 curl -fsSL https://github.com/lvndry/quartet/releases/latest/download/install.sh | bash
