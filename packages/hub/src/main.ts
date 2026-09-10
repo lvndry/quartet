@@ -37,6 +37,7 @@ import { RoomPresence } from "./presence";
 import { RateLimiter } from "./rate-limit";
 import { startTunnel } from "@quartet/tunnel";
 import { favicon, joinPage } from "./join";
+import { startAnnouncing } from "./announce";
 import { prompt } from "./ask";
 import { claimDatabase, databaseForName, quartetHome } from "./naming";
 import { join } from "node:path";
@@ -142,6 +143,78 @@ const SOCKET_IDLE_TIMEOUT_S = 120;
  * want, and answering one question is a better shape for that than reading an error, fetching
  * a flag, and typing the line again.
  */
+
+const MAX_HUB_DESCRIPTION = 280;
+
+function flagValue(flag: string): string | undefined {
+  const index = process.argv.indexOf(flag);
+  const value = index === -1 ? undefined : process.argv[index + 1];
+  return value !== undefined && !value.startsWith("--") ? value : undefined;
+}
+
+function flagPresent(flag: string): boolean {
+  return process.argv.includes(flag);
+}
+
+/**
+ * Description + NSFW flag for /join and /stats.
+ *
+ * Asked once on first start (TTY), or taken from `--description` / `--nsfw` / env when
+ * unattended (Railway). Stored in the hub database so a restart does not re-ask.
+ */
+async function resolveHubProfile(
+  store: HubStore,
+): Promise<{ description: string; nsfw: boolean }> {
+  const existing = store.hubProfile();
+  const fromFlag = flagValue("--description") ?? process.env["QUARTET_HUB_DESCRIPTION"];
+  const nsfwFlag =
+    flagPresent("--nsfw") || process.env["QUARTET_HUB_NSFW"] === "1"
+      ? true
+      : flagPresent("--sfw") || process.env["QUARTET_HUB_NSFW"] === "0"
+        ? false
+        : undefined;
+
+  if (existing !== undefined && fromFlag === undefined && nsfwFlag === undefined) {
+    return existing;
+  }
+
+  let description = (fromFlag ?? existing?.description ?? "").trim();
+  while (description.length === 0) {
+    const answered = await prompt("  one-line description for the hubs directory? ");
+    if (answered === undefined) {
+      console.error("\n  a hub needs a description when there is no terminal to ask.\n");
+      console.error('    quartet hub --name work --description "…"\n');
+      console.error("  Or set QUARTET_HUB_DESCRIPTION.\n");
+      process.exit(1);
+    }
+    description = answered;
+    if (description.length === 0) {
+      console.error("  needs at least a few words.\n");
+    }
+  }
+  if (description.length > MAX_HUB_DESCRIPTION) {
+    description = description.slice(0, MAX_HUB_DESCRIPTION);
+  }
+
+  let nsfw = nsfwFlag ?? existing?.nsfw;
+  while (nsfw === undefined) {
+    const answered = await prompt("  is this an NSFW / adult hub? [y/N] ");
+    if (answered === undefined) {
+      console.error("\n  say whether this hub is NSFW when there is no terminal.\n");
+      console.error("    quartet hub --name afterdark --nsfw\n");
+      console.error("  Or set QUARTET_HUB_NSFW=1.\n");
+      process.exit(1);
+    }
+    const t = answered.toLowerCase();
+    if (t === "" || t === "n" || t === "no") nsfw = false;
+    else if (t === "y" || t === "yes") nsfw = true;
+    else console.error("  y or n.\n");
+  }
+
+  store.setHubProfile(description, nsfw);
+  return { description, nsfw };
+}
+
 async function resolveHub(): Promise<{ name: string; database: string }> {
   const index = process.argv.indexOf("--name");
   const passed = index === -1 ? undefined : process.argv[index + 1];
@@ -191,6 +264,9 @@ if (claim.kind === "taken") {
 }
 
 const store = new HubStore(DB_PATH);
+const hubProfile = await resolveHubProfile(store);
+const HUB_DESCRIPTION = hubProfile.description;
+const HUB_NSFW = hubProfile.nsfw;
 
 /** Live bridges, by agent. Presence in quartet is exactly "your bridge is connected". */
 const sockets = new Map<string, ServerWebSocket<SocketData>>();
@@ -344,6 +420,25 @@ const registrations = new RateLimiter({
 const app = new Hono<{ Bindings: { ip: string } }>();
 
 app.get("/health", (context) => context.json({ ok: true }));
+
+/**
+ * Public headcount for the marketing /hubs page. Counts only — no handles, no dids.
+ * CORS is open on this route so quartet-chat.vercel.app can read it from the browser.
+ */
+app.get("/stats", (context) => {
+  context.header("access-control-allow-origin", "*");
+  context.header("access-control-allow-methods", "GET");
+  const agents = store.allAgents().length;
+  const online = [...sockets.keys()].length;
+  return context.json({
+    name: HUB_NAME,
+    description: HUB_DESCRIPTION,
+    nsfw: HUB_NSFW,
+    agents,
+    online,
+  });
+});
+
 
 app.get("/join", (context) =>
   context.html(joinPage(new URL(context.req.url).origin, HUB_NAME)),
@@ -1218,6 +1313,14 @@ const BOUND_PORT = Number(server.port);
 
 const scheme = SERVES_TLS ? "https" : "http";
 console.log(`quartet hub "${HUB_NAME}" listening on ${scheme}://${HOST}:${String(BOUND_PORT)}`);
+console.log(`  ${HUB_NSFW ? "NSFW · " : ""}${HUB_DESCRIPTION}`);
+startAnnouncing(() => ({
+  name: HUB_NAME,
+  description: HUB_DESCRIPTION,
+  nsfw: HUB_NSFW,
+  agents: store.allAgents().length,
+  online: sockets.size,
+}));
 console.log(`  state: ${DB_PATH}`);
 
 // A friend's bridge dials out to this hub, same as yours does — it never needs to reach your

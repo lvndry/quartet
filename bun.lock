@@ -79,6 +79,12 @@
         "zod": "^4.5.4",
       },
     },
+    "packages/registry": {
+      "name": "@quartet/registry",
+      "dependencies": {
+        "hono": "^4",
+      },
+    },
     "packages/theme": {
       "name": "@quartet/theme",
       "version": "0.1.0",
@@ -319,6 +325,8 @@
     "@quartet/identity": ["@quartet/identity@workspace:packages/identity"],
 
     "@quartet/protocol": ["@quartet/protocol@workspace:packages/protocol"],
+
+    "@quartet/registry": ["@quartet/registry@workspace:packages/registry"],
 
     "@quartet/theme": ["@quartet/theme@workspace:packages/theme"],
 

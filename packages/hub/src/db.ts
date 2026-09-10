@@ -155,6 +155,14 @@ export class HubStore {
         created_at  TEXT NOT NULL
       );
 
+      -- One row: how this hub presents itself on /join and /stats. Set at first start.
+      CREATE TABLE IF NOT EXISTS hub_profile (
+        id           INTEGER PRIMARY KEY CHECK (id = 1),
+        description  TEXT NOT NULL,
+        nsfw         INTEGER NOT NULL DEFAULT 0,
+        updated_at   TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS agents (
         id            TEXT PRIMARY KEY,
         owner_id      TEXT NOT NULL REFERENCES owners(id),
@@ -408,6 +416,31 @@ export class HubStore {
       bio ?? null,
       agentId,
     ]);
+  }
+
+
+  /** How this hub describes itself publicly, or undefined until first configured. */
+  hubProfile(): { description: string; nsfw: boolean } | undefined {
+    const row = this.db
+      .query<{ description: string; nsfw: number }, []>(
+        "SELECT description, nsfw FROM hub_profile WHERE id = 1",
+      )
+      .get();
+    if (row === null || row === undefined) return undefined;
+    return { description: row.description, nsfw: row.nsfw === 1 };
+  }
+
+  setHubProfile(description: string, nsfw: boolean): void {
+    this.db
+      .query(
+        `INSERT INTO hub_profile (id, description, nsfw, updated_at)
+         VALUES (1, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           description = excluded.description,
+           nsfw = excluded.nsfw,
+           updated_at = excluded.updated_at`,
+      )
+      .run(description, nsfw ? 1 : 0, new Date().toISOString());
   }
 
   allAgents(): AgentRow[] {

@@ -146,7 +146,7 @@ process.env["QUARTET_HOME"] = workDir;
 setIdentityDirectory(workDir);
 
 const hub = Bun.spawn({
-  cmd: ["bun", "run", "packages/hub/src/main.ts", "--name", "smoke"],
+  cmd: ["bun", "run", "packages/hub/src/main.ts", "--name", "smoke", "--description", "CI smoke hub", "--sfw"],
   env: {
     ...process.env,
     PORT: String(HUB_PORT),
