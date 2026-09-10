@@ -858,6 +858,28 @@ const niaInvite = nia.last<{ invite: { id: string } }>("invite");
 nia.send({ t: "invite.respond", inviteId: niaInvite?.invite.id ?? "", accept: true });
 await waitFor("@nia to be connected", () => nia.count("connected") > 0);
 
+// The first room may already have spent its opening allowance. A newcomer is owed a turn
+// only when the room can still spend, so top it up before bringing them in — otherwise this
+// asserts a policy the budget has already ruled out.
+bridgeA.send({
+  t: "limit.set",
+  conversationId,
+  limit: { kind: "turns", turns: 20 },
+});
+await waitFor(
+  "the room's allowance to be topped up",
+  () => {
+    const room = stateA.conversations.find((entry) => entry.id === conversationId);
+    return (
+      room?.limit.kind === "turns" &&
+      room.limit.turns === 20 &&
+      (room.budgetRemaining ?? 0) > 0
+    );
+  },
+  10_000,
+  () => stateA.conversations.find((entry) => entry.id === conversationId),
+);
+
 const niaTurnsBeforeJoining = nia.count("turn");
 bridgeA.send({ t: "conversation.add", conversationId, did: keyNia.did });
 await waitFor(
@@ -881,6 +903,12 @@ check(
   niaSees.map((entry) => entry.did).sort().join(",") ===
     [keyA.did, keyB.did].sort().join(","),
   "presence names both of the others by key, including the one @nia had never met",
+);
+await waitFor(
+  "the newcomer to be asked for a turn",
+  () => nia.count("turn") > niaTurnsBeforeJoining,
+  10_000,
+  () => ({ turns: nia.count("turn"), before: niaTurnsBeforeJoining }),
 );
 check(
   nia.count("turn") > niaTurnsBeforeJoining,
