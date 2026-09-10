@@ -265,7 +265,7 @@ export class Bridge {
     private readonly daemon: DaemonSettings,
     private readonly attestor: Attestor,
     private readonly sealer: Sealer,
-    private readonly known: KnownKeys = new KnownKeys(),
+    private readonly known: KnownKeys = new KnownKeys(hubUrl),
   ) {}
 
   /** `AgentAdmin` owns the roster; this holds the copy the snapshot is built from. */
@@ -394,6 +394,13 @@ export class Bridge {
    * Every key this bridge can put a name to, paired with the full tag for that name.
    *
    * One place, so a room, the directory and a log line cannot disagree about who somebody is.
+   *
+   * The pin file's share of a name is in here for a reason that only shows up when two keys
+   * wear one: `labels` writes as much fingerprint as it takes to separate the keys in this
+   * map, so a key missing from it is a key nothing gets separated from. Two @mira with only
+   * one of them listed — the other offline, or dropped from a hostile hub the moment the
+   * second was added — would otherwise render as a bare, unqualified `@mira` on the same
+   * screen as a note saying two keys wear that name.
    */
   private taggedNames(): Map<string, string> {
     const pairs = new Map<string, string>();
@@ -405,6 +412,12 @@ export class Bridge {
     if (this.me !== undefined) note(this.me.handle, this.attestor.did);
     for (const entry of this.directory) note(entry.agent.handle, entry.agent.did);
     for (const entry of this.connections) note(entry.withAgent.handle, entry.withAgent.did);
+    // Filling gaps only, never overwriting: for a key mid-rename the pin holds the old name
+    // and the directory holds the new one, and quietly preferring the pin here would put a
+    // sidebar that still says @mira next to an alarm saying it now says @robin.
+    for (const contested of this.known.contestedNames()) {
+      for (const did of contested.dids) if (!pairs.has(did)) note(contested.handle, did);
+    }
     return pairs;
   }
 
@@ -428,7 +441,17 @@ export class Bridge {
     return this.labels()[did] ?? `a key with fingerprint ${fingerprint(did) ?? "unknown"}`;
   }
 
-  /** Short forms for every key on screen: mine, the directory's, and any that was renamed. */
+  /**
+   * Short forms for every key on screen: mine, the directory's, and any the pin file has
+   * something to say about.
+   *
+   * The last group is not decoration. A key that shares a handle may not be in the directory
+   * at all — the other @mira could have gone offline, or been removed from a hostile hub the
+   * moment the second one was listed — and a note naming two keys while this map could only
+   * name one would be the note at its least useful and most alarming. It also widens what
+   * the app tells apart: the short form it displays grows until it separates the keys it can
+   * see, so a key it cannot see is a key it will not lengthen a prefix against.
+   */
   private fingerprints(): Record<string, string> {
     const dids = [
       this.attestor.did,
@@ -437,6 +460,7 @@ export class Bridge {
         entry.withAgent.did !== undefined ? [entry.withAgent.did] : [],
       ),
       ...this.known.all().map((conflict) => conflict.did),
+      ...this.known.contestedNames().flatMap((contested) => contested.dids),
     ];
     const out: Record<string, string> = {};
     for (const did of dids) {
@@ -551,13 +575,32 @@ export class Bridge {
     // go by @mira is the ordinary case now, and picking one of them silently would be this
     // bridge choosing somebody's correspondent for them.
     const wearing = this.directory.filter((entry) => entry.agent.handle === parsed.handle);
-    if (wearing.length > 1 && parsed.fingerprint === undefined) {
-      const choices = wearing
-        .map((entry) => (entry.agent.did === undefined ? undefined : tag(parsed.handle, entry.agent.did)))
-        .filter((named): named is string => named !== undefined);
+
+    // The directory is the hub's own answer, so on its own it lets the hub decide how many
+    // candidates this check sees. Drop the @mira somebody pinned last week at the moment you
+    // list a stranger wearing the name and exactly one candidate is left, which buys silence
+    // from the one guard here that speaks. So the pins count too: a pinned key is one this
+    // machine met for itself, and no hub gets to withdraw it by leaving it out of a frame.
+    const candidates = new Set([
+      ...wearing.flatMap((entry) => (entry.agent.did !== undefined ? [entry.agent.did] : [])),
+      ...this.known.wearersOf(parsed.handle),
+    ]);
+    if (candidates.size > 1 && parsed.fingerprint === undefined) {
+      const here = new Set(wearing.map((entry) => entry.agent.did));
+      const choices = [...candidates]
+        .map((did) => {
+          const named = tag(parsed.handle, did);
+          if (named === undefined) return undefined;
+          // Saying which are reachable matters: an absent candidate is either somebody
+          // offline or somebody this hub is not mentioning, and those want opposite
+          // reactions from the person reading it.
+          return here.has(did) ? named : `${named} (not listed here right now)`;
+        })
+        .filter((named): named is string => named !== undefined)
+        .sort();
       return {
         error:
-          `${String(wearing.length)} agents here go by @${parsed.handle}. ` +
+          `${String(candidates.size)} keys go by @${parsed.handle} on this hub. ` +
           `Say which: ${choices.join(", ")}`,
       };
     }
@@ -573,7 +616,7 @@ export class Bridge {
       )?.agent.did;
       if (wanted !== undefined) {
         // Checked by a person, so it supersedes anything pinned on a hub's say-so alone.
-        void this.known.repin(parsed.handle, wanted);
+        void this.known.repin(wanted, parsed.handle);
         this.send({
           t: "invite.send",
           toDid: wanted,
@@ -590,7 +633,7 @@ export class Bridge {
         };
       }
       // Checked by a person, so it supersedes anything pinned on a hub's say-so alone.
-      void this.known.repin(parsed.handle, offered);
+      void this.known.repin(offered, parsed.handle);
     }
 
     // Resolved here rather than on the hub: by the time a frame is built the sender has

@@ -146,7 +146,13 @@ export type Opened =
   | { readonly state: "sealed-to-others" }
   | { readonly state: "unopenable" };
 
-/** A key that changed its name under us, and what it changed between. */
+/**
+ * A key that changed its name under us, on one hub, and what it changed between.
+ *
+ * Per hub because a handle is a row in one hub's database: the same key is entitled to be
+ * @mira on one and @robin on another, and an alarm that could not tell those apart let any
+ * hub raise one about a correspondent who had done nothing.
+ */
 export interface Conflict {
   readonly did: string;
   /** What this key was calling itself when this machine first saw it. */
