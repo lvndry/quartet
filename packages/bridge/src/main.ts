@@ -1047,7 +1047,15 @@ async function connect(): Promise<void> {
 
   // Nothing is on stage until an agent is, and the app is where that gets fixed. Said once
   // here so the URL below can land on the screen that fixes it.
-  const onStage = config.agentId !== undefined;
+  // Prefer the identity record; fall back to the jazz webhook binding so a stage set in the
+  // UI (without a reconnect) still counts on the next connect.
+  const stagedFromWebhook = await agentIdFor(daemon.webhook);
+  const stagedId = config.agentId ?? stagedFromWebhook;
+  const onStage = stagedId !== undefined;
+  if (stagedId !== undefined && config.agentId !== stagedId) {
+    config = { ...config, agentId: stagedId };
+    await saveIdentityConfig(config);
+  }
 
   if (onStage && !(await webhookConfigured(daemon.webhook))) {
     console.warn(
@@ -1110,6 +1118,12 @@ async function connect(): Promise<void> {
       logger("bridge").info("claimed a handle", { handle: `@${wanted}`, hub: hubUrl });
       return { ok: true as const };
     },
+    onAgentOnStage: async (agentId) => {
+      if (config.agentId === agentId) return;
+      config = { ...config, agentId };
+      await saveIdentityConfig(config);
+      logger("bridge").info("agent on stage", { agentId });
+    },
     hostname: APP_HOST,
     ...(app === undefined ? {} : { app }),
   });
@@ -1129,8 +1143,9 @@ async function connect(): Promise<void> {
   } else {
     console.log(
       `\n  ! no agent is on stage, so @${handle ?? config.label} cannot take a turn yet.\n` +
-        `\n    Set one up in the browser — there is nothing else to run in here.\n` +
-        `\n    ${appUrl}\n`,
+        `\n    Open this localhost link (with the token) and put an agent on stage.\n` +
+        `\n    ${appUrl}\n` +
+        `\n    Ignore any Cloudflare URL below until that is done — it is phone pairing only.\n`,
     );
   }
 
@@ -1149,8 +1164,10 @@ async function connect(): Promise<void> {
     if (tunnel.kind === "ok") {
       local.setPublicOrigin(tunnel.url);
       stopTunnel = tunnel.stop;
-      console.log(`\n  ✓ also reachable at ${tunnel.url}`);
-      console.log("    Nothing can get in with that URL alone.\n");
+      console.log(`\n  ✓ phone pairing address: ${tunnel.url}`);
+      console.log("    That is for a paired phone — not where you finish setup.");
+      console.log("    On this machine keep using the localhost link with ?token= above.");
+      console.log("    Nothing can get in with the Cloudflare URL alone.\n");
 
       // Exposing the app and then being told to run a second command to use it is a
       // two-step for something that is one intention. The exception is a bridge that

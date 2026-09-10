@@ -71,6 +71,12 @@ export interface LocalServerOptions {
    * refuses to allow without TLS in front — the same refusal the hub makes.
    */
   readonly hostname?: string;
+  /**
+   * Fired when an agent is put on stage from the app (create → select, or pick one).
+   * Connect uses this to remember `agentId` on the identity so the next connect already
+   * knows something is on stage — without requiring a disconnect/reconnect dance.
+   */
+  readonly onAgentOnStage?: (agentId: string) => void | Promise<void>;
 }
 
 interface BrowserSocket {
@@ -279,6 +285,7 @@ export function startLocalServer(options: LocalServerOptions): {
           // this machine, and is the only honest answer when there is no public address.
           () => publicOrigin ?? `http://localhost:${String(boundPort)}`,
           options.claim,
+          options.onAgentOnStage,
         );
       }
 
@@ -434,6 +441,7 @@ async function handleApi(
   devices: DeviceRegistry,
   pairingOrigin: () => string,
   claim: LocalServerOptions["claim"],
+  onAgentOnStage: LocalServerOptions["onAgentOnStage"],
 ): Promise<Response> {
   if (request.method !== "POST") return json({ error: "not found" }, 404);
   const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
@@ -643,7 +651,11 @@ async function handleApi(
     case "/api/agents/select": {
       const agentId = text("agentId");
       if (agentId.length === 0) return json({ error: "agentId is required" }, 400);
-      return fromJazz(await agents.select(agentId));
+      const selected = await agents.select(agentId);
+      if (selected.kind === "ok" && onAgentOnStage !== undefined) {
+        await onAgentOnStage(selected.value);
+      }
+      return fromJazz(selected);
     }
 
     case "/api/agents/create": {
