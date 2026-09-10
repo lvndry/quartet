@@ -1,8 +1,5 @@
 /**
  * Tell the public hub directory this hub exists.
- *
- * Opt-in via QUARTET_REGISTRY_URL + QUARTET_HUB_REGISTRY_TOKEN. Without a public URL
- * (QUARTET_PUBLIC_URL or RAILWAY_PUBLIC_DOMAIN) there is nothing useful to advertise.
  */
 
 export interface AnnouncePayload {
