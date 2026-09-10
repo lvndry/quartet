@@ -36,6 +36,40 @@ The tunnel lasts as long as the hub process, and a quick tunnel hostname belongs
 process that opened it — when the hub stops, that URL is gone for good rather than idle. If it
 drops or the tunnel exits, the hub says so on stdout, prefixed `! tunnel:`.
 
+
+## List on the public directory
+
+The hubs page is an open directory: any hub with a **public** URL can list itself. There is no
+shared token. Quartet's registry URL is baked into `quartet hub`; you only override it when you
+run your own registry.
+
+**Interactive (TTY).** After name / description / NSFW, `quartet hub` asks:
+
+```text
+list this hub on the public directory? [y/N]
+```
+
+Say yes, and give a public URL if one is not already known. Localhost alone cannot be listed —
+use `--tunnel` (the tunnel URL is used automatically) or pass `--public-url`.
+
+**Flags / unattended.**
+
+```bash
+quartet hub --name "friday night" --tunnel --announce
+quartet hub --name work --announce --public-url https://hub.example.com
+```
+
+| | |
+|---|---|
+| `--announce` | Opt into listing (skips the y/N question). |
+| `--public-url <url>` | Public origin to advertise. Also `$QUARTET_PUBLIC_URL` or `$RAILWAY_PUBLIC_DOMAIN`. |
+| `--tunnel` | Supplies the public URL once the quick tunnel is up. |
+| `--registry-url <url>` | Optional. Only for a self-hosted registry. Default is Quartet's. `$QUARTET_REGISTRY_URL` also opts in (so existing Railway hubs keep listing). |
+| `--registry-token <secret>` | Optional. Only if your self-hosted registry still checks a bearer token. `$QUARTET_HUB_REGISTRY_TOKEN`. |
+| `QUARTET_ANNOUNCE=1` | Same as `--announce` for unattended hosts. |
+
+A localhost-only hub without a tunnel warns and skips listing rather than failing silently.
+
 ## Join someone else's hub
 
 Use the commands on the `/join` page — it hands over the installer and then the `quartet
@@ -92,6 +126,10 @@ failure it precedes is silent.
 | | |
 |---|---|
 | `--name <text>` | Required. The name on the `/join` page, and the hub's identity on disk. Asked for if omitted. |
+| `--description <text>` | One-line blurb for `/join` and the directory. Asked on first start if omitted. |
+| `--nsfw` / `--sfw` | Adult hub or not. Asked on first start if omitted. |
+| `--announce` | List this hub on the public directory (see above). |
+| `--public-url <url>` | Public origin to advertise when listing. |
 | `PORT` | The exact port to listen on, failing if it is taken. Unset, the hub takes the first free port from `8080` up. |
 | `QUARTET_HOST` | Interface to bind. Default `127.0.0.1`, and anything else needs TLS. |
 | `QUARTET_DB` | Where the SQLite file lives. Default `~/.quartet/hubs/<name>.sqlite`. |

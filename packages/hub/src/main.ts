@@ -37,7 +37,12 @@ import { RoomPresence } from "./presence";
 import { RateLimiter } from "./rate-limit";
 import { startTunnel } from "@quartet/tunnel";
 import { favicon, joinPage } from "./join";
-import { startAnnouncing } from "./announce";
+import {
+  finalizeAnnounceConfig,
+  resolveAnnounceIntent,
+  startAnnouncing,
+  type AnnounceIntent,
+} from "./announce";
 import { prompt } from "./ask";
 import { claimDatabase, databaseForName, quartetHome } from "./naming";
 import { join } from "node:path";
@@ -267,6 +272,14 @@ const store = new HubStore(DB_PATH);
 const hubProfile = await resolveHubProfile(store);
 const HUB_DESCRIPTION = hubProfile.description;
 const HUB_NSFW = hubProfile.nsfw;
+
+const announceIntent: AnnounceIntent | undefined = await resolveAnnounceIntent({
+  announceFlag: flagPresent("--announce"),
+  registryUrlFlag: flagValue("--registry-url"),
+  registryTokenFlag: flagValue("--registry-token"),
+  publicUrlFlag: flagValue("--public-url"),
+  wantsTunnel: flagPresent("--tunnel"),
+});
 
 /** Live bridges, by agent. Presence in quartet is exactly "your bridge is connected". */
 const sockets = new Map<string, ServerWebSocket<SocketData>>();
@@ -1314,14 +1327,22 @@ const BOUND_PORT = Number(server.port);
 const scheme = SERVES_TLS ? "https" : "http";
 console.log(`quartet hub "${HUB_NAME}" listening on ${scheme}://${HOST}:${String(BOUND_PORT)}`);
 console.log(`  ${HUB_NSFW ? "NSFW · " : ""}${HUB_DESCRIPTION}`);
-startAnnouncing(() => ({
-  name: HUB_NAME,
-  description: HUB_DESCRIPTION,
-  nsfw: HUB_NSFW,
-  agents: store.allAgents().length,
-  online: sockets.size,
-}));
 console.log(`  state: ${DB_PATH}`);
+
+function beginAnnouncing(intent: AnnounceIntent, tunnelUrl?: string): void {
+  const config = finalizeAnnounceConfig(intent, tunnelUrl);
+  if (config === undefined) return;
+  startAnnouncing(
+    () => ({
+      name: HUB_NAME,
+      description: HUB_DESCRIPTION,
+      nsfw: HUB_NSFW,
+      agents: store.allAgents().length,
+      online: sockets.size,
+    }),
+    config,
+  );
+}
 
 // A friend's bridge dials out to this hub, same as yours does — it never needs to reach your
 // machine directly. What it needs is a URL that reaches *this* one, which `--tunnel` gets via
@@ -1349,6 +1370,7 @@ if (process.argv.includes("--tunnel")) {
       };
       process.on("SIGINT", stopTunnel);
       process.on("SIGTERM", stopTunnel);
+      if (announceIntent !== undefined) beginAnnouncing(announceIntent, tunnel.url);
       break;
     }
     case "download-failed":
@@ -1366,4 +1388,8 @@ if (process.argv.includes("--tunnel")) {
       console.warn(`\n  ! could not start a tunnel: ${tunnel.detail}\n`);
       break;
   }
+  // Tunnel did not yield a URL — still announce if a public URL was already known.
+  if (announceIntent !== undefined && tunnel.kind !== "ok") beginAnnouncing(announceIntent);
+} else if (announceIntent !== undefined) {
+  beginAnnouncing(announceIntent);
 }
