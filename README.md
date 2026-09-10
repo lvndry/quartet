@@ -86,8 +86,8 @@ The short version. [Two agents on your own machine](docs/two-agents-locally.md) 
 thing walked through slowly, and [hubs](docs/hubs.md) covers the tunnel and joining somebody
 else's.
 
-Quartet is one executable — hub, bridge, and app. Install it, then connect (which starts
-the jazz daemon for the session when nothing is already listening):
+Quartet is one executable — hub, bridge, and app. Install pulls in jazz and starts the
+daemon on `:4747`. Then connect (use `--daemon <url>` for a remote jazz):
 
 ```bash
 curl -fsSL https://github.com/lvndry/quartet/releases/latest/download/install.sh | bash

@@ -43,7 +43,8 @@ In a second terminal:
 quartet connect
 ```
 
-Connect will start the jazz daemon for the session if nothing is answering on `:4747`. Choose:
+Connect uses local jazz on `http://localhost:4747` (or `--daemon <url>` for a remote one).
+If nothing is answering it starts the daemon. Choose:
 - where jazz is listening, if you changed the default
 - which jazz agent should represent you
 - the handle to claim, for example `mira`

@@ -232,59 +232,32 @@ async function claimHandle(
   }
   return undefined;
 }
+function isLocalDaemonUrl(daemonUrl: string): boolean {
+  try {
+    const host = new URL(daemonUrl).hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return false;
+  }
+}
 
 /**
- * Make sure jazz has a webhook pointed at the agent quartet should speak as.
+ * Make sure something is answering at the daemon's address.
  *
- * The token is never written into the config file — jazz reads it from the keyring or the
- * environment, and putting a bearer token in a JSON file on disk would be a downgrade from
- * where jazz already keeps it.
- */
-/**
- * Choose which of this machine's jazz agents speaks for its owner in quartet.
- *
- * Shown rather than typed from memory, with provider, model and tools, because the agent
- * decides what quartet can actually do. `undefined` means give up, and the caller stops
- * rather than writing a webhook pointing at nothing.
- */
-/**
- * Make sure something is answering at the daemon's address, offering to start it if not.
- *
- * `ensureJazzInstalled` has already settled whether jazz exists, so the only question left is
- * whether it is up — and telling somebody to go and run `jazz daemon` in another terminal is
- * a worse answer than starting it, when they are right here and have just asked for setup.
- *
- * Deliberately not an installer hook. A postinstall script fires in CI, in image builds, and
- * on every global install by somebody who is only looking — and the `curl | bash` route runs
- * no npm scripts at all, so anything hung off one would exist on one install path and not the
- * other. Here the person is present and expecting setup to happen.
+ * Local (:4747): start `jazz daemon` if it is down. Remote `--daemon` URLs are never
+ * started from here — if they are down, say so and leave it.
  */
 async function ensureJazzRunning(daemonUrl: string): Promise<void> {
   if (await daemonReachable({ url: daemonUrl, webhook: "", token: "" })) return;
 
   const jazzCli = argValue("jazz") ?? "jazz";
+  if (!isLocalDaemonUrl(daemonUrl)) {
+    console.log(`\n  ! nothing is answering on ${daemonUrl}`);
+    console.log("    That is a remote daemon — start it where it lives, then reconnect.");
+    return;
+  }
+
   console.log(`\n  ! nothing is answering on ${daemonUrl}`);
-
-  // A script must never stop on a question. Saying what would have been offered beats silence,
-  // because a log is where somebody debugging a container will look.
-  if (process.stdin.isTTY !== true) {
-    console.log(`    Start it with \`${jazzCli} daemon\` — turns fail until it is up.`);
-    return;
-  }
-
-  console.log("\n    Your agent runs there. Start it now? It keeps running alongside quartet.\n");
-  const answer = await prompt("    [Y] start it   [s] I'll do it myself   [q] quit: ");
-  if (answer === undefined) return;
-  const chosen = answer.trim().toLowerCase();
-
-  if (chosen === "q") {
-    console.log("\n  stopped. Nothing was started.\n");
-    process.exit(0);
-  }
-  if (chosen.startsWith("s")) {
-    console.log(`\n    Waiting for you — start it with \`${jazzCli} daemon\` in another terminal.`);
-    return;
-  }
   await startJazzDaemon(jazzCli, daemonUrl);
 }
 
@@ -343,6 +316,13 @@ type AgentChoice =
   | { readonly kind: "none-yet" }
   | { readonly kind: "stop" };
 
+/**
+ * Choose which of this machine's jazz agents speaks for its owner in quartet.
+ *
+ * Shown rather than typed from memory, with provider, model and tools, because the agent
+ * decides what quartet can actually do. `undefined` means give up, and the caller stops
+ * rather than writing a webhook pointing at nothing.
+ */
 async function chooseAgent(daemonUrl: string): Promise<AgentChoice> {
   const listing = await fetchJazzAgents(daemonUrl);
 
@@ -508,17 +488,12 @@ async function ensureDaemon(
 
   console.log("\nQuartet talks to your agent through a jazz webhook.\n");
 
-  // The daemon first, because it is what knows which agents exist. Asking for the agent
-  // before knowing where to ask was why this used to be a free-text prompt.
-  const daemonAnswer =
-    argValue("daemon") ??
-    daemonUrl ??
-    (await prompt(`Where is your daemon? [${DEFAULT_DAEMON_URL}] `)) ??
-    "";
-  const chosenDaemon = daemonAnswer.trim().length > 0 ? daemonAnswer.trim() : DEFAULT_DAEMON_URL;
+  // Default local :4747. Override with `--daemon <url>` or a stored machine.daemonUrl.
+  const fromFlag = argValue("daemon");
+  const chosenDaemon = (fromFlag ?? daemonUrl ?? DEFAULT_DAEMON_URL).trim() || DEFAULT_DAEMON_URL;
 
   // Before asking which agents it has, because a daemon that is down has none.
-  if (chosenDaemon !== daemonUrl) await ensureJazzRunning(chosenDaemon);
+  await ensureJazzRunning(chosenDaemon);
 
   const choice = await chooseAgent(chosenDaemon);
   if (choice.kind === "stop") return undefined;
