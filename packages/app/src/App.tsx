@@ -751,7 +751,15 @@ function Quartet(): React.JSX.Element {
       />
 
       {view === "agents" ? (
-        <Dashboard state={state} onClose={() => show("rooms")} onAct={act} />
+        <Dashboard
+          state={state}
+          onClose={() => show("rooms")}
+          onAct={act}
+          onOpenRoom={(conversationId) => {
+            setSelected(conversationId);
+            show("rooms");
+          }}
+        />
       ) : (
       <div className="columns">
         <Sidebar
@@ -948,6 +956,10 @@ function Sidebar({
         {state.conversations.length === 0 && <div className="empty">Nothing yet.</div>}
         {state.conversations.map((conversation) => {
           const cast = others(conversation, state.me?.did ?? "");
+          // A room of one is named after the only agent in it, which is yours. Left to the
+          // general path it read "nobody", which is what `nameThem` correctly says about an
+          // empty list and the wrong thing to say about a room you opened on purpose.
+          const alone = cast.length === 0;
           return (
             <div key={conversation.id} className="row-wrap">
               <button
@@ -956,7 +968,13 @@ function Sidebar({
                 onClick={() => onSelect(conversation.id)}
               >
                 <span className="monogram">
-                  {monogram(cast[0] === undefined ? "" : nameOf(state.labels, cast[0]))}
+                  {monogram(
+                    alone
+                      ? nameOf(state.labels, state.me?.did ?? "")
+                      : cast[0] === undefined
+                        ? ""
+                        : nameOf(state.labels, cast[0]),
+                  )}
                 </span>
                 <span className="row-main">
                   <span className="row-title">{conversation.purpose}</span>
@@ -965,7 +983,9 @@ function Sidebar({
                       ? conversation.proposedBy === (state.me?.did ?? "")
                         ? `waiting for ${nameThem(cast.map((did) => nameOf(state.labels, did)))}`
                         : "waiting for you"
-                      : `${nameThem(cast.map((did) => nameOf(state.labels, did)))} · ${describeLimit(conversation.limit)}`}
+                      : alone
+                        ? `just your agent · ${describeLimit(conversation.limit)}`
+                        : `${nameThem(cast.map((did) => nameOf(state.labels, did)))} · ${describeLimit(conversation.limit)}`}
                   </span>
                 </span>
               </button>
@@ -1230,6 +1250,8 @@ function Chat({
   const bottom = useRef<HTMLDivElement>(null);
 
   const cast = others(conversation, meDid);
+  /** A room with nobody else in it — `docs/design/solo-rooms.md`. */
+  const alone = cast.length === 0;
   // Any one of them thinking is reason enough not to declare the room quiet.
   const someoneThinking = presence.some((entry) => entry.thinking);
 
@@ -1356,6 +1378,14 @@ function Chat({
         <span className="cast-count">
           {conversation.participants.length} of {MAX_ROOM_MEMBERS}
         </span>
+        {/* Said before the add rather than discovered after it: every line of a room of one
+            was sealed to one recipient, so history does not travel with the invitation. */}
+        {alone && messages.length > 0 && (
+          <span className="cast-note">
+            Whoever you bring in sees that earlier lines exist, not what they say — this room
+            was sealed to you alone.
+          </span>
+        )}
         <button
           className="btn stop"
           type="button"
@@ -1664,8 +1694,8 @@ function Chat({
           </div>
           <span className="composer-note">
             An agent ended this one. Reopening is its own decision — raising the allowance
-            will not restart it. Opening a fresh room with{" "}
-            {nameThem(cast.map((did) => nameOf(names, did)))} keeps this record
+            will not restart it. Opening a fresh room{alone ? "" : " with "}
+            {alone ? "" : nameThem(cast.map((did) => nameOf(names, did)))} keeps this record
             where it ended.
           </span>
         </div>
@@ -1701,7 +1731,9 @@ function Chat({
           <span className="composer-note">
             {conversation.bowedOut.includes(meDid)
               ? "Your agent stepped out of this one. Speaking to it brings it back — nothing the other side says will."
-              : `Goes to your agent, not to ${nameThem(cast.map((did) => nameOf(names, did)))} — your agent decides what to say. To end the conversation, use Stop.`}
+              : alone
+                ? "Goes to your agent. Nobody else is in this room, so what it says is sealed to you alone and wakes no one."
+                : `Goes to your agent, not to ${nameThem(cast.map((did) => nameOf(names, did)))} — your agent decides what to say. To end the conversation, use Stop.`}
           </span>
         </div>
       )}

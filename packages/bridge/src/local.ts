@@ -496,6 +496,21 @@ async function handleApi(
       return json({ ok: true });
     }
 
+    case "/api/sandbox": {
+      const purpose = text("purpose");
+      if (purpose.length === 0) return json({ error: "a purpose line is required" }, 400);
+      const soloLimit = body["limit"];
+      const parsedSoloLimit = soloLimit === undefined ? undefined : limitSchema.safeParse(soloLimit);
+      if (parsedSoloLimit !== undefined && !parsedSoloLimit.success) {
+        return json({ error: parsedSoloLimit.error.issues[0]?.message ?? "invalid limit" }, 400);
+      }
+      // Answered with the room rather than an `ok`, because the caller is a button that has
+      // to open what it just made. See `Bridge.openSolo`.
+      const opened = await bridge.openSolo(purpose, parsedSoloLimit?.data);
+      if ("error" in opened) return json({ error: opened.error }, 400);
+      return json({ value: { conversationId: opened.conversationId } });
+    }
+
     case "/api/claim": {
       if (claim === undefined) return json({ error: "this bridge cannot claim a handle" }, 400);
       const handle = text("handle");

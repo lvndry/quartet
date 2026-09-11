@@ -157,6 +157,15 @@ const TICK_LATE_MS = KEEPALIVE_EVERY_MS * 2;
 const CONNECT_TIMEOUT_MS = 15_000;
 
 /**
+ * How long `openSolo` waits for the hub to name the room it just asked for.
+ *
+ * Short, because somebody is looking at a button. A hub that answers later than this has
+ * still made the room — it arrives in the next snapshot like any other — so the failure this
+ * bounds is a spinner, not a lost room.
+ */
+const SOLO_ROOM_TIMEOUT_MS = 10_000;
+
+/**
  * A stretch of time as somebody reading a log would say it.
  *
  * Minutes past ninety seconds, because the gaps worth printing here are the long ones — a nap
@@ -185,6 +194,8 @@ export class Bridge {
   private readonly messages = new Map<string, Message[]>();
   private readonly atStart = new Map<string, boolean>();
   private readonly asides = new Map<string, Aside[]>();
+  /** Waiting on the hub's answer to one `conversation.solo`. See `openSolo`. */
+  private pendingSolo: { readonly settle: (conversationId: string) => void } | undefined;
   private readonly activity = new Map<string, Activity>();
   private readonly toolCalls = new Map<string, readonly ToolCall[]>();
   private readonly presence = new Map<string, PeerPresence[]>();
@@ -388,6 +399,55 @@ export class Bridge {
       }
     });
     this.send({ t: "nudge", conversationId, steer: sealed });
+  }
+
+  /**
+   * Open a room with nobody else in it, and answer with which room it is.
+   *
+   * Awaited, unlike every other frame this class sends. The caller is a button that has to
+   * land somebody *in* the room it just made, and a fire-and-forget send would leave the app
+   * guessing which of its rooms had just appeared — "the newest one" is a guess that is wrong
+   * the moment anything else arrives in the same second.
+   *
+   * Nothing in the hub's answer says "this is the one you asked for", so the wait matches on
+   * the shape instead: a room with one member and no connection. One press sends one frame, so
+   * there is nothing else in flight for it to confuse itself with.
+   *
+   * Refused rather than queued when the hub is not there. Every other frame may wait for a
+   * reconnect because nobody is watching it; this one has somebody looking at a spinner.
+   */
+  async openSolo(
+    purpose: string,
+    limit?: Limit,
+  ): Promise<{ readonly conversationId: string } | { readonly error: string }> {
+    if (this.socket?.readyState !== WebSocket.OPEN) {
+      return { error: "not connected to the hub yet — a room is made there, not here" };
+    }
+    if (this.pendingSolo !== undefined) {
+      return { error: "already opening one" };
+    }
+
+    const opened = new Promise<string | undefined>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingSolo = undefined;
+        resolve(undefined);
+      }, SOLO_ROOM_TIMEOUT_MS);
+      this.pendingSolo = {
+        settle: (conversationId) => {
+          clearTimeout(timer);
+          this.pendingSolo = undefined;
+          resolve(conversationId);
+        },
+      };
+    });
+
+    this.send({ t: "conversation.solo", purpose, ...(limit !== undefined ? { limit } : {}) });
+    const conversationId = await opened;
+    if (conversationId === undefined) {
+      return { error: "the hub did not answer with a room" };
+    }
+    log.info("opened a room of your own", { conversation: conversationId });
+    return { conversationId };
   }
 
   /**
@@ -981,6 +1041,13 @@ export class Bridge {
           frame.conversation,
           ...this.conversations.filter((c) => c.id !== frame.conversation.id),
         ];
+        if (
+          this.pendingSolo !== undefined &&
+          frame.conversation.connectionId === undefined &&
+          frame.conversation.participants.length === 1
+        ) {
+          this.pendingSolo.settle(frame.conversation.id);
+        }
         this.publish();
         return;
 
@@ -1238,7 +1305,10 @@ export class Bridge {
     const readable = transcript.map((message) => this.wordsFor(message));
 
     const startedAt = Date.now();
-    daemonLog.info(`turn in a room with ${room.join(", ") || "nobody"}`, {
+    // "nobody" was the honest reading while every room was a pair and an empty roster meant
+    // something had gone wrong. A room of one is now a room somebody asked for, so it gets
+    // said as such rather than as an absence.
+    daemonLog.info(room.length === 0 ? "turn in a room of its own" : `turn in a room with ${room.join(", ")}`, {
       conversation: conversationId,
       steered: steer !== undefined ? "yes" : undefined,
     });

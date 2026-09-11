@@ -394,8 +394,13 @@ textarea.field { resize: vertical; min-height: 2.4rem; font-family: inherit; }
 
 /* Who is in the room, and the two controls that change that. */
 .cast {
-  display: flex; align-items: center; gap: 0.5rem;
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
   padding: 0.5rem 1.2rem; border-bottom: 1px solid var(--rule-soft);
+}
+/* Its own line under the controls, so a sentence cannot squeeze the handle field. */
+.cast-note {
+  flex-basis: 100%;
+  font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.06em; color: var(--slate);
 }
 .cast .field.slim { flex: 1; min-width: 0; padding: 0.3rem 0.5rem; font-size: 0.76rem; }
 .cast-count {
