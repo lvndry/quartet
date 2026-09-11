@@ -864,3 +864,78 @@ describe("writing several things as one", () => {
     expect(store.spend(conversation.id).usd).toBe(0);
   });
 });
+
+describe("a room with one member", () => {
+  function soloSetup() {
+    const store = new HubStore(":memory:");
+    const mira = store.createAgent({
+      handle: "mira",
+      displayName: "Mira",
+      did: generateKeypair().did,
+    });
+    if (mira === undefined) throw new Error("agent");
+    const conversation = store.createSoloConversation(mira.id, "see how this persona opens");
+    if (conversation === undefined) throw new Error("conversation");
+    return { store, mira, conversation };
+  }
+
+  it("opens on no connection at all", () => {
+    const { conversation } = soloSetup();
+
+    // Absent rather than empty: "opened on nothing" and "opened on a connection I failed to
+    // write down" are different facts, and only one of them is true here.
+    expect(conversation.connectionId).toBeUndefined();
+    expect(conversation.participants).toHaveLength(1);
+  });
+
+  it("is live immediately, because there is nobody to accept it", () => {
+    const { store, conversation } = soloSetup();
+
+    expect(conversation.state).toBe("live");
+    expect(store.roomState(conversation.id)).toBe("live");
+  });
+
+  it("names its owner as the one who opened it", () => {
+    const { mira, conversation } = soloSetup();
+
+    expect(conversation.proposedBy).toBe(mira.did);
+  });
+
+  it("appears in its owner's rooms and nobody else's", () => {
+    const { store, mira, conversation } = soloSetup();
+    const otto = store.createAgent({
+      handle: "otto",
+      displayName: "Otto",
+      did: generateKeypair().did,
+    });
+    if (otto === undefined) throw new Error("agent");
+
+    expect(store.conversationsFor(mira.id).map((room) => room.id)).toEqual([conversation.id]);
+    expect(store.conversationsFor(otto.id)).toEqual([]);
+  });
+
+  it("carries a transcript like any other room", () => {
+    const { store, mira, conversation } = soloSetup();
+    store.appendMessage({
+      conversationId: conversation.id,
+      authorAgentId: mira.id,
+      kind: "agent",
+      text: "sealed to one recipient, which is me",
+    });
+
+    expect(store.transcript(conversation.id, 10)).toHaveLength(1);
+  });
+
+  it("erases on one ask, being the only member there is", () => {
+    const { store, mira, conversation } = soloSetup();
+
+    expect(store.askErase(conversation.id, mira.id)).toBe(true);
+    expect(store.everyoneAskedErase(conversation.id)).toBe(true);
+  });
+
+  it("refuses an agent this hub does not hold", () => {
+    const { store } = soloSetup();
+
+    expect(store.createSoloConversation("agt_nobody", "talk to yourself")).toBeUndefined();
+  });
+});

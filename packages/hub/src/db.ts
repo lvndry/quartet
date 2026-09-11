@@ -208,7 +208,11 @@ export class HubStore {
 
       CREATE TABLE IF NOT EXISTS conversations (
         id             TEXT PRIMARY KEY,
-        connection_id  TEXT NOT NULL REFERENCES connections(id),
+        -- Where this room started, when it started somewhere. Null for a solo room: a
+        -- connection is two people agreeing to talk, and a room of one was opened on
+        -- nothing. Membership is conversation_members either way -- see
+        -- docs/design/solo-rooms.md.
+        connection_id  TEXT REFERENCES connections(id),
         purpose        TEXT NOT NULL,
         budget         INTEGER NOT NULL,
         budget_max     INTEGER NOT NULL DEFAULT 50,
@@ -603,6 +607,37 @@ export class HubStore {
     return this.conversation(id);
   }
 
+  /**
+   * Open a room with one member: its owner, and nobody else.
+   *
+   * `live` rather than `proposed`, which is the one place this differs from every other room.
+   * A proposal exists because the first turn spends the other owner's money and speaks in
+   * their name, so it waits for them to agree; there is no other owner here, and asking
+   * somebody to accept their own invitation is noise rather than care — the same argument
+   * `invite.respond` already makes when it opens the first room live.
+   *
+   * No connection, so nothing to look a pair up from. What a solo room *is* lives in
+   * `conversation_members` exactly as every other room's membership does, which is why the
+   * turn policy, the sealer and the erase vote all work here without knowing about it. See
+   * `docs/design/solo-rooms.md`.
+   */
+  createSoloConversation(
+    agentId: string,
+    purpose: string,
+    limit: Limit = DEFAULT_LIMIT,
+  ): Conversation | undefined {
+    if (this.agentById(agentId) === undefined) return undefined;
+    const id = newId("cnv");
+    const at = nowIso();
+    const turns = limit.kind === "turns" ? limit.turns : DEFAULT_TURN_BUDGET;
+    this.db.run(
+      "INSERT INTO conversations (id, connection_id, purpose, budget, budget_max, limit_json, created_at, last_at, state, proposed_by) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'live', ?)",
+      [id, purpose, turns, turns, JSON.stringify(limit), at, at, agentId],
+    );
+    this.addMember(id, agentId);
+    return this.conversation(id);
+  }
+
   private static toMessage(row: MessageRow): Message {
     const signature = signatureOf(row);
     return {
@@ -676,7 +711,7 @@ export class HubStore {
       .query<
         {
           id: string;
-          connection_id: string;
+          connection_id: string | null;
           purpose: string;
           budget: number;
           budget_max: number;
@@ -714,7 +749,7 @@ export class HubStore {
       .map(HubStore.toMember);
     return {
       id: row.id,
-      connectionId: row.connection_id,
+      ...(row.connection_id !== null ? { connectionId: row.connection_id } : {}),
       purpose: row.purpose,
       participants: members,
       budgetRemaining: row.budget,

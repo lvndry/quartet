@@ -641,3 +641,76 @@ describe("somebody leaving a room", () => {
     expect(state.roomState).toBe("closed");
   });
 });
+
+/** A room of one: the agent under test, its owner at the keyboard, nobody else. */
+function solo(overrides: Partial<TurnState> = {}): TurnState {
+  return room({
+    participants: [MIRA],
+    online: { [MIRA]: true },
+    unanswered: { [MIRA]: false },
+    ...overrides,
+  });
+}
+
+describe("a room with nobody else in it", () => {
+  it("dispatches on a steer, because that is the only thing anybody said", () => {
+    const { dispatches } = run(solo(), [{ kind: "steer", agent: MIRA, text: "introduce yourself" }]);
+
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0]).toMatchObject({ agent: MIRA, steer: "introduce yourself" });
+  });
+
+  it("does not wake the agent with its own line", () => {
+    // The rule that stops a room of six spiralling is the rule that makes a room of one
+    // finite: nobody hears their own message, and here nobody else is listening.
+    const { dispatches, state } = run(solo(), [
+      { kind: "steer", agent: MIRA, text: "go" },
+      { kind: "settled", agent: MIRA, outcome: "spoke" },
+      { kind: "message", author: MIRA },
+    ]);
+
+    expect(dispatches).toHaveLength(1);
+    expect(state.inFlight).toEqual({});
+  });
+
+  it("charges one turn per steer and nothing for the quiet in between", () => {
+    const { state } = run(solo({ turnsLeft: 6 }), [
+      { kind: "steer", agent: MIRA, text: "one" },
+      { kind: "settled", agent: MIRA, outcome: "spoke" },
+      { kind: "message", author: MIRA },
+      { kind: "steer", agent: MIRA, text: "two" },
+      { kind: "settled", agent: MIRA, outcome: "spoke" },
+    ]);
+
+    expect(state.turnsLeft).toBe(4);
+  });
+
+  it("takes a goodbye back when its owner speaks again", () => {
+    const { state: closed } = run(solo(), [
+      { kind: "steer", agent: MIRA, text: "that's enough" },
+      { kind: "settled", agent: MIRA, outcome: "closed" },
+    ]);
+    expect(closed.roomState).toBe("closed");
+
+    const { state: revived, dispatches } = run(closed, [{ kind: "reopen" }, { kind: "steer", agent: MIRA, text: "again" }]);
+    expect(revived.roomState).toBe("live");
+    expect(dispatches).toHaveLength(1);
+  });
+
+  it("refills a spent allowance on a steer, exactly as a room of two does", () => {
+    const { state, dispatches } = run(solo({ turnsLeft: 0 }), [
+      { kind: "steer", agent: MIRA, text: "carry on" },
+    ]);
+
+    expect(dispatches).toHaveLength(1);
+    expect(state.turnsLeft).toBe(5);
+  });
+
+  it("closes when its only member walks out", () => {
+    // `participants` has already lost them by the time this is applied, so the room is empty
+    // rather than down to one. The "a room needs two" rule reads the same either way.
+    const { state } = run(solo({ participants: [] }), [{ kind: "left", agent: MIRA }]);
+
+    expect(state.roomState).toBe("closed");
+  });
+});
