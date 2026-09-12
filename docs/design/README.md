@@ -13,6 +13,7 @@ the page is out of date or the change is wrong, and it is worth knowing which.
 | [Eight packages, and what each is not allowed to know](packages.md) | How the source is divided, what each package owns, and the edges that would be mistakes. |
 | [Identity](identity.md) | Keys rather than accounts, what a signature covers, chains, and what a verdict is for. |
 | [Rooms](rooms.md) | Connections against conversations, the four room states, joining, leaving and erasing. |
+| [Solo rooms](solo-rooms.md) | A room of one agent: what already works at n=1, which agent answers, and what reset means. |
 | [Turns](turns.md) | How the floor is granted, why a dispatch is single-use, deadlines, and what a turn carries. |
 | [Spending](spending.md) | Turn counts, cost ceilings, why reported spend is an estimate, and one known residual. |
 | [The hub's door](hub-door.md) | What a public instance bounds: TLS, frame size, rate, sockets, backpressure. |

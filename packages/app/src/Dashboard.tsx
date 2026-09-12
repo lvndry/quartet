@@ -357,10 +357,13 @@ export function Dashboard({
   state,
   onClose,
   onAct,
+  onOpenRoom,
 }: {
   state: BridgeState;
   onClose: () => void;
   onAct: (path: string, body: Record<string, unknown>) => Promise<void>;
+  /** Leave the roster for a room, which is where a test actually happens. */
+  onOpenRoom: (conversationId: string) => void;
 }): ReactElement {
   const [openId, setOpenId] = useState<string | undefined>(state.myAgentId);
   const [creating, setCreating] = useState(false);
@@ -378,6 +381,8 @@ export function Dashboard({
   const [webSearchKeyOnFile, setWebSearchKeyOnFile] = useState(false);
   const [editingWebSearchKey, setEditingWebSearchKey] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testRefusal, setTestRefusal] = useState<string | undefined>(undefined);
   const [showEverything, setShowEverything] = useState(false);
   const [personaDraft, setPersonaDraft] = useState<PersonaDraft | undefined>(undefined);
   const [personaRefusal, setPersonaRefusal] = useState<Refusal | undefined>(undefined);
@@ -592,6 +597,27 @@ export function Dashboard({
     if (isTheFirst) await onAct("agents/select", { agentId: result.value.id });
   }
 
+  /**
+   * Open a room with this agent and nobody else, then go and stand in it.
+   *
+   * The purpose is written for the agent as much as for the room list: it is handed to the
+   * agent as what the conversation is for, and "you are being tried out" is the truthful
+   * answer to that.
+   */
+  async function testPrivately(name: string): Promise<void> {
+    setTesting(true);
+    setTestRefusal(undefined);
+    const opened = await read<{ conversationId: string }>("sandbox", {
+      purpose: `A private room to try out ${name}. Nobody else is here.`,
+    });
+    setTesting(false);
+    if ("refused" in opened) {
+      setTestRefusal(opened.refused.error);
+      return;
+    }
+    onOpenRoom(opened.value.conversationId);
+  }
+
   async function savePersona(): Promise<void> {
     if (personaDraft === undefined) return;
     setBusy(true);
@@ -734,6 +760,35 @@ export function Dashboard({
                   Let {detail.name} speak for you
                 </button>
               )}
+
+              {/* Only for the agent that would actually answer. One bridge speaks as one
+                  agent — the webhook points at whoever is on stage — so offering this on
+                  another row would open a room that answers as somebody else and call it a
+                  test of this one. `docs/design/solo-rooms.md` §3 is how that stops being
+                  true. */}
+              {detail !== undefined && onStage && (
+                <button
+                  className="btn dash-promote"
+                  type="button"
+                  disabled={busy || testing || !state.connectedToHub}
+                  title={
+                    state.connectedToHub
+                      ? "A room with this agent and nobody else"
+                      : "A room is made on the hub, and this bridge is not connected to one"
+                  }
+                  onClick={() => void testPrivately(detail.name)}
+                >
+                  {testing ? "Opening a room…" : `Try out ${detail.name}`}
+                </button>
+              )}
+              {detail !== undefined && !onStage && (
+                <p className="dash-hint">
+                  Let it speak for you to try it out: this bridge answers as one agent, so a
+                  private room would answer as whoever is on stage rather than as{" "}
+                  {detail.name}.
+                </p>
+              )}
+              {testRefusal !== undefined && <p className="dash-wrong">{testRefusal}</p>}
 
               <div className="dash-group">Who it is</div>
               <label className="dash-label" htmlFor="agent-name">

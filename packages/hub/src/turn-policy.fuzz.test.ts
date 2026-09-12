@@ -13,6 +13,16 @@ const MIRA = "agt_mira";
 const OTTO = "agt_otto";
 const AGENTS = [MIRA, OTTO] as const;
 
+/**
+ * Every roster the invariants have to hold for.
+ *
+ * A solo room is the same object with one member — `docs/design/solo-rooms.md` — so it is
+ * fuzzed by the same run rather than by a second file that would drift from this one. It is
+ * also the roster that catches a rule written as "wake the others" and implemented as "wake
+ * somebody".
+ */
+const ROSTERS = [[MIRA, OTTO], [MIRA]] as const;
+
 /** Deterministic, so a failure names a seed that reproduces it exactly. */
 function randomiser(seed: number): () => number {
   let value = seed >>> 0;
@@ -26,8 +36,12 @@ function pick<T>(next: () => number, values: readonly T[]): T {
   return values[Math.floor(next() * values.length)] as T;
 }
 
-function randomEvent(next: () => number, state: TurnState): TurnEvent {
-  const agent = pick(next, AGENTS);
+function randomEvent(
+  next: () => number,
+  state: TurnState,
+  roster: readonly string[],
+): TurnEvent {
+  const agent = pick(next, roster);
   const running = Object.keys(state.inFlight);
   const roll = next();
 
@@ -60,121 +74,124 @@ function randomEvent(next: () => number, state: TurnState): TurnEvent {
 
 describe("whatever order events arrive in", () => {
   it("holds every invariant across a thousand random runs", () => {
-    for (let seed = 1; seed <= 1000; seed += 1) {
-      const next = randomiser(seed);
-      let state: TurnState = {
-        participants: [...AGENTS],
-        online: { [MIRA]: true, [OTTO]: true },
-        limit: { kind: "turns", turns: 6 },
-        turnsLeft: 6,
-        spentUSD: 0,
-        spendIncomplete: false,
-        roomState: "live",
-        unanswered: { [MIRA]: true, [OTTO]: true },
-        bowedOut: [],
-        inFlight: {},
-      };
+    for (const roster of ROSTERS) {
+      const members = `${String(roster.length)} member${roster.length === 1 ? "" : "s"}`;
+      for (let seed = 1; seed <= 1000; seed += 1) {
+        const next = randomiser(seed);
+        let state: TurnState = {
+          participants: [...roster],
+          online: Object.fromEntries(roster.map((agent) => [agent, true])),
+          limit: { kind: "turns", turns: 6 },
+          turnsLeft: 6,
+          spentUSD: 0,
+          spendIncomplete: false,
+          roomState: "live",
+          unanswered: Object.fromEntries(roster.map((agent) => [agent, true])),
+          bowedOut: [],
+          inFlight: {},
+        };
 
-      for (let step = 0; step < 60; step += 1) {
-        const event = randomEvent(next, state);
-        const before = state;
-        const { state: after, effects } = decide(state, event);
-        const dispatches = effects.filter(
-          (effect): effect is Extract<TurnEffect, { kind: "dispatch" }> =>
-            effect.kind === "dispatch",
-        );
-        const where = `seed ${String(seed)} step ${String(step)} on ${event.kind}`;
-
-        // 3 and 6: a room that is not live dispatches nothing, and nothing but a person's
-        // own action brings it back. A halt is lifted by carrying on — speaking, or choosing
-        // a new allowance — while a close needs the deliberate reopen and nothing else.
-        const lifts: readonly TurnEvent["kind"][] =
-          before.roomState === "halted" ? ["steer", "limit", "reopen"] : ["reopen"];
-        // Coming back online is not a way to restart a room somebody stopped.
-        if (before.roomState !== "live" && !lifts.includes(event.kind)) {
-          expect(dispatches, `${where}: dispatched while ${before.roomState}`).toHaveLength(0);
-          // Not that the state is unchanged — a halted room whose in-flight turn comes back
-          // with a goodbye becomes closed, and that is the honest reading of what happened.
-          // What may not happen is a quiet room deciding on its own to run again.
-          expect(after.roomState, `${where}: a ${before.roomState} room revived itself`).not.toBe(
-            "live",
+        for (let step = 0; step < 60; step += 1) {
+          const event = randomEvent(next, state, roster);
+          const before = state;
+          const { state: after, effects } = decide(state, event);
+          const dispatches = effects.filter(
+            (effect): effect is Extract<TurnEffect, { kind: "dispatch" }> =>
+              effect.kind === "dispatch",
           );
-        }
+          const where = `${members}, seed ${String(seed)} step ${String(step)} on ${event.kind}`;
 
-        // A goodbye is final until somebody reopens the room: no event other than that one
-        // may turn `closed` back into anything else.
-        if (before.roomState === "closed" && event.kind !== "reopen") {
-          expect(after.roomState, `${where}: a close was undone by ${event.kind}`).toBe("closed");
-        }
-
-        // 9: a room only closes once nobody is left who might speak. One agent's goodbye is
-        // its own; deciding the room is over for everybody was never its call.
-        if (before.roomState !== "closed" && after.roomState === "closed") {
-          const everybodyGone = after.participants.every((agent) =>
-            after.bowedOut.includes(agent),
-          );
-          expect(
-            everybodyGone || event.kind === "stop" || event.kind === "left",
-            `${where}: the room closed with somebody still able to speak`,
-          ).toBe(true);
-        }
-
-        // An agent that has bowed out is not woken by the room. Only its own owner.
-        for (const agent of AGENTS) {
-          if (!before.bowedOut.includes(agent)) continue;
-          const wokenAnyway = dispatches.some((dispatch) => dispatch.agent === agent);
-          const itsOwnOwner = event.kind === "steer" && event.agent === agent;
-          expect(
-            !wokenAnyway || itsOwnOwner,
-            `${where}: ${agent} had said goodbye and was woken by ${event.kind}`,
-          ).toBe(true);
-        }
-
-        // 5: never two turns in flight for one agent.
-        for (const agent of AGENTS) {
-          const running = Object.entries(after.inFlight).filter(([id]) => id === agent);
-          expect(running.length, `${where}: ${agent} has ${String(running.length)} turns`).toBeLessThanOrEqual(1);
-        }
-
-        // 4: the allowance falls only by dispatching, except where a person sets it.
-        if (event.kind === "limit") {
-          // Choosing an allowance grants exactly that, up or down, minus anything dispatched
-          // in the same step.
-          if (event.limit.kind === "turns") {
-            expect(after.turnsLeft, `${where}: limit not granted outright`).toBe(
-              event.limit.turns - dispatches.length,
+          // 3 and 6: a room that is not live dispatches nothing, and nothing but a person's
+          // own action brings it back. A halt is lifted by carrying on — speaking, or choosing
+          // a new allowance — while a close needs the deliberate reopen and nothing else.
+          const lifts: readonly TurnEvent["kind"][] =
+            before.roomState === "halted" ? ["steer", "limit", "reopen"] : ["reopen"];
+          // Coming back online is not a way to restart a room somebody stopped.
+          if (before.roomState !== "live" && !lifts.includes(event.kind)) {
+            expect(dispatches, `${where}: dispatched while ${before.roomState}`).toHaveLength(0);
+            // Not that the state is unchanged — a halted room whose in-flight turn comes back
+            // with a goodbye becomes closed, and that is the honest reading of what happened.
+            // What may not happen is a quiet room deciding on its own to run again.
+            expect(after.roomState, `${where}: a ${before.roomState} room revived itself`).not.toBe(
+              "live",
             );
           }
-        } else if (event.kind === "steer") {
-          expect(after.turnsLeft, `${where}: a steer took turns away`).toBeGreaterThanOrEqual(
-            before.turnsLeft - dispatches.length,
-          );
-        } else {
-          const charged = before.turnsLeft - after.turnsLeft;
-          expect(
-            charged,
-            `${where}: charged ${String(charged)} for ${String(dispatches.length)} dispatches`,
-          ).toBe(Math.min(dispatches.length, before.turnsLeft));
-        }
 
-        // 1: a dispatch only ever happens when the conversation could pay for it.
-        if (dispatches.length > 0) {
-          expect(canSpend(before) || event.kind === "steer" || event.kind === "limit", `${where}: dispatched unaffordably`).toBe(true);
-        }
-
-        // 2: an agent never speaks straight after its own unprompted pass.
-        if (event.kind === "settled" && event.outcome === "passed") {
-          const wasSteered = before.inFlight[event.agent]?.steered === true;
-          const hadNewSteer = before.inFlight[event.agent]?.queuedSteer !== undefined;
-          if (wasSteered && !hadNewSteer) {
-            expect(
-              dispatches.some((dispatch) => dispatch.agent === event.agent),
-              `${where}: spoke straight after a steered pass`,
-            ).toBe(false);
+          // A goodbye is final until somebody reopens the room: no event other than that one
+          // may turn `closed` back into anything else.
+          if (before.roomState === "closed" && event.kind !== "reopen") {
+            expect(after.roomState, `${where}: a close was undone by ${event.kind}`).toBe("closed");
           }
-        }
 
-        state = after;
+          // 9: a room only closes once nobody is left who might speak. One agent's goodbye is
+          // its own; deciding the room is over for everybody was never its call.
+          if (before.roomState !== "closed" && after.roomState === "closed") {
+            const everybodyGone = after.participants.every((agent) =>
+              after.bowedOut.includes(agent),
+            );
+            expect(
+              everybodyGone || event.kind === "stop" || event.kind === "left",
+              `${where}: the room closed with somebody still able to speak`,
+            ).toBe(true);
+          }
+
+          // An agent that has bowed out is not woken by the room. Only its own owner.
+          for (const agent of roster) {
+            if (!before.bowedOut.includes(agent)) continue;
+            const wokenAnyway = dispatches.some((dispatch) => dispatch.agent === agent);
+            const itsOwnOwner = event.kind === "steer" && event.agent === agent;
+            expect(
+              !wokenAnyway || itsOwnOwner,
+              `${where}: ${agent} had said goodbye and was woken by ${event.kind}`,
+            ).toBe(true);
+          }
+
+          // 5: never two turns in flight for one agent.
+          for (const agent of roster) {
+            const running = Object.entries(after.inFlight).filter(([id]) => id === agent);
+            expect(running.length, `${where}: ${agent} has ${String(running.length)} turns`).toBeLessThanOrEqual(1);
+          }
+
+          // 4: the allowance falls only by dispatching, except where a person sets it.
+          if (event.kind === "limit") {
+            // Choosing an allowance grants exactly that, up or down, minus anything dispatched
+            // in the same step.
+            if (event.limit.kind === "turns") {
+              expect(after.turnsLeft, `${where}: limit not granted outright`).toBe(
+                event.limit.turns - dispatches.length,
+              );
+            }
+          } else if (event.kind === "steer") {
+            expect(after.turnsLeft, `${where}: a steer took turns away`).toBeGreaterThanOrEqual(
+              before.turnsLeft - dispatches.length,
+            );
+          } else {
+            const charged = before.turnsLeft - after.turnsLeft;
+            expect(
+              charged,
+              `${where}: charged ${String(charged)} for ${String(dispatches.length)} dispatches`,
+            ).toBe(Math.min(dispatches.length, before.turnsLeft));
+          }
+
+          // 1: a dispatch only ever happens when the conversation could pay for it.
+          if (dispatches.length > 0) {
+            expect(canSpend(before) || event.kind === "steer" || event.kind === "limit", `${where}: dispatched unaffordably`).toBe(true);
+          }
+
+          // 2: an agent never speaks straight after its own unprompted pass.
+          if (event.kind === "settled" && event.outcome === "passed") {
+            const wasSteered = before.inFlight[event.agent]?.steered === true;
+            const hadNewSteer = before.inFlight[event.agent]?.queuedSteer !== undefined;
+            if (wasSteered && !hadNewSteer) {
+              expect(
+                dispatches.some((dispatch) => dispatch.agent === event.agent),
+                `${where}: spoke straight after a steered pass`,
+              ).toBe(false);
+            }
+          }
+
+          state = after;
+        }
       }
     }
   });

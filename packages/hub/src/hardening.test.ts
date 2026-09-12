@@ -570,3 +570,72 @@ describe("a socket that misbehaves", () => {
     expect(quiet.closedWith).toBeUndefined();
   });
 });
+
+/** One agent, one room, nobody else — `docs/design/solo-rooms.md`. */
+async function aSoloRoom(name: string) {
+  const party = new Party(name);
+  expect((await party.claim()).status).toBe(201);
+  await party.connect();
+  party.send({ t: "conversation.solo", purpose: "see how this persona opens" });
+  const frame = await party.waitForFrame("conversation");
+  const conversation = frame["conversation"] as {
+    id: string;
+    state: string;
+    connectionId?: string;
+    participants: readonly unknown[];
+    proposedBy: string;
+  };
+  return { party, conversation };
+}
+
+describe("a room with nobody else in it", () => {
+  it("opens live on no connection at all", async () => {
+    const { conversation } = await aSoloRoom("cleo");
+
+    expect(conversation.state).toBe("live");
+    expect(conversation.participants).toHaveLength(1);
+    // No pair to read, so nothing to name. Absent rather than blank.
+    expect(conversation.connectionId).toBeUndefined();
+  });
+
+  it("spends nothing until its owner says something", async () => {
+    const { party } = await aSoloRoom("dara");
+
+    // A room on a connection dispatches on being accepted, because the purpose was a thing
+    // somebody agreed to. This one was opened by pressing a button.
+    await Bun.sleep(SETTLE_MS);
+    expect(party.seen("turn")).toHaveLength(0);
+  });
+
+  it("hands its owner's agent the floor when steered", async () => {
+    const { party, conversation } = await aSoloRoom("esk");
+
+    party.send({ t: "nudge", conversationId: conversation.id, steer: "sealed-to-me blob" });
+    const turn = await party.waitForFrame("turn");
+
+    expect(turn["conversationId"]).toBe(conversation.id);
+  });
+
+  it("cannot be grown to somebody its owner has never been introduced to", async () => {
+    const { party, conversation } = await aSoloRoom("fen");
+    const stranger = new Party("gus");
+    expect((await stranger.claim()).status).toBe(201);
+
+    party.send({ t: "conversation.add", conversationId: conversation.id, did: stranger.keypair.did });
+    await Bun.sleep(SETTLE_MS);
+
+    // Promoting a sandbox spends a connection like any other add. Knowing a key is not one.
+    expect(party.errors().join(" ")).toContain("invite them first");
+  });
+
+  it("is not something an unauthenticated socket can open", async () => {
+    const nobody = new Party("hale");
+    await nobody.connect({ sayHello: false });
+
+    nobody.send({ t: "conversation.solo", purpose: "sneak a room in" });
+    await Bun.sleep(SETTLE_MS);
+
+    expect(nobody.seen("conversation")).toHaveLength(0);
+    expect(nobody.errors()).toContain("say hello first");
+  });
+});

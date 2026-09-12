@@ -891,6 +891,17 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       return;
     }
 
+    case "conversation.solo": {
+      const conversation = store.createSoloConversation(agentId, frame.purpose, frame.limit);
+      if (conversation === undefined) return;
+      send(agentId, { t: "conversation", conversation });
+      // Deliberately no dispatch either, for a different reason: a room on a connection
+      // waits for consent, and this one waits for an instruction. It was opened by pressing
+      // a button rather than by writing a purpose line somebody agreed to, so dispatching
+      // here would spend a turn on a click. The first steer is the first turn.
+      return;
+    }
+
     case "conversation.respond": {
       const answered = store.respondToConversation(frame.conversationId, agentId, frame.accept);
       if (answered === undefined) {

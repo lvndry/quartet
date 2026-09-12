@@ -263,7 +263,15 @@ export type Member = z.infer<typeof memberSchema>;
 
 export const conversationSchema = z.object({
   id: z.string(),
-  connectionId: z.string(),
+  /**
+   * The connection this room was opened on, when it was opened on one.
+   *
+   * Absent for a solo room, which was opened on nothing: a connection is two people agreeing
+   * to talk, and `docs/design/solo-rooms.md` is the room that has no second person. Optional
+   * rather than an empty string, because "no connection" and "a connection whose id I failed
+   * to write down" are different facts and only one of them is true here.
+   */
+  connectionId: z.string().optional(),
   /** Names the room in the list, and tells both agents what they are here to do. */
   purpose: z.string(),
   /**
@@ -360,6 +368,19 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
   z.object({
     t: z.literal("conversation.open"),
     connectionId: z.string(),
+    purpose: signable(MAX_PURPOSE_LENGTH),
+    limit: limitSchema.optional(),
+  }),
+  /**
+   * Open a room with nobody else in it.
+   *
+   * Its own frame rather than `conversation.open` with the connection left out: opening a
+   * room on a connection spends somebody else's consent and waits for them to take it up,
+   * and this spends nothing and waits for nobody. One frame doing both would have made the
+   * absence of a field the thing that decided whether another person was involved.
+   */
+  z.object({
+    t: z.literal("conversation.solo"),
     purpose: signable(MAX_PURPOSE_LENGTH),
     limit: limitSchema.optional(),
   }),

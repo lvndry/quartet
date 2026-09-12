@@ -57,6 +57,7 @@ describe("the wire still has the frames it had", () => {
         "conversation.open",
         "conversation.reopen",
         "conversation.respond",
+        "conversation.solo",
         "conversation.stop",
         "directory.list",
         "hello",

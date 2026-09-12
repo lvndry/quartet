@@ -1016,6 +1016,58 @@ check(
   "and the last one out closes it rather than leaving an agent talking to nobody",
 );
 
+// ---------- a room of one ----------
+// The whole point is that this needs nothing a two-party room needs: no second identity, no
+// second bridge, no second port, and nobody to accept anything. See docs/design/solo-rooms.md.
+const solo = await bridgeA.openSolo("A private room to try out this agent. Nobody else is here.");
+check(!("error" in solo), "a bridge can open a room with nobody else in it");
+const soloId = "conversationId" in solo ? solo.conversationId : fail("no solo room came back");
+const soloRoom = (): (typeof stateA)["conversations"][number] | undefined =>
+  stateA.conversations.find((room) => room.id === soloId);
+
+await waitFor("the room of one to arrive", () => soloRoom() !== undefined);
+check(soloRoom()?.participants.length === 1, "and it holds exactly one member: its owner");
+check(soloRoom()?.connectionId === undefined, "opened on no connection, because there is none");
+check(
+  soloRoom()?.state === "live",
+  "and live without anybody having to accept their own invitation",
+);
+
+const beforeSoloSteer = daemonA.calls.length;
+await Bun.sleep(300);
+check(
+  daemonA.calls.length === beforeSoloSteer,
+  "nothing is dispatched into it until its owner says something",
+);
+
+daemonA.forceNext("Ready when you are.");
+bridgeA.nudge(soloId, "introduce yourself");
+await waitFor("the agent to take the turn", () => daemonA.calls.length > beforeSoloSteer);
+const soloCall = daemonA.calls[daemonA.calls.length - 1] as {
+  thread: string;
+  body: { speakingWith?: unknown[] };
+};
+check(soloCall.thread === soloId, "a steer wakes it, on a jazz thread of this room's own");
+check(
+  Array.isArray(soloCall.body.speakingWith) && soloCall.body.speakingWith.length === 0,
+  "and the payload says truthfully that there is nobody else in the room",
+);
+
+await waitFor("its answer to land in the room", () => (stateA.messages[soloId]?.length ?? 0) > 0);
+check(
+  (stateA.messages[soloId] ?? []).some((message) =>
+    (words(stateA, message) ?? "").includes("Ready when you are"),
+  ),
+  "what it said is in the room, sealed to the only member there is and read back by the same key",
+);
+
+const afterAnswer = daemonA.calls.length;
+await Bun.sleep(300);
+check(
+  daemonA.calls.length === afterAnswer,
+  "and its own line wakes nobody, so the room goes quiet instead of talking to itself",
+);
+
 bridgeA.stop();
 bridgeB.stop();
 daemonA.stop();
