@@ -306,7 +306,28 @@ export function startLocalServer(options: LocalServerOptions): {
       const requested = url.pathname === "/" ? "/index.html" : url.pathname;
       const file = await options.app.response(requested);
       // Unknown paths fall back to the shell so client-side routing works on a hard refresh.
-      return file ?? options.app.shell();
+      const page = file ?? options.app.shell();
+
+      // A browser that reached this server from somewhere other than this machine, holding
+      // no device cookie, can load the app and then be refused by every socket and every
+      // route it opens — which renders as an empty roster that looks like a broken install
+      // rather than like a credential it does not have. It is exactly what somebody opening
+      // the tunnel URL on a laptop gets. Send it to the screen that can fix it.
+      //
+      // Loopback is deliberately left alone: a bare `http://localhost:7777` has no token in
+      // the URL and is meant to work, because the page reads the one it stored last time.
+      // Assets are left alone too — they are the public bundle, and redirecting them would
+      // break the pairing screen this redirect exists to reach.
+      const isShell = file === undefined || url.pathname === "/";
+      if (
+        isShell &&
+        caller.kind === "anonymous" &&
+        !arrivedOnLoopback(request) &&
+        url.pathname !== "/pair"
+      ) {
+        return new Response(undefined, { status: 302, headers: { location: "/pair" } });
+      }
+      return page;
     },
     websocket: {
       open(socket) {
