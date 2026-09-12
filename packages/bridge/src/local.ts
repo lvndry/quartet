@@ -71,6 +71,18 @@ export interface LocalServerOptions {
    * refuses to allow without TLS in front — the same refusal the hub makes.
    */
   readonly hostname?: string;
+  /**
+   * Called when the app puts an agent on stage.
+   *
+   * `agents.select` writes the jazz webhook, which is what actually routes a turn — but
+   * `QuartetConfig.agentId` is the *record* of which agent represents this identity, kept
+   * because a webhook name does not belong to one identity and jazz's entry answered with
+   * whoever connected last. A record only ever written at `connect` time is stale the moment
+   * somebody switches agents in the app, and the next `connect` prefers it and points the
+   * webhook back at the agent it names — silently undoing the switch. So the record is
+   * written when the thing it records changes.
+   */
+  readonly onAgentOnStage?: (agentId: string) => void | Promise<void>;
 }
 
 interface BrowserSocket {
@@ -279,6 +291,7 @@ export function startLocalServer(options: LocalServerOptions): {
           // this machine, and is the only honest answer when there is no public address.
           () => publicOrigin ?? `http://localhost:${String(boundPort)}`,
           options.claim,
+          options.onAgentOnStage,
         );
       }
 
@@ -434,6 +447,7 @@ async function handleApi(
   devices: DeviceRegistry,
   pairingOrigin: () => string,
   claim: LocalServerOptions["claim"],
+  onAgentOnStage: LocalServerOptions["onAgentOnStage"],
 ): Promise<Response> {
   if (request.method !== "POST") return json({ error: "not found" }, 404);
   const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
@@ -643,7 +657,12 @@ async function handleApi(
     case "/api/agents/select": {
       const agentId = text("agentId");
       if (agentId.length === 0) return json({ error: "agentId is required" }, 400);
-      return fromJazz(await agents.select(agentId));
+      const selected = await agents.select(agentId);
+      // Only on success, and with the id jazz resolved rather than the one that was typed:
+      // the webhook may be written by name, and a record holding a different spelling of the
+      // same agent is a record that disagrees with itself.
+      if (selected.kind === "ok") await onAgentOnStage?.(selected.value);
+      return fromJazz(selected);
     }
 
     case "/api/agents/create": {
