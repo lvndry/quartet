@@ -3,6 +3,7 @@
  */
 
 import { EMBEDDED_VERSION } from "./embedded-version";
+import { type JazzUpdateResult, runJazzUpdate } from "./jazz-update";
 import {
   compareSemver,
   fetchLatestReleaseTag,
@@ -22,7 +23,28 @@ function basenameLooksLikeQuartet(exec: string): boolean {
   return base === "quartet" || base.startsWith("quartet");
 }
 
+/**
+ * Update this binary, then jazz.
+ *
+ * Jazz runs whatever happened to quartet — including "already current", which says nothing
+ * about the agent runtime underneath it. Somebody typing `update` means both halves.
+ */
 export async function runUpdate(options: { readonly quiet?: boolean } = {}): Promise<{
+  readonly updated: boolean;
+  readonly current: string;
+  readonly latest?: string;
+  readonly jazz: JazzUpdateResult;
+}> {
+  const quartet = await updateQuartet(options);
+  if (!options.quiet) console.log("");
+  const jazz = await runJazzUpdate(options);
+  if (jazz.kind === "absent" && !options.quiet) {
+    console.log("  · no jazz on PATH — nothing to update there.");
+  }
+  return { ...quartet, jazz };
+}
+
+async function updateQuartet(options: { readonly quiet?: boolean }): Promise<{
   readonly updated: boolean;
   readonly current: string;
   readonly latest?: string;
