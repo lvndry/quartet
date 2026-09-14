@@ -27,11 +27,12 @@ if (command === "--version" || command === "-v" || command === "version") {
   if (wantsHelp) {
     console.log(
       [
-        "quartet update — install the latest release over this binary",
+        "quartet update — install the latest release over this binary, then update jazz",
         "",
         "  Replaces the running quartet with the newest GitHub release for this",
-        "  platform (same assets as install.sh). Set QUARTET_NO_UPDATE=1 to disable",
-        "  the quiet auto-update that runs before other commands.",
+        "  platform (same assets as install.sh), then runs `jazz update` so the pair",
+        "  stays in step. Set QUARTET_NO_UPDATE=1 to disable the quiet auto-update",
+        "  that runs before every other command.",
       ].join("\n"),
     );
   } else {
