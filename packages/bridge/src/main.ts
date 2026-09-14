@@ -1110,6 +1110,16 @@ async function connect(): Promise<void> {
       logger("bridge").info("claimed a handle", { handle: `@${wanted}`, hub: hubUrl });
       return { ok: true as const };
     },
+    // The stage moves from the app far more often than from here, and `config.agentId` is
+    // what the next `connect` reads to decide which agent this identity speaks as. Written
+    // now rather than at the next startup, because the next startup would write the old one
+    // back over the webhook the app had just repointed.
+    onAgentOnStage: async (agentId: string) => {
+      if (config.agentId === agentId) return;
+      config = { ...config, agentId };
+      await saveIdentityConfig(config);
+      logger("bridge").info("agent on stage", { agent: agentId });
+    },
     hostname: APP_HOST,
     ...(app === undefined ? {} : { app }),
   });
