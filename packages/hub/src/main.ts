@@ -796,6 +796,17 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       return;
     }
 
+    /**
+     * Everyone's directory, not just this agent's: a persona is only worth publishing
+     * because other people read it, and a row that only refreshes when somebody happens to
+     * reconnect would show whoever they were wearing an hour ago.
+     */
+    case "persona.set": {
+      store.updatePersona(agentId, frame.persona);
+      broadcastPresence();
+      return;
+    }
+
     case "directory.list": {
       sendDirectory(agentId);
       return;

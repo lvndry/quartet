@@ -723,6 +723,8 @@ button.model-badge:hover, button.model-badge:focus-visible, button.model-badge.o
 }
 button.model-badge.open { color: var(--signal); border-color: var(--signal); }
 
+.model-badge-what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .model-badge-more {
   display: inline-block; white-space: nowrap; overflow: hidden;
   max-width: 0; opacity: 0; margin-left: 0; padding-left: 0;

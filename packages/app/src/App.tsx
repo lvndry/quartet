@@ -690,6 +690,16 @@ function Quartet(): React.JSX.Element {
 
   const shortFp = useMemo(() => shortFingerprints(state.fingerprints), [state.fingerprints]);
 
+  // A model is half of what answers for you; the persona is the other half, and two agents on
+  // the same model are told apart by nothing else.
+  const onStage = useMemo(
+    () => state.jazzAgents.find((agent) => agent.id === state.myAgentId),
+    [state.jazzAgents, state.myAgentId],
+  );
+  const model = state.myModel ?? "model not recorded";
+  const persona = onStage?.persona;
+  const badge = persona !== undefined && persona.length > 0 ? `${model} · ${persona}` : model;
+
   useEffect(() => {
     if (!state.connectedToHub) return;
     void call("watch", conversation === undefined ? {} : { conversationId: conversation.id });
@@ -732,7 +742,7 @@ function Quartet(): React.JSX.Element {
           aria-label={view === "agents" ? "Back to rooms" : "Your agents on this machine"}
           onClick={() => show(view === "agents" ? "rooms" : "agents")}
         >
-          <span>{state.myModel ?? "model not recorded"}</span>
+          <span className="model-badge-what">{badge}</span>
           <span className="model-badge-more">
             {view === "agents" ? "back to rooms" : "your agents"}
           </span>
@@ -1114,6 +1124,9 @@ function Sidebar({
                 <span className="row-title">{entry.agent.displayName}</span>
                 <span className="row-sub">
                   @{entry.agent.handle}
+                  {entry.agent.persona !== undefined && entry.agent.persona.length > 0
+                    ? ` · ${entry.agent.persona}`
+                    : ""}
                   {entry.connected ? " · connected" : entry.invitePending ? " · invited" : ""}
                   {entry.agent.online ? "" : " · offline"}
                 </span>
