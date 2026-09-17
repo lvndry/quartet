@@ -16,6 +16,7 @@ import {
   type Conversation,
   type DirectoryEntry,
   type Invite,
+  type JazzAgent,
   type Message,
   type Agent,
   type Aside,
@@ -283,14 +284,39 @@ export class Bridge {
   setJazzRoster(roster: JazzRoster): void {
     this.jazzRoster = roster;
     this.publish();
+    this.publishPersona();
   }
 
   private jazzRoster: JazzRoster = { agents: [] };
 
+  private onStage(): JazzAgent | undefined {
+    return this.jazzRoster.agents.find((agent) => agent.id === this.jazzRoster.myAgentId);
+  }
+
   private currentModel(): string | undefined {
-    const mine = this.jazzRoster.agents.find((agent) => agent.id === this.jazzRoster.myAgentId);
+    const mine = this.onStage();
     return mine === undefined ? undefined : describeModel(mine);
   }
+
+  /**
+   * Tell the hub what this machine is wearing, when it has changed and there is a hub to tell.
+   *
+   * Gated on `me` rather than on the socket: a frame sent between the socket opening and the
+   * handshake finishing is answered with "say hello first", and the roster is read at startup
+   * so that window is exactly when the first one would land. Welcome says it instead, with
+   * `force` — a hub that came up on an empty database holds nothing, so what it was told
+   * before this connection is not evidence of what it knows now.
+   */
+  private publishPersona(force = false): void {
+    if (this.me === undefined) return;
+    const persona = this.onStage()?.persona;
+    if (!force && persona === this.publishedPersona) return;
+    this.publishedPersona = persona;
+    this.send({ t: "persona.set", ...(persona !== undefined ? { persona } : {}) });
+  }
+
+  /** What the hub was last told, so putting the same agent back on stage is not a frame. */
+  private publishedPersona: string | undefined;
 
   async start(): Promise<void> {
     await this.attestor.ready();
@@ -991,6 +1017,7 @@ export class Bridge {
         this.attestor.settleWindow();
         await this.catchUpLedger(frame.messages);
         this.flushOutbound();
+        this.publishPersona(true);
         this.publish();
         return;
 

@@ -39,6 +39,8 @@ export interface AgentRow {
   handle: string;
   display_name: string;
   bio: string | null;
+  /** The persona their agent is wearing, as their bridge last published it. */
+  persona: string | null;
   token: string;
   /** What this agent *is*. Required, because an agent nothing can name is not addressable. */
   did: string;
@@ -172,6 +174,9 @@ export class HubStore {
         handle        TEXT NOT NULL,
         display_name  TEXT NOT NULL,
         bio           TEXT,
+        -- What the agent answering for them is wearing. Written by that bridge and by
+        -- nothing else, cleared when it puts an agent with no persona on stage.
+        persona       TEXT,
         token         TEXT NOT NULL UNIQUE,
         -- The key this agent signs with, and the only unique thing about it. Required:
         -- once a handle is a label, an agent without a key has nothing anybody could use to
@@ -303,6 +308,16 @@ export class HubStore {
       CREATE INDEX IF NOT EXISTS idx_invites_to ON invites(to_agent, status);
     `);
 
+    // `CREATE TABLE IF NOT EXISTS` leaves an existing installation untouched. Keep additive
+    // columns explicit so upgrading a hub does not make the first persona update fail against
+    // the older agents table.
+    const agentColumns = this.db
+      .query<{ name: string }, []>("PRAGMA table_info(agents)")
+      .all();
+    if (!agentColumns.some((column) => column.name === "persona")) {
+      this.db.run("ALTER TABLE agents ADD COLUMN persona TEXT");
+    }
+
     // Past their retention they are history nobody reads, and the table would grow forever.
     this.db.run("DELETE FROM dispatches WHERE settled_at IS NOT NULL AND settled_at < ?", [
       new Date(Date.now() - DISPATCH_RETENTION_MS).toISOString(),
@@ -422,7 +437,6 @@ export class HubStore {
     ]);
   }
 
-
   /** How this hub describes itself publicly, or undefined until first configured. */
   hubProfile(): { description: string; nsfw: boolean } | undefined {
     const row = this.db
@@ -445,6 +459,10 @@ export class HubStore {
            updated_at = excluded.updated_at`,
       )
       .run(description, nsfw ? 1 : 0, new Date().toISOString());
+  }
+
+  updatePersona(agentId: string, persona: string | undefined): void {
+    this.db.run("UPDATE agents SET persona = ? WHERE id = ?", [persona ?? null, agentId]);
   }
 
   allAgents(): AgentRow[] {
@@ -1379,6 +1397,7 @@ export class HubStore {
       ...(row.bio !== null ? { bio: row.bio } : {}),
       ...(row.did !== null ? { did: row.did } : {}),
       ownerId: row.owner_id,
+      ...(row.persona !== null ? { persona: row.persona } : {}),
       online,
     };
   }

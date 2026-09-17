@@ -170,6 +170,15 @@ export const agentSchema = z.object({
   did: z.string().optional(),
   /** The person this agent acts for. Modelled so several agents can share one. */
   ownerId: z.string(),
+  /**
+   * The persona the agent answering for them is wearing, when its bridge has said.
+   *
+   * Published rather than derived: a persona lives in the other machine's jazz, so the only
+   * way this hub can name one is for the bridge wearing it to say so. Absent means nobody
+   * said — which is also what an agent with no persona looks like, and the two are not worth
+   * telling apart on a directory row.
+   */
+  persona: z.string().max(64).optional(),
   online: z.boolean(),
 });
 export type Agent = z.infer<typeof agentSchema>;
@@ -348,6 +357,14 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     displayName: z.string().min(1).max(64),
     bio: z.string().max(200).optional(),
   }),
+  /**
+   * What this bridge's agent is currently wearing, so a directory row can say.
+   *
+   * Its own frame rather than a field on `profile.set`: a persona changes whenever somebody
+   * puts a different agent on stage, and routing that through "set my whole profile" would
+   * make a routine switch rewrite a display name and a bio it was never given.
+   */
+  z.object({ t: z.literal("persona.set"), persona: z.string().max(64).optional() }),
   z.object({ t: z.literal("directory.list") }),
   z.object({
     t: z.literal("invite.send"),

@@ -12,6 +12,7 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { Devices } from "./Devices";
 import {
+  call,
   read,
   type BridgeState,
   type JazzAgentDetail,
@@ -106,6 +107,42 @@ function companionsOf(config: Record<string, unknown>): Record<string, string> {
   return bound;
 }
 
+/**
+ * How each provider spells its own name.
+ *
+ * Here rather than in jazz's catalogue because the catalogue serves ids and nothing else, and
+ * an id is a config key — `ai_gateway` and `moonshotai` are not what anybody calls those
+ * companies. A provider this list has not heard of falls back to a tidied id rather than
+ * disappearing, so jazz adding a nineteenth one shows up in the menu the day it lands.
+ */
+const PROVIDER_NAMES: Readonly<Record<string, string>> = {
+  ai_gateway: "Vercel AI Gateway",
+  alibaba: "Alibaba",
+  anthropic: "Anthropic",
+  cerebras: "Cerebras",
+  deepseek: "DeepSeek",
+  fireworks: "Fireworks AI",
+  gemini: "Google Gemini",
+  groq: "Groq",
+  llamacpp: "llama.cpp",
+  minimax: "MiniMax",
+  mistral: "Mistral",
+  moonshotai: "Moonshot AI",
+  ollama: "Ollama",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+  togetherai: "Together AI",
+  xai: "xAI",
+  zhipuai: "Zhipu AI",
+};
+
+function providerName(provider: string): string {
+  const known = PROVIDER_NAMES[provider];
+  if (known !== undefined) return known;
+  const spaced = provider.replace(/[_-]+/g, " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
 function commaList(value: string): string[] {
   return value
     .split(",")
@@ -126,7 +163,10 @@ function commaList(value: string): string[] {
  *   skips null and its runtime only reads these when they are the right type, so null is how
  *   "no longer set" survives a PATCH.
  */
-function configFrom(draft: Draft, stored: Record<string, unknown> = {}): Record<string, unknown> {
+function configFrom(
+  draft: Draft,
+  storedConfig: Record<string, unknown> = {},
+): Record<string, unknown> {
   const config: Record<string, unknown> = {
     persona: draft.persona,
     llmProvider: draft.llmProvider,
@@ -135,7 +175,7 @@ function configFrom(draft: Draft, stored: Record<string, unknown> = {}): Record<
 
   /** Whether the stored config carried a value worth clearing. */
   const wasSet = (key: string): boolean => {
-    const value = stored[key];
+    const value = storedConfig[key];
     if (value === undefined || value === null) return false;
     if (Array.isArray(value)) return value.length > 0;
     if (typeof value === "object") return Object.keys(value).length > 0;
@@ -165,6 +205,26 @@ function configFrom(draft: Draft, stored: Record<string, unknown> = {}): Record<
     else if (wasSet(key)) config[key] = [];
   };
 
+  /**
+   * A list jazz reads as a set, kept in the order it is already stored.
+   *
+   * Survivors first in their existing positions, then whatever is new. `toggleTool` re-adds
+   * at the end, so without this, unticking a tool and ticking it again reshuffled a
+   * twenty-nine-entry `tools` array and wrote the lot back having changed nothing. Not used
+   * for the comma-typed lists, where the order on screen is the order somebody typed.
+   */
+  const set = (key: string, values: readonly string[]): void => {
+    if (values.length === 0) {
+      if (wasSet(key)) config[key] = [];
+      return;
+    }
+    const stored = listOf(storedConfig, key);
+    config[key] = [
+      ...stored.filter((item) => values.includes(item)),
+      ...values.filter((item) => !stored.includes(item)),
+    ];
+  };
+
   text("summarizerModel", draft.summarizerModel);
   text("reasoningEffort", draft.reasoningEffort);
   // "builtin" is UI-only: Jazz stores no provider and uses the LLM's native search.
@@ -178,13 +238,51 @@ function configFrom(draft: Draft, stored: Record<string, unknown> = {}): Record<
   number("numCtx", draft.numCtx);
   list("memoryScopes", commaList(draft.memoryScopes));
   list("envAllowlist", commaList(draft.envAllowlist));
-  list("tools", draft.tools);
-  list("deniedTools", draft.deniedTools);
+  set("tools", draft.tools);
+  set("deniedTools", draft.deniedTools);
 
-  if (Object.keys(draft.companions).length > 0) config["companions"] = draft.companions;
-  else if (wasSet("companions")) config["companions"] = {};
+  // Same reason as `set`, for the same field written as an object: unbinding a modality and
+  // binding it again moved its key to the end.
+  const bindings = Object.entries(draft.companions);
+  if (bindings.length > 0) {
+    const stored = Object.keys(companionsOf(storedConfig));
+    const order = [...stored, ...bindings.map(([role]) => role).filter((role) => !stored.includes(role))];
+    config["companions"] = Object.fromEntries(
+      order.flatMap((role) => {
+        const model = draft.companions[role];
+        return model === undefined ? [] : [[role, model] as const];
+      }),
+    );
+  } else if (wasSet("companions")) config["companions"] = {};
 
   return config;
+}
+
+function sameEntries(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const known = new Set(left);
+  return right.every((item) => known.has(item));
+}
+
+/**
+ * Whether two drafts would save the same agent.
+ *
+ * A field-order-sensitive `JSON.stringify` on both, which is what this was, made the form
+ * insist on unsaved changes after an edit that undid itself: `tools`, `deniedTools` and
+ * `companions` are sets to jazz, and the controls for them re-add at the end rather than
+ * where the entry used to be. Everything else compares as written, the comma-typed lists
+ * included — the order somebody typed those in is theirs to change.
+ */
+function sameDraft(left: Draft, right: Draft): boolean {
+  const rest = (draft: Draft): string =>
+    JSON.stringify({ ...draft, tools: [], deniedTools: [], companions: {} });
+  return (
+    sameEntries(left.tools, right.tools) &&
+    sameEntries(left.deniedTools, right.deniedTools) &&
+    sameEntries(Object.keys(left.companions), Object.keys(right.companions)) &&
+    Object.entries(left.companions).every(([role, model]) => right.companions[role] === model) &&
+    rest(left) === rest(right)
+  );
 }
 
 /**
@@ -400,6 +498,33 @@ export function Dashboard({
    */
   const folded = creating && noAgentsYet && !showEverything;
 
+  /**
+   * Re-read jazz, because the roster in the snapshot is as old as the last write *this*
+   * bridge made.
+   *
+   * The bridge asks jazz for the roster once at startup and again after each of its own
+   * writes, which is exactly wrong for a machine where something else edits the same agents:
+   * `jazz agent update` in a terminal, or a second identity here — several of them point at
+   * one jazz agent, and each has its own bridge. Their edits land, and this screen goes on
+   * naming the persona it was told about hours ago, which reads as an edit that did not save.
+   */
+  useEffect(() => {
+    void call("agents/refresh", {});
+  }, []);
+
+  /**
+   * Open the agent that is on stage, once the snapshot naming it arrives.
+   *
+   * `useState(state.myAgentId)` looked like it did this and could not: the first paint happens
+   * before the socket has said anything, so the initial value was always `undefined` and a
+   * screen whose whole subject is "which agent is answering" opened on "pick an agent".
+   * Only fills a gap — a choice already made here outlives every later snapshot.
+   */
+  useEffect(() => {
+    if (creating || state.myAgentId === undefined) return;
+    setOpenId((open) => open ?? state.myAgentId);
+  }, [state.myAgentId, creating]);
+
   // The catalogues that cannot change while a form is open, asked for once.
   useEffect(() => {
     if (!editable) return;
@@ -503,7 +628,7 @@ export function Dashboard({
     creating ||
     apiKeyInput.trim().length > 0 ||
     webSearchApiKeyInput.trim().length > 0 ||
-    (detail !== undefined && JSON.stringify(draft) !== JSON.stringify(draftFrom(detail)));
+    (detail !== undefined && !sameDraft(draft, draftFrom(detail)));
 
   const fieldError = (field: string): string | undefined =>
     refusal?.field === field ? refusal.error : undefined;
@@ -892,7 +1017,7 @@ export function Dashboard({
                 <option value="">pick one</option>
                 {(catalog?.providers ?? []).map((provider) => (
                   <option key={provider} value={provider}>
-                    {provider}
+                    {providerName(provider)}
                   </option>
                 ))}
               </select>
@@ -1161,7 +1286,7 @@ export function Dashboard({
                   )}
                   {(catalog?.webSearchProviders ?? []).map((provider) => (
                     <option key={provider} value={provider}>
-                      {provider}
+                      {providerName(provider)}
                     </option>
                   ))}
                 </select>
@@ -1295,10 +1420,10 @@ export function Dashboard({
 /**
  * Which tools this agent can reach, and which of those are a choice.
  *
- * A default tool and an added one look identical in a flat list and behave nothing alike, so
- * every row is tagged. Without that, a checkbox beside a bundled tool would imply a
- * permission it does not hold — unticking it would change nothing, because the bundle grants
- * it regardless.
+ * The tick is the whole answer for a tool that has one, which is why only a denial is
+ * labelled: an unticked default has been taken away from this agent, an unticked extra was
+ * simply never asked for, and that is the one distinction the box cannot show. The line above
+ * the list says which is which.
  */
 function ToolPicker({
   tools,
@@ -1355,9 +1480,10 @@ function ToolPicker({
                     onChange={() => onChange(toggleTool(tool, draft, defaults))}
                   />
                   <span className="dash-tool-name">{tool}</span>
-                  <span className={denied ? "dash-tool-tag denied" : "dash-tool-tag"}>
-                    {denied ? "denied" : defaults.includes(tool) ? "default" : "extra"}
-                  </span>
+                  {/* Only the one an unticked box cannot say for itself. Ticked or not is
+                      already on screen; whether it is bundled or asked for changes nothing
+                      somebody reading the row has to decide. */}
+                  {denied && <span className="dash-tool-tag denied">denied</span>}
                 </label>
               );
             })}
@@ -1551,7 +1677,7 @@ function CompanionRow({
         <option value="">none</option>
         {providers.map((candidate) => (
           <option key={candidate} value={candidate}>
-            {candidate}
+            {providerName(candidate)}
           </option>
         ))}
       </select>

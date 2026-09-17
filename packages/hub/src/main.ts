@@ -370,18 +370,37 @@ function agentView(agentId: string): Agent | undefined {
  */
 function directoryFor(agentId: string): DirectoryEntry[] {
   const connected = new Set(store.connectionsFor(agentId).map((connection) => connection.other));
+  // Keyed by did, because a did is what an invite names. Asking this set about a handle is a
+  // question it can only answer no to — which is what it did, so a row was shown for an
+  // invite and then labelled as though there were none.
   const pending = new Set(
     store.pendingInvitesFor(agentId).flatMap((invite) => [invite.fromDid, invite.toDid]),
   );
   return store
     .allAgents()
     .filter((row) => row.id !== agentId)
-    .filter((row) => isOnline(row.id) || connected.has(row.id) || (row.did !== null && pending.has(row.did)))
-    .map((row) => ({
-      agent: store.toAgent(row, isOnline(row.id)),
-      connected: connected.has(row.id),
-      invitePending: pending.has(row.handle),
-    }));
+    .flatMap((row) => {
+      // One expression, read twice. Whether a row appears and what it then says about itself
+      // are the same question, and the two drifted apart the moment they were written twice.
+      const invitePending = pending.has(row.did);
+      const isConnected = connected.has(row.id);
+      const online = isOnline(row.id);
+      if (!online && !isConnected && !invitePending) return [];
+      return [{ agent: store.toAgent(row, online), connected: isConnected, invitePending }];
+    });
+}
+
+/**
+ * The directory as it now stands, to the people a change to it just concerned.
+ *
+ * An invite is the one thing that puts a stranger on somebody's list, and it used to arrive
+ * as an `invite` frame and nothing else — so the row that was supposed to say "invited" was
+ * not sent again until the next time somebody happened to come online.
+ */
+function sendDirectory(...agentIds: readonly string[]): void {
+  for (const agentId of new Set(agentIds)) {
+    send(agentId, { t: "directory", people: directoryFor(agentId) });
+  }
 }
 
 function sendWelcome(agentId: string): void {
@@ -777,8 +796,19 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       return;
     }
 
+    /**
+     * Everyone's directory, not just this agent's: a persona is only worth publishing
+     * because other people read it, and a row that only refreshes when somebody happens to
+     * reconnect would show whoever they were wearing an hour ago.
+     */
+    case "persona.set": {
+      store.updatePersona(agentId, frame.persona);
+      broadcastPresence();
+      return;
+    }
+
     case "directory.list": {
-      send(agentId, { t: "directory", people: directoryFor(agentId) });
+      sendDirectory(agentId);
       return;
     }
 
@@ -814,6 +844,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       if (invite === undefined) return;
       send(agentId, { t: "invite", invite });
       send(target.id, { t: "invite", invite });
+      sendDirectory(agentId, target.id);
       return;
     }
 
@@ -833,7 +864,13 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
       if (settled === undefined) return;
       send(from.id, { t: "invite", invite: settled });
       send(to.id, { t: "invite", invite: settled });
-      if (!frame.accept) return;
+      if (!frame.accept) {
+        // A declined invite leaves a row still saying it is waiting on an answer that has
+        // already been given. Accepting is told below instead, once the connection it makes
+        // exists — a directory sent between the two would say neither.
+        sendDirectory(from.id, to.id);
+        return;
+      }
 
       // Accepting establishes the relationship *and* opens the first conversation, because
       // the invite's purpose line is already the first thing somebody wanted to talk about.
@@ -862,6 +899,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
         );
         if (view !== undefined) send(participant, { t: "connected", connection: view, conversation });
       }
+      sendDirectory(from.id, to.id);
 
       // The purpose is a topic for the inviter's agent, not a line in its mouth — and not an
       // instruction in the hub's, either: it reaches the agent as `purpose` and the room

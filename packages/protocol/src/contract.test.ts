@@ -67,6 +67,7 @@ describe("the wire still has the frames it had", () => {
         "limit.set",
         "nudge",
         "pass",
+        "persona.set",
         "ping",
         "profile.set",
         "progress",

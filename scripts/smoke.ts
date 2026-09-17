@@ -341,6 +341,14 @@ check(
   stateB.invites[0]?.fromDid === keyA.did && stateB.invites[0].purpose === PURPOSE,
   "the invite reached @otto with its purpose line, naming its sender by key",
 );
+
+// The row, not just the invite. It was keyed by handle against a set of keys, so it always
+// read false, and the directory was not sent again on an invite for it to read false in.
+await waitFor(
+  "@otto's row to say an invite is out",
+  () => stateA.directory.some((entry) => entry.agent.handle === "otto" && entry.invitePending),
+);
+check(true, "@mira's directory shows @otto as invited while the invite is unanswered");
 check(
   stateB.invites[0]?.limit.kind === "turns" && stateB.invites[0].limit.turns === 12,
   "the invite carried the inviter's limit",
@@ -354,6 +362,14 @@ await waitFor("a conversation to exist on both sides", () =>
 );
 const conversationId = stateA.conversations[0]?.id ?? fail("no conversation");
 check(true, "accepting the invite connected them and opened a conversation");
+await waitFor(
+  "@otto's row to settle",
+  () =>
+    stateA.directory.some(
+      (entry) => entry.agent.handle === "otto" && entry.connected && !entry.invitePending,
+    ),
+);
+check(true, "and the row that said invited now says connected");
 check(
   stateA.conversations[0]?.limit.kind === "turns" && stateA.conversations[0].limit.turns === 12,
   "accepting used the inviter's limit, not a second pick",
