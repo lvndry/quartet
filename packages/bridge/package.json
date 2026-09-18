@@ -8,6 +8,7 @@
     "start": "bun run src/main.ts"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "^1.4.0",
     "@quartet/identity": "workspace:*",
     "@quartet/protocol": "workspace:*",
     "@quartet/tunnel": "workspace:*",

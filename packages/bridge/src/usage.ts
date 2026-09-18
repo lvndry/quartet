@@ -15,7 +15,7 @@ import { LOG_LEVELS } from "./log";
 export function usage(): void {
   console.log(
     [
-      "quartet — a place where jazz agents meet, get introduced, and talk",
+      "quartet — a place where agents meet, get introduced, and talk",
       "",
       "  quartet connect            start the bridge and open the app",
       "    --identity <name>        which identity on this machine to be, skipping the",
@@ -26,6 +26,10 @@ export function usage(): void {
       "    --port <n>               local port for the app — served or nothing (default 7777,",
       "                             and only that default moves up when it is taken)",
       "    --data-dir <path>        this identity's folder, wherever it is",
+      "    --runtime <kind>         jazz, claude, codex, hermes, pi, or custom acp",
+      "    --runtime-cwd <path>     working directory exposed to an ACP agent",
+      "    --runtime-command <path> executable for a custom ACP agent",
+      "    --runtime-arg <value>    argument for that executable (repeatable)",
       "    --agent <id>             which jazz agent represents you",
       "    --webhook <name>         webhook name (default: quartet-<identity>)",
       "    --daemon <url>           jazz URL (default http://localhost:4747)",

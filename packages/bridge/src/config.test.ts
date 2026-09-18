@@ -61,6 +61,66 @@ describe("saving config", () => {
     expect(rememberedHandle(read, "http://example.test")).toBe("mira");
   });
 
+  it("round-trips an ACP command as argv without turning it into shell text", async () => {
+    await saveIdentityConfig({
+      label: "mira",
+      hubUrl: "http://example.test",
+      runtime: {
+        version: 1,
+        kind: "acp",
+        preset: "custom",
+        command: "/opt/My Agent/bin/agent",
+        args: ["--literal", "$(never-run)", "two words"],
+        cwd: "/work/project",
+      },
+    });
+
+    expect((await loadIdentityConfig("mira")).runtime).toEqual({
+      version: 1,
+      kind: "acp",
+      preset: "custom",
+      command: "/opt/My Agent/bin/agent",
+      args: ["--literal", "$(never-run)", "two words"],
+      cwd: "/work/project",
+    });
+  });
+
+  it("round-trips the Pi ACP preset", async () => {
+    await saveIdentityConfig({
+      label: "mira",
+      hubUrl: "http://example.test",
+      runtime: {
+        version: 1,
+        kind: "acp",
+        preset: "pi",
+        command: "pi-acp",
+        args: [],
+        cwd: "/work/project",
+      },
+    });
+
+    expect((await loadIdentityConfig("mira")).runtime).toMatchObject({
+      kind: "acp",
+      preset: "pi",
+      command: "pi-acp",
+    });
+  });
+
+  it("keeps a legacy config runtime-free so startup can interpret it as Jazz", async () => {
+    await mkdir(workDir, { recursive: true });
+    await writeFile(
+      configPath(),
+      JSON.stringify({
+        label: "mira",
+        hubUrl: "http://example.test",
+        agentId: "agent-1",
+        webhook: { name: "quartet-mira", token: "secret" },
+      }),
+    );
+
+    expect((await loadIdentityConfig("mira")).runtime).toBeUndefined();
+  });
+
   it("keeps one handle per hub, because a handle belongs to a hub and not to a key", async () => {
     const both = withHandle(
       withHandle({ label: "mira", hubUrl: "http://work.test" }, "http://work.test", "mira"),

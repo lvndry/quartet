@@ -36,14 +36,14 @@ import { recipientsFor, withWords, type Sealer } from "./sealer";
 import type { JazzRoster } from "./agent-admin";
 import { describeModel } from "./jazz-agents";
 import { KnownKeys } from "./known";
-import {
-  answerParkedRun,
-  createIdleWatchdog,
-  MAX_PAYLOAD_BYTES,
-  runTurn,
-  TURN_TIMEOUT_MS,
-  type TurnResult,
-} from "./jazz";
+import type {
+  RuntimeEvent,
+  RuntimeInteraction,
+  RuntimeInteractionAnswer,
+  RuntimeOutcome,
+  TurnRunner,
+} from "./runtime/types";
+import { JazzRuntime } from "./runtime/jazz-runtime";
 import {
   missingOutgoing,
   readAsides,
@@ -181,6 +181,7 @@ function describeGap(ms: number): string {
 }
 
 export class Bridge {
+  private readonly runner: TurnRunner;
   private socket?: WebSocket;
   private reconnectDelay = RECONNECT_MIN_MS;
   private closing = false;
@@ -237,13 +238,7 @@ export class Bridge {
    * Anything on this machine can reach the loopback port, and "your agent is reading your
    * calendar" is not a sentence somebody else should be able to put in the room.
    */
-  private readonly progressKeys = new Map<string, string>();
-  /**
-   * The idle watchdog's `poke`, per conversation with a turn in flight.
-   *
-   * `onDaemonProgress` and `takeTurn` share a conversation id but not a call stack.
-   */
-  private readonly watchdogPokes = new Map<string, () => void>();
+  private readonly progressKeys = new Map<string, (event: RuntimeEvent) => void>();
   /**
    * The hub's name for the turn currently running, per conversation.
    *
@@ -251,6 +246,12 @@ export class Bridge {
    * daemon's progress callback both need it and neither shares a stack with the turn.
    */
   private readonly dispatches = new Map<string, string>();
+
+  /** Operator answers waiting inside a runtime turn, keyed by conversation. */
+  private readonly interactions = new Map<
+    string,
+    { readonly runId: string; readonly resolve: (answer: RuntimeInteractionAnswer) => void }
+  >();
 
   private readonly verdicts = new Map<string, Verdict>();
 
@@ -274,11 +275,15 @@ export class Bridge {
 
   constructor(
     private readonly hubUrl: string,
-    private readonly daemon: DaemonSettings,
+    runner: TurnRunner | DaemonSettings,
     private readonly attestor: Attestor,
     private readonly sealer: Sealer,
     private readonly known: KnownKeys = new KnownKeys(hubUrl),
-  ) {}
+  ) {
+    // Transitional compatibility for embedders while execution configuration moves out of
+    // Bridge. The class itself only retains and talks to the provider-neutral runner.
+    this.runner = "run" in runner ? runner : new JazzRuntime(runner);
+  }
 
   /** `AgentAdmin` owns the roster; this holds the copy the snapshot is built from. */
   setJazzRoster(roster: JazzRoster): void {
@@ -336,8 +341,13 @@ export class Bridge {
   stop(): void {
     this.closing = true;
     for (const conversationId of [...this.beating.keys()]) this.stopBeating(conversationId);
+    for (const interaction of this.interactions.values()) {
+      interaction.resolve({ approved: false, note: "the bridge stopped" });
+    }
+    this.interactions.clear();
     this.stopKeepalive();
     this.socket?.close();
+    void this.runner.close?.();
   }
 
   subscribe(listener: (state: BridgeState) => void): () => void {
@@ -378,6 +388,7 @@ export class Bridge {
       ...(keyStoreProblem !== undefined ? { keyStoreProblem } : {}),
       ...(this.refusal !== undefined ? { hubRefusal: this.refusal } : {}),
       ...(this.lastError !== undefined ? { lastError: this.lastError } : {}),
+      runtime: { kind: this.runner.info.kind, label: this.runner.info.label },
     };
   }
 
@@ -1347,7 +1358,7 @@ export class Bridge {
     this.publish();
     this.startBeating(conversationId, dispatch);
 
-    // Trimmed to what this machine's daemon will accept, and reported rather than silently
+    // Trimmed to what this machine's runtime will accept, and reported rather than silently
     // lost: a size ceiling on one request is not a ceiling on the conversation.
     const composed = composeTurnPayload(
       {
@@ -1360,41 +1371,60 @@ export class Bridge {
         ...(steer !== undefined ? { steer } : {}),
         ...(notice !== undefined ? { notice } : {}),
       },
-      MAX_PAYLOAD_BYTES,
+      this.runner.info.maxPromptBytes,
     );
     if (composed.dropped > 0 || composed.truncated > 0) {
-      daemonLog.warn("trimmed the turn to fit the daemon's body limit", {
+      daemonLog.warn("trimmed the turn to fit the runtime's prompt limit", {
         dropped: composed.dropped > 0 ? composed.dropped : undefined,
         truncated: composed.truncated > 0 ? composed.truncated : undefined,
       });
     }
 
-    const progressKey = crypto.randomUUID().replaceAll("-", "");
-    this.progressKeys.set(progressKey, conversationId);
-    const progressUrl =
-      this.localOrigin === undefined
-        ? undefined
-        : `${this.localOrigin}/progress/${progressKey}`;
-
-    const watchdog = createIdleWatchdog(TURN_TIMEOUT_MS);
-    this.watchdogPokes.set(conversationId, watchdog.poke);
-
-    const result = await runTurn(
-      this.daemon,
+    const abort = new AbortController();
+    const result = await this.runner.run({
       conversationId,
-      composed.payload,
-      watchdog,
-      progressUrl,
-    );
-    this.progressKeys.delete(progressKey);
-    this.watchdogPokes.delete(conversationId);
-    watchdog.dispose();
+      prompt: composed.payload,
+      signal: abort.signal,
+      onEvent: (event) => this.onRuntimeEvent(conversationId, event),
+      openEventChannel: (receive) => {
+        const key = crypto.randomUUID().replaceAll("-", "");
+        this.progressKeys.set(key, receive);
+        return {
+          ...(this.localOrigin !== undefined
+            ? { url: `${this.localOrigin}/progress/${key}` }
+            : {}),
+          close: () => this.progressKeys.delete(key),
+        };
+      },
+      requestInteraction: (runId, pending) =>
+        this.waitForInteraction(conversationId, dispatch, runId, pending),
+    });
 
     this.finishTurn(conversationId, dispatch, result, startedAt, steer);
   }
 
+  private waitForInteraction(
+    conversationId: string,
+    dispatch: string,
+    runId: string,
+    pending: RuntimeInteraction,
+  ): Promise<RuntimeInteractionAnswer> {
+    // The current app can present one decision per room. Refuse a concurrent request rather
+    // than replacing the resolver and leaving the first tool call parked forever.
+    if (this.interactions.has(conversationId)) {
+      return Promise.resolve({ approved: false, note: "another interaction is already waiting" });
+    }
+    this.stopBeating(conversationId);
+    this.activity.set(conversationId, { state: "needs-you", runId, pending });
+    this.send({ t: "waiting", conversationId, dispatch });
+    this.publish();
+    return new Promise((resolve) => {
+      this.interactions.set(conversationId, { runId, resolve });
+    });
+  }
+
   /**
-   * Approve or decline a parked jazz tool from this app, then finish the turn.
+   * Approve or decline an interaction requested by the active runtime.
    *
    * The *same* turn, so it answers under the dispatch that turn was given — a parked run is
    * the one case where a person's deliberation sits in the middle of a dispatch.
@@ -1406,16 +1436,21 @@ export class Bridge {
     note?: string,
     questionResponse?: string,
   ): Promise<void> {
+    const interaction = this.interactions.get(conversationId);
     const dispatch = this.dispatches.get(conversationId);
-    if (dispatch === undefined) {
+    if (dispatch === undefined || interaction === undefined || interaction.runId !== runId) {
       log.error("no turn is waiting on you in that conversation", { conversation: conversationId });
       return;
     }
-    const startedAt = Date.now();
-    this.activity.set(conversationId, { state: "thinking", since: startedAt });
+    this.interactions.delete(conversationId);
+    this.activity.set(conversationId, { state: "thinking", since: Date.now() });
     this.publish();
-    const result = await answerParkedRun(this.daemon, runId, approved, note, questionResponse);
-    this.finishTurn(conversationId, dispatch, result, startedAt, this.pendingSteer.get(conversationId));
+    this.startBeating(conversationId, dispatch);
+    interaction.resolve({
+      approved,
+      ...(note !== undefined ? { note } : {}),
+      ...(questionResponse !== undefined ? { response: questionResponse } : {}),
+    });
   }
 
   /**
@@ -1455,8 +1490,8 @@ export class Bridge {
    * accepting anything that arrives on the port.
    */
   onDaemonProgress(key: string, event: DaemonProgressEvent): boolean {
-    const conversationId = this.progressKeys.get(key);
-    if (conversationId === undefined) {
+    const receive = this.progressKeys.get(key);
+    if (receive === undefined) {
       // Worth a line rather than a silent `false`: this is how a turn ends up looking idle
       // while the daemon is busy. The key itself is deliberately not logged — it is the
       // one-time secret that authorises reporting into a live turn, and a bearer value does
@@ -1466,16 +1501,19 @@ export class Bridge {
       return false;
     }
 
-    // The daemon just proved it is still alive — push the idle deadline back out. Done
-    // before the activity check, because a run parked on an approval is still a live run.
-    this.watchdogPokes.get(conversationId)?.();
+    receive(event);
+    return true;
+  }
+
+  /** Shared projection of runtime events into the app and room heartbeat. */
+  private onRuntimeEvent(conversationId: string, event: RuntimeEvent): void {
     daemonLog.debug("progress", {
       kind: typeof event.kind === "string" ? event.kind : "unknown",
       tool: typeof event.toolName === "string" ? event.toolName : undefined,
     });
 
     const tool = typeof event.toolName === "string" ? event.toolName : undefined;
-    if (tool === undefined) return true;
+    if (tool === undefined) return;
     this.toolCalls.set(
       conversationId,
       recordToolCall(this.toolCalls.get(conversationId) ?? [], event),
@@ -1484,7 +1522,7 @@ export class Bridge {
     const running = this.activity.get(conversationId);
     if (running?.state !== "thinking") {
       this.publish();
-      return true;
+      return;
     }
 
     const doing =
@@ -1498,13 +1536,12 @@ export class Bridge {
     // has the result either way, so holding the line loses nothing.
     this.activity.set(conversationId, doing === undefined ? running : { ...running, doing });
     this.publish();
-    if (doing === undefined) return true;
+    if (doing === undefined) return;
     // The other side gets the name, on the heartbeat that already re-arms the deadline.
     // Only the name: `event.result` is output from this machine, and a room is not the place
     // for it. See `ToolCall`. Named with the dispatch, like everything else a turn produces.
     const dispatch = this.dispatches.get(conversationId);
     if (dispatch !== undefined) this.send({ t: "progress", conversationId, dispatch, note: doing });
-    return true;
   }
 
   private stopBeating(conversationId: string): void {
@@ -1517,7 +1554,7 @@ export class Bridge {
   private finishTurn(
     conversationId: string,
     dispatch: string,
-    result: TurnResult,
+    result: RuntimeOutcome,
     startedAt: number,
     steer: string | undefined,
   ): void {
@@ -1590,17 +1627,6 @@ export class Bridge {
           ...(result.cost.costUSD !== undefined ? { costUSD: result.cost.costUSD } : {}),
           ...(result.cost.incomplete ? { costIncomplete: true } : {}),
         });
-        this.publish();
-        return;
-
-      case "needs-you":
-        daemonLog.warn("waiting for you to approve a tool", { run: result.runId, took });
-        this.activity.set(conversationId, {
-          state: "needs-you",
-          runId: result.runId,
-          pending: result.pending,
-        });
-        this.send({ t: "waiting", conversationId, dispatch });
         this.publish();
         return;
 

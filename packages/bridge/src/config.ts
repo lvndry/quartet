@@ -74,6 +74,25 @@ export interface MachineConfig {
   readonly lastHubUrl?: string;
 }
 
+/**
+ * The local program that takes Quartet turns.
+ *
+ * Jazz remains the zero-configuration default. ACP is the open boundary: Hermes speaks it
+ * directly, while Claude Code, Codex, and Pi publish or have ACP adapters. The command is
+ * stored as an argv vector rather than a shell string so a path or argument can never become
+ * shell code.
+ */
+export type RuntimeConfig =
+  | { readonly version: 1; readonly kind: "jazz" }
+  | {
+      readonly version: 1;
+      readonly kind: "acp";
+      readonly preset: "hermes" | "claude" | "codex" | "pi" | "custom";
+      readonly command: string;
+      readonly args: readonly string[];
+      readonly cwd?: string;
+    };
+
 export interface IdentityConfig {
   /**
    * This identity's name *on this machine* — its folder, its webhook, its log lines.
@@ -84,6 +103,13 @@ export interface IdentityConfig {
    * a directory or strand a webhook token keyed by name.
    */
   readonly label: string;
+  /**
+   * How this identity runs its agent. Absent in older files means Jazz.
+   *
+   * Kept per identity because two identities on one machine may deliberately be backed by
+   * different agents. Legacy Jazz fields below remain readable during the migration.
+   */
+  readonly runtime?: RuntimeConfig;
   /** The hub this identity last joined, and the default the next run offers. */
   readonly hubUrl: string;
   /**

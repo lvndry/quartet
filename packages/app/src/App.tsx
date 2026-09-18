@@ -676,11 +676,11 @@ function Quartet(): React.JSX.Element {
   useEffect(() => {
     if (!stateArrived || sentToRoster.current) return;
     sentToRoster.current = true;
-    if (state.myAgentId === undefined && window.location.pathname === "/") {
+    if (state.runtime?.kind !== "acp" && state.myAgentId === undefined && window.location.pathname === "/") {
       window.history.replaceState(null, "", `${AGENTS_PATH}${window.location.search}`);
       setView("agents");
     }
-  }, [stateArrived, state.myAgentId]);
+  }, [stateArrived, state.myAgentId, state.runtime?.kind]);
 
   const conversation: Conversation | undefined = useMemo(
     () =>
@@ -696,7 +696,7 @@ function Quartet(): React.JSX.Element {
     () => state.jazzAgents.find((agent) => agent.id === state.myAgentId),
     [state.jazzAgents, state.myAgentId],
   );
-  const model = state.myModel ?? "model not recorded";
+  const model = state.myModel ?? state.runtime?.label ?? "model not recorded";
   const persona = onStage?.persona;
   const badge = persona !== undefined && persona.length > 0 ? `${model} · ${persona}` : model;
 
@@ -760,7 +760,27 @@ function Quartet(): React.JSX.Element {
         aria-hidden="true"
       />
 
-      {view === "agents" ? (
+      {view === "agents" && state.runtime?.kind === "acp" ? (
+        <section className="dash">
+          <div className="dash-top">
+            <span className="pane-title">Your runtime</span>
+            <div className="spacer" />
+            <button className="btn" type="button" onClick={() => show("rooms")}>
+              Back to rooms
+            </button>
+          </div>
+          <div className="dash-body">
+            <div className="dash-firstrun">
+              <h2>{state.runtime.label}</h2>
+              <p>
+                This agent is connected through ACP and keeps its own models, tools, and
+                credentials. Configure those in the agent itself; Quartet owns the rooms,
+                permissions, and conversation boundary.
+              </p>
+            </div>
+          </div>
+        </section>
+      ) : view === "agents" ? (
         <Dashboard
           state={state}
           onClose={() => show("rooms")}
