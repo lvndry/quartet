@@ -71,6 +71,11 @@ import { currentLogLevel, logger, parseLogLevel, setLogLevel } from "./log";
 import { startLocalServer } from "./local";
 import { usage } from "./usage";
 import { DeviceRegistry, type StoredDevice } from "./devices";
+import { JazzRuntime } from "./runtime/jazz-runtime";
+import { AcpRuntime } from "./runtime/acp-runtime";
+import { RuntimeSessionStore, runtimeFingerprint } from "./runtime/session-store";
+import type { TurnRunner } from "./runtime/types";
+import { ACP_INSTALL_HINTS, chooseRuntime } from "./runtime-choice";
 import { startTunnel } from "@quartet/tunnel";
 import QRCode from "qrcode";
 
@@ -117,6 +122,22 @@ function argValue(name: string): string | undefined {
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(`--${name}`);
+}
+
+/** Every occurrence of a repeatable flag, preserving argv exactly. */
+function argValues(name: string): string[] {
+  const values: string[] = [];
+  for (let index = 0; index < process.argv.length; index += 1) {
+    if (process.argv[index] !== `--${name}`) continue;
+    const value = process.argv[index + 1];
+    // Unlike ordinary Quartet options, an argv value is often itself a flag (`--stdio`).
+    if (value === undefined) {
+      console.error(`\n  ! --${name} needs a value right after it.\n`);
+      process.exit(1);
+    }
+    values.push(value);
+  }
+  return values;
 }
 
 /**
@@ -928,8 +949,6 @@ async function connect(): Promise<void> {
   const level = parseLogLevel(argValue("log-level"));
   if (level !== undefined) setLogLevel(level);
 
-  if (!(await ensureJazzInstalled())) process.exit(1);
-
   // The hub comes first, and everything after it is asked in its terms. Which identities are
   // worth offering depends on which hub this is — a handle belongs to a hub, so the useful
   // question is "who are you *here*", and asking it the other way round meant answering it
@@ -962,6 +981,28 @@ async function connect(): Promise<void> {
     ? { label: choice.label ?? "", hubUrl }
     : await loadIdentityConfig(choice.label);
   if (!fresh) await reportFilePermissions();
+
+  // Runtime belongs to the identity, so it follows identity selection. Ask before claiming a
+  // fresh handle: cancelling a local setup question must not leave a remote identity behind.
+  const requestedRuntime = argValue("runtime");
+  const customRuntimeCommand = argValue("runtime-command");
+  const customRuntimeArgs = argValues("runtime-arg");
+  const runtimeChoice = await chooseRuntime({
+    ...(config.runtime !== undefined ? { stored: config.runtime } : {}),
+    ...(requestedRuntime !== undefined ? { requested: requestedRuntime } : {}),
+    cwd: argValue("runtime-cwd") ?? process.cwd(),
+    ...(customRuntimeCommand !== undefined ? { customCommand: customRuntimeCommand } : {}),
+    ...(customRuntimeArgs.length > 0 ? { customArgs: customRuntimeArgs } : {}),
+    interactive: process.stdin.isTTY === true,
+    ask: prompt,
+  });
+  if (runtimeChoice.kind === "stop") process.exit(1);
+  if (runtimeChoice.kind === "error") {
+    console.error(`\n  ! ${runtimeChoice.message}.\n`);
+    process.exit(1);
+  }
+  const runtime = runtimeChoice.runtime;
+  config = { ...config, runtime };
 
   // Generated but not yet kept when this identity is new: the folder is named after the
   // handle the hub accepts, so nothing is written until there is an accepted handle to name
@@ -1037,26 +1078,42 @@ async function connect(): Promise<void> {
   }
   const handle = rememberedHandle(config, hubUrl);
 
-  const withDaemon = await ensureDaemon(machine, { ...config, hubUrl });
-  if (withDaemon === undefined) process.exit(1);
-  machine = withDaemon.machine;
-  config = withDaemon.config;
-  const daemon = withDaemon.daemon;
+  if (runtime.kind === "jazz" && !(await ensureJazzInstalled())) process.exit(1);
+
+  const withDaemon = runtime.kind === "jazz" ? await ensureDaemon(machine, { ...config, hubUrl }) : undefined;
+  if (runtime.kind === "jazz" && withDaemon === undefined) process.exit(1);
+  if (runtime.kind !== "jazz") {
+    const found = Bun.which(runtime.command);
+    if (found === null) {
+      console.error(`\n  ! could not find the ACP agent command "${runtime.command}" on PATH.`);
+      if (runtime.preset !== "custom") console.error(`    ${ACP_INSTALL_HINTS[runtime.preset]}`);
+      console.error("    Or use --runtime acp --runtime-command <path>.\n");
+      process.exit(1);
+    }
+    console.log(`\n  ✓ ${runtime.preset} agent through ACP (${found})`);
+  }
+  // Narrowed below once the concrete runner is constructed.
+  const jazzSetup = withDaemon;
+  if (jazzSetup !== undefined) {
+    machine = jazzSetup.machine;
+    config = { ...jazzSetup.config, runtime };
+  }
+  const daemon = jazzSetup?.daemon;
   await saveMachineConfig(machine);
   await saveIdentityConfig(config);
 
   // Nothing is on stage until an agent is, and the app is where that gets fixed. Said once
   // here so the URL below can land on the screen that fixes it.
-  const onStage = config.agentId !== undefined;
+  const onStage = runtime.kind === "acp" || config.agentId !== undefined;
 
-  if (onStage && !(await webhookConfigured(daemon.webhook))) {
+  if (runtime.kind === "jazz" && daemon !== undefined && onStage && !(await webhookConfigured(daemon.webhook))) {
     console.warn(
       `\n  ! jazz has no webhook called "${daemon.webhook}". Every turn will fail until it` +
         `\n    appears in the "webhooks" list in ~/.jazz/config.json.`,
     );
   }
 
-  if (!(await daemonReachable(daemon))) {
+  if (runtime.kind === "jazz" && daemon !== undefined && !(await daemonReachable(daemon))) {
     console.warn(
       `\n  ! ${daemon.url} is not answering. Start it with \`jazz daemon\` — quartet will keep` +
         `\n    trying, but your agent cannot take a turn until it is up.`,
@@ -1069,12 +1126,34 @@ async function connect(): Promise<void> {
     process.exit(1);
   }
 
-  const bridge = new Bridge(hubUrl, daemon, new Attestor(keypair), new Sealer(sealingKeys));
-  const agents = new AgentAdmin(daemon, (roster) => bridge.setJazzRoster(roster));
+  let runner: TurnRunner;
+  let agents: AgentAdmin | undefined;
+  if (runtime.kind === "jazz") {
+    if (daemon === undefined) throw new Error("jazz setup completed without daemon settings");
+    runner = new JazzRuntime(daemon);
+  } else {
+    const cwd = runtime.cwd ?? process.cwd();
+    const sessions = new RuntimeSessionStore(
+      runtimeFingerprint({ command: runtime.command, args: runtime.args, cwd }),
+    );
+    runner = new AcpRuntime({
+      command: runtime.command,
+      args: runtime.args,
+      cwd,
+      label: `${runtime.preset} via ACP`,
+      loadSession: (conversationId) => sessions.get(conversationId),
+      saveSession: (conversationId, sessionId) => sessions.set(conversationId, sessionId),
+    });
+  }
+
+  const bridge = new Bridge(hubUrl, runner, new Attestor(keypair), new Sealer(sealingKeys));
+  if (runtime.kind === "jazz" && daemon !== undefined) {
+    agents = new AgentAdmin(daemon, (roster) => bridge.setJazzRoster(roster));
+  }
   await bridge.start();
   // Not awaited: the roster is for the dashboard, and a daemon that is slow to answer should
   // delay the agent list rather than the hub connection.
-  void agents.refresh();
+  void agents?.refresh();
 
   const localToken = config.localToken ?? crypto.randomUUID().replaceAll("-", "");
   if (config.localToken !== localToken) config = { ...config, localToken };
@@ -1097,7 +1176,7 @@ async function connect(): Promise<void> {
     mayMoveUp: requestedPort === undefined,
     token: localToken,
     bridge,
-    agents,
+    ...(agents !== undefined ? { agents } : {}),
     devices,
     // A hub can lose this key while the bridge is running — a replaced database, a restore
     // from before this identity existed. `connect` finished long ago and its terminal has
@@ -1191,7 +1270,7 @@ async function connect(): Promise<void> {
   }
   logger("bridge").info("watching", {
     agent: handle === undefined ? config.label : `@${handle}`,
-    webhook: daemon.webhook,
+    runtime: runner.info.label,
     data: getDataDirectory(),
     level: currentLogLevel(),
   });
@@ -1340,30 +1419,37 @@ async function info(): Promise<void> {
   const known = rememberedHandle(config, hubUrl);
   console.log(`handle     ${known === undefined ? "none claimed on that hub yet" : `@${known}`}`);
 
-  const daemonUrl = argValue("daemon") ?? machine.daemonUrl ?? DEFAULT_DAEMON_URL;
-  const agentFlag =
-    argValue("agent") ??
-    config.agentId ??
-    (config.webhook !== undefined ? await agentIdFor(config.webhook.name) : undefined);
-
-  if (agentFlag === undefined) {
-    console.log(`jazz agent none on file — pass --agent, or run connect once to set one`);
+  const configuredRuntime = config.runtime ?? { version: 1 as const, kind: "jazz" as const };
+  if (configuredRuntime.kind === "acp") {
+    console.log(`runtime    ${configuredRuntime.preset} via ACP`);
+    console.log(`command    ${[configuredRuntime.command, ...configuredRuntime.args].join(" ")}`);
+    if (configuredRuntime.cwd !== undefined) console.log(`workspace  ${configuredRuntime.cwd}`);
   } else {
-    const listing = await fetchJazzAgents(daemonUrl, await resolveJazzDaemonToken());
-    if (listing.kind !== "ok") {
-      console.log(`jazz agent "${agentFlag}" — could not ask ${daemonUrl} (${listing.kind})`);
-    } else {
-      const picked = resolveAgentChoice(listing.agents, agentFlag);
-      console.log(
-        picked === undefined
-          ? `jazz agent "${agentFlag}" — not found on ${daemonUrl}`
-          : `jazz agent ${picked.name} — ${describeModel(picked)}, persona: ${picked.persona ?? "none"}, ${String(picked.tools.length)} tools`,
-      );
-    }
-  }
+    const daemonUrl = argValue("daemon") ?? machine.daemonUrl ?? DEFAULT_DAEMON_URL;
+    const agentFlag =
+      argValue("agent") ??
+      config.agentId ??
+      (config.webhook !== undefined ? await agentIdFor(config.webhook.name) : undefined);
 
-  if (config.webhook !== undefined) {
-    console.log(`webhook    ${config.webhook.name}`);
+    if (agentFlag === undefined) {
+      console.log(`jazz agent none on file — pass --agent, or run connect once to set one`);
+    } else {
+      const listing = await fetchJazzAgents(daemonUrl, await resolveJazzDaemonToken());
+      if (listing.kind !== "ok") {
+        console.log(`jazz agent "${agentFlag}" — could not ask ${daemonUrl} (${listing.kind})`);
+      } else {
+        const picked = resolveAgentChoice(listing.agents, agentFlag);
+        console.log(
+          picked === undefined
+            ? `jazz agent "${agentFlag}" — not found on ${daemonUrl}`
+            : `jazz agent ${picked.name} — ${describeModel(picked)}, persona: ${picked.persona ?? "none"}, ${String(picked.tools.length)} tools`,
+        );
+      }
+    }
+
+    if (config.webhook !== undefined) {
+      console.log(`webhook    ${config.webhook.name}`);
+    }
   }
 
   // The port and the token are both stable across restarts, so this line is the way back into
@@ -1371,7 +1457,7 @@ async function info(): Promise<void> {
   // printed it had scrolled away.
   if (config.localPort !== undefined && config.localToken !== undefined) {
     console.log(
-      `app        ${appAddress(config.localPort, config.localToken, config.agentId !== undefined)}`,
+      `app        ${appAddress(config.localPort, config.localToken, configuredRuntime.kind === "acp" || config.agentId !== undefined)}`,
     );
   } else {
     console.log(`app        not served yet — run \`quartet connect\` once`);

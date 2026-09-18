@@ -51,8 +51,8 @@ export interface LocalServerOptions {
   readonly mayMoveUp: boolean;
   readonly token: string;
   readonly bridge: Bridge;
-  /** This machine's jazz agents, for the dashboard. */
-  readonly agents: AgentAdmin;
+  /** Jazz's optional management surface. ACP runtimes manage themselves outside Quartet. */
+  readonly agents?: AgentAdmin;
   /** Which devices may drive this agent from somewhere other than here. */
   readonly devices: DeviceRegistry;
   /**
@@ -464,7 +464,7 @@ async function handleApi(
   pathname: string,
   request: Request,
   bridge: Bridge,
-  agents: AgentAdmin,
+  agents: AgentAdmin | undefined,
   devices: DeviceRegistry,
   pairingOrigin: () => string,
   claim: LocalServerOptions["claim"],
@@ -476,6 +476,13 @@ async function handleApi(
 
   const text = (key: string): string =>
     typeof body[key] === "string" ? (body[key] as string).trim() : "";
+
+  if (pathname.startsWith("/api/agents/") && agents === undefined) {
+    return json(
+      { error: "this runtime is managed by its own agent program, not by Quartet" },
+      404,
+    );
+  }
 
   switch (pathname) {
     case "/api/invite": {
@@ -686,14 +693,14 @@ async function handleApi(
     }
 
     case "/api/agents/refresh": {
-      await agents.refresh();
+      await agents!.refresh();
       return json({ ok: true });
     }
 
     case "/api/agents/select": {
       const agentId = text("agentId");
       if (agentId.length === 0) return json({ error: "agentId is required" }, 400);
-      const selected = await agents.select(agentId);
+      const selected = await agents!.select(agentId);
       // Only on success, and with the id jazz resolved rather than the one that was typed:
       // the webhook may be written by name, and a record holding a different spelling of the
       // same agent is a record that disagrees with itself.
@@ -708,7 +715,7 @@ async function handleApi(
       // jazz owns what a valid config is, so the config goes over untouched rather than
       // being screened here — a second copy of those rules would only drift from the first.
       return fromJazz(
-        await agents.create({
+        await agents!.create({
           name,
           ...(description.length > 0 ? { description } : {}),
           config: (body["config"] ?? {}) as Record<string, unknown>,
@@ -723,7 +730,7 @@ async function handleApi(
       const description = text("description");
       const config = body["config"];
       return fromJazz(
-        await agents.update(id, {
+        await agents!.update(id, {
           ...(name.length > 0 ? { name } : {}),
           // Sent even when blank: clearing a description is a thing somebody may want, and
           // jazz decides whether an empty one is allowed.
@@ -736,13 +743,13 @@ async function handleApi(
     case "/api/agents/delete": {
       const id = text("id");
       if (id.length === 0) return json({ error: "id is required" }, 400);
-      return fromJazz(await agents.remove(id));
+      return fromJazz(await agents!.remove(id));
     }
 
     case "/api/agents/detail": {
       const id = text("id");
       if (id.length === 0) return json({ error: "id is required" }, 400);
-      return fromJazz(await agents.detail(id));
+      return fromJazz(await agents!.detail(id));
     }
 
     case "/api/agents/models": {
@@ -752,7 +759,7 @@ async function handleApi(
       }
       const role = text("role");
       return fromJazz(
-        role.length > 0 ? await agents.models(provider, role) : await agents.models(provider),
+        role.length > 0 ? await agents!.models(provider, role) : await agents!.models(provider),
       );
     }
 
@@ -831,7 +838,7 @@ async function handleApi(
     }
 
     case "/api/agents/personas":
-      return fromJazz(await agents.personas());
+      return fromJazz(await agents!.personas());
 
     case "/api/agents/personas/create": {
       const name = text("name");
@@ -843,7 +850,7 @@ async function handleApi(
       const tone = text("tone");
       const style = text("style");
       return fromJazz(
-        await agents.createPersona({
+        await agents!.createPersona({
           name,
           description: text("description"),
           systemPrompt,
@@ -854,7 +861,7 @@ async function handleApi(
     }
 
     case "/api/agents/tools":
-      return fromJazz(await agents.tools());
+      return fromJazz(await agents!.tools());
 
     default:
       return json({ error: "not found" }, 404);

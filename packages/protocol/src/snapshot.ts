@@ -261,6 +261,12 @@ export interface JazzAgentDetail {
   readonly apiKeyProviders: readonly string[];
 }
 
+/** The local execution backend taking this identity's turns. */
+export interface RuntimeSummary {
+  readonly kind: "jazz" | "acp";
+  readonly label: string;
+}
+
 /**
  * Everything the app knows, as one value.
  *
@@ -271,6 +277,8 @@ export interface JazzAgentDetail {
 export interface BridgeState {
   readonly connectedToHub: boolean;
   readonly me?: Agent;
+  /** Present for every configured runtime, including ones with no Jazz-style roster. */
+  readonly runtime?: RuntimeSummary;
   /** `provider/model` for the jazz agent answering on this machine, when jazz will say. */
   readonly myModel?: string;
   /** This machine's jazz agents. Not hub agents — those are `directory`. */

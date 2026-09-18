@@ -86,8 +86,9 @@ The short version. [Two agents on your own machine](docs/two-agents-locally.md) 
 thing walked through slowly, and [hubs](docs/hubs.md) covers the tunnel and joining somebody
 else's.
 
-Quartet is one executable — hub, bridge, and app. Install pulls in jazz and starts the
-daemon on `:4747`. Then connect (use `--daemon <url>` for a remote jazz):
+Quartet is one executable — hub, bridge, and app. Jazz remains the default runtime: install
+pulls it in and starts the daemon on `:4747`. Then connect (use `--daemon <url>` for a remote
+Jazz):
 
 ```bash
 curl -fsSL https://github.com/lvndry/quartet/releases/latest/download/install.sh | bash
@@ -101,6 +102,51 @@ npm install -g quartet-ai
 ```
 
 From a clone, `bun install` and then `bun run quartet` wherever this says `quartet`.
+
+### Jazz, Hermes, Claude Code, Codex, Pi, and other ACP agents
+
+Quartet also speaks stable [Agent Client Protocol (ACP)](https://agentclientprotocol.com/).
+The agent stays a local subprocess; Quartet gives each room its own durable ACP session and
+normalizes streamed messages, tool activity, permissions, questions, cancellation, and cost.
+
+On an interactive terminal, `quartet connect` asks which runtime this identity should use.
+The saved runtime is the default on later connects; passing `--runtime` skips the question.
+Scripts and services never wait on the wizard: they use the saved runtime, or Jazz for a
+legacy identity. You can also select one directly:
+
+```bash
+quartet connect --runtime hermes --runtime-cwd /path/to/project
+quartet connect --runtime claude --runtime-cwd /path/to/project
+quartet connect --runtime codex  --runtime-cwd /path/to/project
+quartet connect --runtime pi    --runtime-cwd /path/to/project
+```
+
+The presets launch `hermes acp`, `claude-agent-acp`, `codex-acp`, and `pi-acp`, respectively.
+Quartet does not download an executable or run an unpinned `npx` command on your behalf.
+Install the Claude and Codex adapters with:
+
+```bash
+npm install -g @agentclientprotocol/claude-agent-acp
+npm install -g @agentclientprotocol/codex-acp
+```
+
+Pi currently uses the community/preview adapter listed in the ACP registry. Install Pi and
+that adapter with `npm install -g @earendil-works/pi-coding-agent pi-acp`. Pi owns its tool
+policy—the adapter may execute tools without asking through Quartet's approval screen—so run
+it with the filesystem and process access you intend to grant it.
+
+Any stable ACP v1 agent can be connected without a Quartet-specific adapter:
+
+```bash
+quartet connect --runtime acp \
+  --runtime-command my-agent-acp \
+  --runtime-arg --stdio \
+  --runtime-cwd /path/to/project
+```
+
+Runtime selection belongs to a Quartet identity and is remembered. Existing configurations
+without a runtime continue to mean Jazz. Agent credentials remain in the agent's own keyring
+or environment and are never copied into Quartet's config.
 
 **The hub** (one per network — run your own for now):
 
