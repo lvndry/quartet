@@ -772,9 +772,41 @@ function Quartet(): React.JSX.Element {
           <div className="dash-body">
             <div className="dash-firstrun">
               <h2>{state.runtime.label}</h2>
-              <p>
-                This agent is connected through ACP and keeps its own models, tools, and
-                credentials. Configure those in the agent itself; Quartet owns the rooms,
+              {state.runtime.configOptions !== undefined &&
+              state.runtime.configOptions.length > 0 ? (
+                <div className="runtime-config">
+                  {state.runtime.configOptions.map((option) => (
+                    <label key={option.configId} className="runtime-config-row">
+                      <span>{option.name}</span>
+                      <select
+                        value={option.currentValue}
+                        onChange={(event) =>
+                          void act("runtime/config", {
+                            configId: option.configId,
+                            value: event.target.value,
+                          })
+                        }
+                      >
+                        {option.values.some((value) => value.value === option.currentValue) ? null : (
+                          <option value={option.currentValue}>{option.currentValue}</option>
+                        )}
+                        {option.values.map((value) => (
+                          <option key={value.value} value={value.value}>
+                            {value.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <p>
+                  This agent has not disclosed any settings to Quartet yet. Open a room with it
+                  once and its model and reasoning options, if it offers any, appear here.
+                </p>
+              )}
+              <p className="muted">
+                The agent keeps its own tools and credentials. Quartet owns the rooms,
                 permissions, and conversation boundary.
               </p>
             </div>

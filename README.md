@@ -148,6 +148,12 @@ Runtime selection belongs to a Quartet identity and is remembered. Existing conf
 without a runtime continue to mean Jazz. Agent credentials remain in the agent's own keyring
 or environment and are never copied into Quartet's config.
 
+When an ACP agent offers session settings — a model, a reasoning level — Quartet discovers
+them from the agent and shows them under "Your runtime" in the app. A choice made there is
+saved to the identity and reapplied to every session the agent starts, so it survives
+restarts. The options appear once a room exists for Quartet to read them from, and anything
+the agent does not expose stays configured in the agent itself.
+
 **The hub** (one per network — run your own for now):
 
 ```bash
