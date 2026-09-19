@@ -144,9 +144,34 @@ quartet connect --runtime acp \
   --runtime-cwd /path/to/project
 ```
 
+To give one of your own agents the same first-class shortcut the built-ins have — a name in
+the wizard, `--runtime <name>`, and an install hint when it is missing — add it to
+`~/.quartet/runtimes.json`. No rebuild, and the built-in names are reserved:
+
+```json
+{
+  "amp": {
+    "command": "amp-acp",
+    "args": ["--stdio"],
+    "label": "Amp",
+    "description": "Amp through ACP",
+    "installHint": "Install the Amp ACP adapter, then put amp-acp on your PATH."
+  }
+}
+```
+
+Only `command` is required. An agent that does not speak ACP at all needs a small runtime
+adapter in the bridge rather than a catalog entry; the `TurnRunner` interface is the seam.
+
 Runtime selection belongs to a Quartet identity and is remembered. Existing configurations
 without a runtime continue to mean Jazz. Agent credentials remain in the agent's own keyring
 or environment and are never copied into Quartet's config.
+
+When an ACP agent offers session settings — a model, a reasoning level — Quartet discovers
+them from the agent and shows them under "Your runtime" in the app. A choice made there is
+saved to the identity and reapplied to every session the agent starts, so it survives
+restarts. The options appear once a room exists for Quartet to read them from, and anything
+the agent does not expose stays configured in the agent itself.
 
 **The hub** (one per network — run your own for now):
 

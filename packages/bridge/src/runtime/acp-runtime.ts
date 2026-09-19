@@ -14,12 +14,14 @@ import { CLOSE_SENTINEL, PASS_SENTINEL } from "@quartet/protocol";
 import { webhookPromptTemplate } from "../prompt";
 import type {
   RunTurnRequest,
+  RuntimeConfigOption,
   RuntimeEvent,
   RuntimeInteraction,
   RuntimeInteractionAnswer,
   RuntimeOutcome,
   TurnRunner,
 } from "./types";
+import type { RuntimeConfigValue } from "@quartet/protocol";
 
 /** A generous local boundary that still prevents accidentally feeding an agent unbounded data. */
 export const MAX_ACP_PROMPT_BYTES = 1024 * 1024;
@@ -39,6 +41,59 @@ export interface AcpRuntimeOptions {
   readonly loadSession?: (conversationId: string) => string | undefined | Promise<string | undefined>;
   /** Persist a newly created ACP session. The caller owns runtime/identity namespacing. */
   readonly saveSession?: (conversationId: string, sessionId: string) => void | Promise<void>;
+  /**
+   * Session config the operator has already chosen (configId → valueId), reapplied to every
+   * session the agent starts. The agent's own default stands for anything absent here.
+   */
+  readonly desiredConfig?: Readonly<Record<string, string>>;
+  /** Persist a changed config selection. The caller owns runtime/identity namespacing. */
+  readonly persistConfig?: (config: Readonly<Record<string, string>>) => void | Promise<void>;
+}
+
+/** One ACP select value, whether it arrived loose or inside a group, as Quartet's shape. */
+function toRuntimeValue(option: acp.SessionConfigSelectOption): RuntimeConfigValue {
+  return {
+    value: option.value,
+    name: option.name,
+    ...(option.description ? { description: option.description } : {}),
+  };
+}
+
+/** Flatten an ACP select's values, dropping the group structure Quartet's UI does not use. */
+function flattenSelectOptions(options: acp.SessionConfigSelectOptions): RuntimeConfigValue[] {
+  const values: RuntimeConfigValue[] = [];
+  for (const entry of options) {
+    if ("options" in entry && Array.isArray(entry.options)) {
+      for (const option of entry.options) values.push(toRuntimeValue(option));
+    } else {
+      values.push(toRuntimeValue(entry as acp.SessionConfigSelectOption));
+    }
+  }
+  return values;
+}
+
+/**
+ * Keep the select options — model, reasoning effort, mode — and drop the rest. Booleans are
+ * omitted deliberately: Quartet does not advertise the client capability that permits them.
+ */
+function mapConfigOptions(
+  raw: readonly acp.SessionConfigOption[] | null | undefined,
+): RuntimeConfigOption[] {
+  if (raw == null) return [];
+  const mapped: RuntimeConfigOption[] = [];
+  for (const option of raw) {
+    if (option.type !== "select") continue;
+    mapped.push({
+      // ACP names the option `id`; its setter names the same value `configId`. Quartet uses the
+      // setter's word throughout so a selection and the option it targets read the same.
+      configId: option.id,
+      name: option.name,
+      ...(option.category ? { category: option.category } : {}),
+      currentValue: option.currentValue,
+      values: flattenSelectOptions(option.options),
+    });
+  }
+  return mapped;
 }
 
 interface ActiveTurn {
@@ -119,9 +174,15 @@ export class AcpRuntime implements TurnRunner {
   /** A resumed session's cumulative spend has no trustworthy pre-restart baseline. */
   private readonly restoredSessions = new Set<string>();
   private capabilities: acp.AgentCapabilities | undefined;
+  /** The latest options the agent has disclosed, as Quartet's shape. Empty until a session exists. */
+  private configCache: readonly RuntimeConfigOption[] = [];
+  /** The operator's chosen values (configId → valueId), reapplied to every session. */
+  private readonly desired: Map<string, string>;
+  private configListener: ((options: readonly RuntimeConfigOption[]) => void) | undefined;
 
   constructor(private readonly options: AcpRuntimeOptions) {
     if (options.command.trim().length === 0) throw new Error("ACP command must not be empty");
+    this.desired = new Map(Object.entries(options.desiredConfig ?? {}));
     this.info = {
       kind: "acp" as const,
       label: options.label?.trim() || "ACP agent",
@@ -333,12 +394,13 @@ export class AcpRuntime implements TurnRunner {
     if (persisted !== undefined && persisted.length > 0) {
       if (this.capabilities?.sessionCapabilities?.resume !== undefined) {
         try {
-          await connection.agent.request(acp.methods.agent.session.resume, {
+          const resumed = await connection.agent.request(acp.methods.agent.session.resume, {
             sessionId: persisted,
             cwd,
             mcpServers: [],
           });
           this.restoredSessions.add(persisted);
+          await this.absorbConfig(connection, persisted, resumed.configOptions);
           return persisted;
         } catch {
           // An agent may have lost the resumable process state but retained loadable history.
@@ -346,12 +408,13 @@ export class AcpRuntime implements TurnRunner {
       }
       if (this.capabilities?.loadSession === true) {
         try {
-          await connection.agent.request(acp.methods.agent.session.load, {
+          const loaded = await connection.agent.request(acp.methods.agent.session.load, {
             sessionId: persisted,
             cwd,
             mcpServers: [],
           });
           this.restoredSessions.add(persisted);
+          await this.absorbConfig(connection, persisted, loaded.configOptions);
           return persisted;
         } catch {
           // The durable id is stale for this agent; create and persist its replacement below.
@@ -363,13 +426,142 @@ export class AcpRuntime implements TurnRunner {
       mcpServers: [],
     });
     await this.options.saveSession?.(conversationId, created.sessionId);
+    await this.absorbConfig(connection, created.sessionId, created.configOptions);
     return created.sessionId;
   }
 
+  /**
+   * Learn what the agent offers for this session and reassert the operator's saved choices,
+   * because a fresh session starts at the agent's defaults. A rejected reassertion leaves that
+   * one option at the default rather than failing the session.
+   */
+  private async absorbConfig(
+    connection: acp.ClientConnection,
+    sessionId: string,
+    raw: readonly acp.SessionConfigOption[] | null | undefined,
+  ): Promise<void> {
+    let options = mapConfigOptions(raw);
+    for (const option of options) {
+      const wanted = this.desired.get(option.configId);
+      if (wanted === undefined || wanted === option.currentValue) continue;
+      if (!option.values.some((value) => value.value === wanted)) continue;
+      try {
+        const response = await connection.agent.request(
+          acp.methods.agent.session.setConfigOption,
+          { sessionId, configId: option.configId, value: wanted },
+        );
+        options = mapConfigOptions(response.configOptions);
+      } catch {
+        // Keep the agent's default for this option.
+      }
+    }
+    this.publishConfig(options);
+  }
+
+  private publishConfig(options: readonly RuntimeConfigOption[]): void {
+    if (JSON.stringify(options) === JSON.stringify(this.configCache)) return;
+    this.configCache = options;
+    this.configListener?.(options);
+  }
+
+  configOptions(): readonly RuntimeConfigOption[] {
+    return this.configCache;
+  }
+
+  onConfigOptions(listener: (options: readonly RuntimeConfigOption[]) => void): void {
+    this.configListener = listener;
+  }
+
+  /**
+   * Read the agent's options without a room to hang them on, by opening one throwaway session
+   * and closing it again. Skipped once options are known — a real session keeps them fresh —
+   * and collapsed so concurrent callers share one probe.
+   */
+  async discoverConfig(): Promise<readonly RuntimeConfigOption[]> {
+    if (this.configCache.length > 0) return this.configCache;
+    if (this.discovering === undefined) {
+      this.discovering = this.probeConfig().finally(() => {
+        this.discovering = undefined;
+      });
+    }
+    try {
+      await this.discovering;
+    } catch {
+      // Leave the cache empty; the screen shows "no settings disclosed" rather than an error.
+    }
+    return this.configCache;
+  }
+
+  private discovering: Promise<void> | undefined;
+
+  private async probeConfig(): Promise<void> {
+    const connection = await this.start();
+    const created = await connection.agent.request(acp.methods.agent.session.new, {
+      cwd: resolve(this.options.cwd ?? process.cwd()),
+      mcpServers: [],
+    });
+    await this.absorbConfig(connection, created.sessionId, created.configOptions);
+    try {
+      await connection.agent.request(acp.methods.agent.session.close, {
+        sessionId: created.sessionId,
+      });
+    } catch {
+      // An agent that cannot close a session is left holding one idle throwaway.
+    }
+  }
+
+  async setConfigOption(
+    configId: string,
+    valueId: string,
+  ): Promise<readonly RuntimeConfigOption[]> {
+    this.desired.set(configId, valueId);
+    await this.options.persistConfig?.(Object.fromEntries(this.desired));
+
+    let appliedLive = false;
+    const connection = this.connection;
+    if (connection !== undefined && !connection.signal.aborted) {
+      for (const pending of this.sessions.values()) {
+        let sessionId: string;
+        try {
+          sessionId = await pending;
+        } catch {
+          continue;
+        }
+        try {
+          const response = await connection.agent.request(
+            acp.methods.agent.session.setConfigOption,
+            { sessionId, configId, value: valueId },
+          );
+          this.publishConfig(mapConfigOptions(response.configOptions));
+          appliedLive = true;
+        } catch {
+          // A single session refusing the change should not sink the others.
+        }
+      }
+    }
+
+    // Only when no live session answered — the agent's own response is authoritative and may
+    // have adjusted more than this one value, so it is never overwritten with a guess.
+    if (!appliedLive) {
+      this.publishConfig(
+        this.configCache.map((option) =>
+          option.configId === configId ? { ...option, currentValue: valueId } : option,
+        ),
+      );
+    }
+    return this.configCache;
+  }
+
   private onSessionUpdate(notification: acp.SessionNotification): void {
+    const update = notification.update;
+    // The agent can change models or effort on its own, and does so between turns as well as
+    // during one, so this is read before the active-turn gate below.
+    if (update.sessionUpdate === "config_option_update") {
+      this.publishConfig(mapConfigOptions(update.configOptions));
+      return;
+    }
     const turn = this.active.get(notification.sessionId);
     if (turn === undefined) return;
-    const update = notification.update;
     if (update.sessionUpdate === "agent_message_chunk") {
       if (update.content.type === "text") turn.text += update.content.text;
       turn.request.onEvent({ kind: "progress" });
@@ -526,5 +718,8 @@ export class AcpRuntime implements TurnRunner {
     this.sessionCosts.clear();
     this.restoredSessions.clear();
     this.capabilities = undefined;
+    // The disclosed options belonged to sessions that no longer exist; the desired selections
+    // are kept, to be reasserted once a session comes back.
+    this.publishConfig([]);
   }
 }

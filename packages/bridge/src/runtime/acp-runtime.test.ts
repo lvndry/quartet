@@ -133,4 +133,83 @@ describe("ACP runtime", () => {
     expect(result).toMatchObject({ kind: "failed" });
     expect(result.kind === "failed" ? result.reason : "").toContain("ENOENT");
   });
+
+  it("discloses the agent's config options once a session exists", async () => {
+    const subject = runtime();
+    expect(subject.configOptions()).toEqual([]);
+    await run(subject, "room", "hello");
+    expect(subject.configOptions()).toEqual([
+      {
+        configId: "model",
+        name: "Model",
+        category: "model",
+        currentValue: "sonnet",
+        values: [
+          { value: "sonnet", name: "Sonnet" },
+          { value: "opus", name: "Opus" },
+        ],
+      },
+      {
+        configId: "effort",
+        name: "Reasoning",
+        category: "thought_level",
+        currentValue: "medium",
+        values: [
+          { value: "low", name: "Low" },
+          { value: "medium", name: "Medium" },
+          { value: "high", name: "High" },
+        ],
+      },
+    ]);
+  });
+
+  it("discovers config options without opening a room", async () => {
+    const subject = runtime();
+    expect(subject.configOptions()).toEqual([]);
+    const options = await subject.discoverConfig();
+    expect(options.map((option) => option.configId)).toEqual(["model", "effort"]);
+    expect(options.find((option) => option.configId === "model")?.currentValue).toBe("sonnet");
+  });
+
+  it("applies a saved selection during discovery", async () => {
+    const subject = runtime({ desiredConfig: { model: "opus" } });
+    const options = await subject.discoverConfig();
+    expect(options.find((option) => option.configId === "model")?.currentValue).toBe("opus");
+  });
+
+  it("sets a config option, persists it, and reflects the new value", async () => {
+    const saved: Record<string, string>[] = [];
+    const subject = runtime({
+      persistConfig: (value) => {
+        saved.push({ ...value });
+      },
+    });
+    await run(subject, "room", "hello");
+
+    const options = await subject.setConfigOption("model", "opus");
+    expect(options.find((option) => option.configId === "model")?.currentValue).toBe("opus");
+    expect(saved.at(-1)).toEqual({ model: "opus" });
+  });
+
+  it("reapplies a saved selection to a fresh session", async () => {
+    const subject = runtime({ desiredConfig: { effort: "high" } });
+    await run(subject, "room", "hello");
+    expect(subject.configOptions().find((option) => option.configId === "effort")?.currentValue).toBe(
+      "high",
+    );
+  });
+
+  it("tracks a config change the agent makes on its own", async () => {
+    const seen: string[] = [];
+    const subject = runtime();
+    subject.onConfigOptions((options) => {
+      const effort = options.find((option) => option.configId === "effort")?.currentValue;
+      if (effort !== undefined) seen.push(effort);
+    });
+    await run(subject, "room", "FIXTURE_CONFIG_PUSH");
+    expect(subject.configOptions().find((option) => option.configId === "effort")?.currentValue).toBe(
+      "high",
+    );
+    expect(seen).toContain("high");
+  });
 });

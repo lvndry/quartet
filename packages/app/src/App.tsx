@@ -709,6 +709,25 @@ function Quartet(): React.JSX.Element {
     setError(await call(path, body));
   }
 
+  // An ACP runtime only discloses its options once a session exists, so opening the runtime
+  // screen asks the bridge to make a throwaway one rather than showing an empty page and
+  // telling you to go open a room first. Fired once per visit; a failed probe can be retried.
+  const [discovering, setDiscovering] = useState(false);
+  const probed = useRef(false);
+  const runtimeNeedsProbe =
+    view === "agents" &&
+    state.runtime?.kind === "acp" &&
+    (state.runtime.configOptions?.length ?? 0) === 0;
+  useEffect(() => {
+    if (view !== "agents") probed.current = false;
+  }, [view]);
+  useEffect(() => {
+    if (!runtimeNeedsProbe || probed.current) return;
+    probed.current = true;
+    setDiscovering(true);
+    void call("runtime/discover", {}).finally(() => setDiscovering(false));
+  }, [runtimeNeedsProbe]);
+
   return (
     <div className="app">
       <header className="topbar">
@@ -772,9 +791,55 @@ function Quartet(): React.JSX.Element {
           <div className="dash-body">
             <div className="dash-firstrun">
               <h2>{state.runtime.label}</h2>
-              <p>
-                This agent is connected through ACP and keeps its own models, tools, and
-                credentials. Configure those in the agent itself; Quartet owns the rooms,
+              {state.runtime.configOptions !== undefined &&
+              state.runtime.configOptions.length > 0 ? (
+                <div className="runtime-config">
+                  {state.runtime.configOptions.map((option) => (
+                    <label key={option.configId} className="runtime-config-row">
+                      <span>{option.name}</span>
+                      <select
+                        value={option.currentValue}
+                        onChange={(event) =>
+                          void act("runtime/config", {
+                            configId: option.configId,
+                            value: event.target.value,
+                          })
+                        }
+                      >
+                        {option.values.some((value) => value.value === option.currentValue) ? null : (
+                          <option value={option.currentValue}>{option.currentValue}</option>
+                        )}
+                        {option.values.map((value) => (
+                          <option key={value.value} value={value.value}>
+                            {value.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+              ) : discovering ? (
+                <p className="muted">Asking {state.runtime.label} what it offers…</p>
+              ) : (
+                <>
+                  <p>
+                    This agent did not disclose any settings to Quartet. It may not offer any, or
+                    it may need to be running first.
+                  </p>
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={() => {
+                      setDiscovering(true);
+                      void call("runtime/discover", {}).finally(() => setDiscovering(false));
+                    }}
+                  >
+                    Try again
+                  </button>
+                </>
+              )}
+              <p className="muted">
+                The agent keeps its own tools and credentials. Quartet owns the rooms,
                 permissions, and conversation boundary.
               </p>
             </div>

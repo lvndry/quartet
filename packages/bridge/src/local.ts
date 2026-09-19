@@ -596,6 +596,22 @@ async function handleApi(
       return json({ ok: true });
     }
 
+    case "/api/runtime/config": {
+      const configId = text("configId");
+      const value = text("value");
+      if (configId.length === 0 || value.length === 0) {
+        return json({ error: "a configId and a value are both required" }, 400);
+      }
+      const result = await bridge.setRuntimeConfig(configId, value);
+      if (result.error !== undefined) return json({ error: result.error }, 400);
+      return json({ ok: true });
+    }
+
+    case "/api/runtime/discover": {
+      await bridge.discoverRuntimeConfig();
+      return json({ ok: true });
+    }
+
     case "/api/add": {
       const conversationId = text("conversationId");
       // A key, not a name: the app picks somebody out of a directory it can already see, so
