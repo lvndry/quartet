@@ -87,6 +87,14 @@ void _limitsAgree;
  */
 export const dispatchSchema = z.string().min(8).max(64);
 
+/**
+ * How long a `progress.note` may be. It is a window into a running turn — a tool name, or an
+ * ACP adapter's title for one, which is often a full command line — not a transcript, so it
+ * stays bounded. Senders clamp to this; the cap is a guard against an unbounded frame, never a
+ * reason to drop the heartbeat it rides on.
+ */
+export const PROGRESS_NOTE_MAX = 1000;
+
 export const handleSchema = z
   .string()
   .min(2)
@@ -533,7 +541,7 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
     t: z.literal("progress"),
     conversationId: z.string(),
     dispatch: dispatchSchema,
-    note: z.string().max(200).optional(),
+    note: z.string().max(PROGRESS_NOTE_MAX).optional(),
   }),
   /**
    * This browser is looking at this conversation — or at none.
