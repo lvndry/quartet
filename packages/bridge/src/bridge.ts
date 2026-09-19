@@ -428,6 +428,15 @@ export class Bridge {
     }
   }
 
+  /**
+   * Populate the runtime's options without waiting for a room, for the config screen. Best
+   * effort: a runtime that cannot, or an agent that fails to start, simply leaves them empty.
+   */
+  async discoverRuntimeConfig(): Promise<void> {
+    await this.runner.discoverConfig?.();
+    this.publish();
+  }
+
   private publish(): void {
     const state = this.snapshot();
     for (const listener of this.listeners) listener(state);

@@ -472,6 +472,44 @@ export class AcpRuntime implements TurnRunner {
     this.configListener = listener;
   }
 
+  /**
+   * Read the agent's options without a room to hang them on, by opening one throwaway session
+   * and closing it again. Skipped once options are known — a real session keeps them fresh —
+   * and collapsed so concurrent callers share one probe.
+   */
+  async discoverConfig(): Promise<readonly RuntimeConfigOption[]> {
+    if (this.configCache.length > 0) return this.configCache;
+    if (this.discovering === undefined) {
+      this.discovering = this.probeConfig().finally(() => {
+        this.discovering = undefined;
+      });
+    }
+    try {
+      await this.discovering;
+    } catch {
+      // Leave the cache empty; the screen shows "no settings disclosed" rather than an error.
+    }
+    return this.configCache;
+  }
+
+  private discovering: Promise<void> | undefined;
+
+  private async probeConfig(): Promise<void> {
+    const connection = await this.start();
+    const created = await connection.agent.request(acp.methods.agent.session.new, {
+      cwd: resolve(this.options.cwd ?? process.cwd()),
+      mcpServers: [],
+    });
+    await this.absorbConfig(connection, created.sessionId, created.configOptions);
+    try {
+      await connection.agent.request(acp.methods.agent.session.close, {
+        sessionId: created.sessionId,
+      });
+    } catch {
+      // An agent that cannot close a session is left holding one idle throwaway.
+    }
+  }
+
   async setConfigOption(
     configId: string,
     valueId: string,

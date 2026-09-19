@@ -163,6 +163,20 @@ describe("ACP runtime", () => {
     ]);
   });
 
+  it("discovers config options without opening a room", async () => {
+    const subject = runtime();
+    expect(subject.configOptions()).toEqual([]);
+    const options = await subject.discoverConfig();
+    expect(options.map((option) => option.configId)).toEqual(["model", "effort"]);
+    expect(options.find((option) => option.configId === "model")?.currentValue).toBe("sonnet");
+  });
+
+  it("applies a saved selection during discovery", async () => {
+    const subject = runtime({ desiredConfig: { model: "opus" } });
+    const options = await subject.discoverConfig();
+    expect(options.find((option) => option.configId === "model")?.currentValue).toBe("opus");
+  });
+
   it("sets a config option, persists it, and reflects the new value", async () => {
     const saved: Record<string, string>[] = [];
     const subject = runtime({

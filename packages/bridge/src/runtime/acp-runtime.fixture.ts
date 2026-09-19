@@ -51,6 +51,7 @@ const app = acp
     turns.set(ctx.params.sessionId, turns.get(ctx.params.sessionId) ?? 0);
     return { configOptions: configFor(ctx.params.sessionId) };
   })
+  .onRequest(acp.methods.agent.session.close, () => ({}))
   .onRequest(acp.methods.agent.session.setConfigOption, (ctx) => {
     const state = config.get(ctx.params.sessionId) ?? { model: "sonnet", effort: "medium" };
     if (ctx.params.configId === "model") state.model = String(ctx.params.value);

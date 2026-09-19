@@ -86,4 +86,9 @@ export interface TurnRunner {
   setConfigOption?(configId: string, valueId: string): Promise<readonly RuntimeConfigOption[]>;
   /** Called whenever the option set or a current value changes, including from the agent's side. */
   onConfigOptions?(listener: (options: readonly RuntimeConfigOption[]) => void): void;
+  /**
+   * Discover the options without waiting for a room, so the config screen can populate itself.
+   * May start the agent and a throwaway session. A no-op once the options are already known.
+   */
+  discoverConfig?(): Promise<readonly RuntimeConfigOption[]>;
 }

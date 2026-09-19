@@ -709,6 +709,25 @@ function Quartet(): React.JSX.Element {
     setError(await call(path, body));
   }
 
+  // An ACP runtime only discloses its options once a session exists, so opening the runtime
+  // screen asks the bridge to make a throwaway one rather than showing an empty page and
+  // telling you to go open a room first. Fired once per visit; a failed probe can be retried.
+  const [discovering, setDiscovering] = useState(false);
+  const probed = useRef(false);
+  const runtimeNeedsProbe =
+    view === "agents" &&
+    state.runtime?.kind === "acp" &&
+    (state.runtime.configOptions?.length ?? 0) === 0;
+  useEffect(() => {
+    if (view !== "agents") probed.current = false;
+  }, [view]);
+  useEffect(() => {
+    if (!runtimeNeedsProbe || probed.current) return;
+    probed.current = true;
+    setDiscovering(true);
+    void call("runtime/discover", {}).finally(() => setDiscovering(false));
+  }, [runtimeNeedsProbe]);
+
   return (
     <div className="app">
       <header className="topbar">
@@ -799,11 +818,25 @@ function Quartet(): React.JSX.Element {
                     </label>
                   ))}
                 </div>
+              ) : discovering ? (
+                <p className="muted">Asking {state.runtime.label} what it offers…</p>
               ) : (
-                <p>
-                  This agent has not disclosed any settings to Quartet yet. Open a room with it
-                  once and its model and reasoning options, if it offers any, appear here.
-                </p>
+                <>
+                  <p>
+                    This agent did not disclose any settings to Quartet. It may not offer any, or
+                    it may need to be running first.
+                  </p>
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={() => {
+                      setDiscovering(true);
+                      void call("runtime/discover", {}).finally(() => setDiscovering(false));
+                    }}
+                  >
+                    Try again
+                  </button>
+                </>
               )}
               <p className="muted">
                 The agent keeps its own tools and credentials. Quartet owns the rooms,

@@ -607,6 +607,11 @@ async function handleApi(
       return json({ ok: true });
     }
 
+    case "/api/runtime/discover": {
+      await bridge.discoverRuntimeConfig();
+      return json({ ok: true });
+    }
+
     case "/api/add": {
       const conversationId = text("conversationId");
       // A key, not a name: the app picks somebody out of a directory it can already see, so
