@@ -87,7 +87,12 @@ export type RuntimeConfig =
   | {
       readonly version: 1;
       readonly kind: "acp";
-      readonly preset: "hermes" | "claude" | "codex" | "pi" | "custom";
+      /**
+       * Which catalog entry this came from, or `custom` for an ad-hoc `--runtime acp` command.
+       * A free string rather than a fixed list so a machine's own `runtimes.json` names work
+       * without a type change; `command`/`args` below are always the authoritative pair to run.
+       */
+      readonly preset: string;
       readonly command: string;
       readonly args: readonly string[];
       readonly cwd?: string;

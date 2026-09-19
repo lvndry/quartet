@@ -100,6 +100,32 @@ describe("choosing an agent runtime", () => {
     expect(choice.questions).toEqual([]);
   });
 
+  it("offers and selects a runtime that only the machine's catalog names", async () => {
+    const catalog = {
+      ...(await import("./runtime-catalog")).BUILTIN_PRESETS,
+      amp: {
+        name: "amp",
+        label: "Amp",
+        description: "Amp through ACP",
+        command: "amp-acp",
+        args: ["--stdio"] as const,
+        installHint: "install amp-acp",
+      },
+    };
+    const listed = chooser([""], { catalog });
+    await listed.result;
+    expect(listed.output.join("\n")).toContain("Amp");
+
+    const byName = await chooser([], { requested: "amp", catalog }).result;
+    expect(byName).toEqual({
+      kind: "selected",
+      runtime: { version: 1, kind: "acp", preset: "amp", command: "amp-acp", args: ["--stdio"], cwd: "/work/project" },
+    });
+
+    const byNumber = await chooser(["6"], { catalog }).result;
+    expect(byNumber).toMatchObject({ kind: "selected", runtime: { preset: "amp" } });
+  });
+
   it("keeps numeric shortcuts inside the wizard and documents Pi's adapter", async () => {
     expect(await chooser([], { requested: "1" }).result).toMatchObject({ kind: "error" });
     expect(ACP_INSTALL_HINTS.pi).toContain("@earendil-works/pi-coding-agent pi-acp");
