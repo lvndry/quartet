@@ -28,6 +28,7 @@ import {
   type SealingClaim,
   type HubRefusal,
   type RefusalReason,
+  PROGRESS_NOTE_MAX,
 } from "@quartet/protocol";
 import { displayTag, fingerprint, parseTag, tag } from "@quartet/identity";
 import type { DaemonSettings } from "./config";
@@ -178,6 +179,15 @@ function describeGap(ms: number): string {
   if (seconds < 90) return `${String(seconds)}s`;
   const minutes = Math.round(seconds / 60);
   return `${String(minutes)}min`;
+}
+
+/**
+ * Keep a progress note inside the wire cap. A long note — an ACP adapter's full-title tool
+ * name — must never be a reason for the hub to reject the frame and, with it, the heartbeat.
+ */
+function clampNote(note: string): string {
+  if (note.length <= PROGRESS_NOTE_MAX) return note;
+  return `${note.slice(0, PROGRESS_NOTE_MAX - 1)}…`;
 }
 
 export class Bridge {
@@ -1540,8 +1550,13 @@ export class Bridge {
     // The other side gets the name, on the heartbeat that already re-arms the deadline.
     // Only the name: `event.result` is output from this machine, and a room is not the place
     // for it. See `ToolCall`. Named with the dispatch, like everything else a turn produces.
+    // ACP adapters name a tool with a full human-readable title — a shell command line, say —
+    // which can run past the `progress.note` cap and get the whole frame rejected by the hub.
+    // The note is only a window into the turn, so a clamped one beats none.
     const dispatch = this.dispatches.get(conversationId);
-    if (dispatch !== undefined) this.send({ t: "progress", conversationId, dispatch, note: doing });
+    if (dispatch !== undefined) {
+      this.send({ t: "progress", conversationId, dispatch, note: clampNote(doing) });
+    }
   }
 
   private stopBeating(conversationId: string): void {
