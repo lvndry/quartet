@@ -924,7 +924,9 @@ function Sidebar({
   onAct: (path: string, body: Record<string, unknown>) => Promise<void>;
   onPickAgent: () => void;
 }): React.JSX.Element {
-  const nobodyOnStage = state.myAgentId === undefined;
+  // An ACP runtime is the agent, so it is always on stage: there is no Jazz roster and hence
+  // no myAgentId to name it. Only a Jazz identity with nobody selected has nothing to answer.
+  const nobodyOnStage = state.runtime?.kind !== "acp" && state.myAgentId === undefined;
   const [toHandle, setToHandle] = useState("");
   const [cardFor, setCardFor] = useState<DirectoryEntry | undefined>();
   const [purpose, setPurpose] = useState("");
