@@ -293,6 +293,9 @@ export class Bridge {
     // Transitional compatibility for embedders while execution configuration moves out of
     // Bridge. The class itself only retains and talks to the provider-neutral runner.
     this.runner = "run" in runner ? runner : new JazzRuntime(runner);
+    // A runtime whose model or effort changes — from the app, or from the agent itself —
+    // needs the app to hear about it, and the snapshot already carries the options.
+    this.runner.onConfigOptions?.(() => this.publish());
   }
 
   /** `AgentAdmin` owns the roster; this holds the copy the snapshot is built from. */
@@ -369,6 +372,7 @@ export class Bridge {
   snapshot(): BridgeState {
     const keyStoreProblem = this.known.problem();
     const myModel = this.currentModel();
+    const configOptions = this.runner.configOptions?.() ?? [];
     return {
       connectedToHub: this.connectedToHub,
       ...(this.me !== undefined ? { me: this.me } : {}),
@@ -398,8 +402,30 @@ export class Bridge {
       ...(keyStoreProblem !== undefined ? { keyStoreProblem } : {}),
       ...(this.refusal !== undefined ? { hubRefusal: this.refusal } : {}),
       ...(this.lastError !== undefined ? { lastError: this.lastError } : {}),
-      runtime: { kind: this.runner.info.kind, label: this.runner.info.label },
+      runtime: {
+        kind: this.runner.info.kind,
+        label: this.runner.info.label,
+        ...(configOptions.length > 0 ? { configOptions } : {}),
+      },
     };
+  }
+
+  /**
+   * Choose a value for one of the runtime's own config options — a model, a reasoning level.
+   * The runtime persists the choice and reapplies it to every session; here we only republish
+   * so the app reflects it. A runtime with no such options answers with a refusal.
+   */
+  async setRuntimeConfig(configId: string, valueId: string): Promise<{ error?: string }> {
+    if (this.runner.setConfigOption === undefined) {
+      return { error: "this runtime has no configurable options" };
+    }
+    try {
+      await this.runner.setConfigOption(configId, valueId);
+      this.publish();
+      return {};
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   private publish(): void {

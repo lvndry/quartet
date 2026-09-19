@@ -1,4 +1,6 @@
-import type { HumanQuestion } from "@quartet/protocol";
+import type { HumanQuestion, RuntimeConfigOption } from "@quartet/protocol";
+
+export type { RuntimeConfigOption };
 
 /** Stable facts about an execution backend, used without knowing its protocol. */
 export interface TurnRunnerInfo {
@@ -72,4 +74,16 @@ export interface TurnRunner {
   readonly info: TurnRunnerInfo;
   run(request: RunTurnRequest): Promise<RuntimeOutcome>;
   close?(): void | Promise<void>;
+  /**
+   * Session configuration this runtime currently offers, or an empty list until it has a
+   * session to discover it from. Jazz has none.
+   */
+  configOptions?(): readonly RuntimeConfigOption[];
+  /**
+   * Choose a value for one option. Applies to every open session and to future ones, and the
+   * choice is persisted by the caller. Resolves to the options as they now stand.
+   */
+  setConfigOption?(configId: string, valueId: string): Promise<readonly RuntimeConfigOption[]>;
+  /** Called whenever the option set or a current value changes, including from the agent's side. */
+  onConfigOptions?(listener: (options: readonly RuntimeConfigOption[]) => void): void;
 }

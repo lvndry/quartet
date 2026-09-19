@@ -4,6 +4,37 @@ import * as acp from "@agentclientprotocol/sdk";
 let nextSession = 1;
 const turns = new Map<string, number>();
 const cancellations = new Map<string, () => void>();
+const config = new Map<string, { model: string; effort: string }>();
+
+function configFor(sessionId: string) {
+  const state = config.get(sessionId) ?? { model: "sonnet", effort: "medium" };
+  config.set(sessionId, state);
+  return [
+    {
+      id: "model",
+      name: "Model",
+      category: "model",
+      type: "select" as const,
+      currentValue: state.model,
+      options: [
+        { value: "sonnet", name: "Sonnet" },
+        { value: "opus", name: "Opus" },
+      ],
+    },
+    {
+      id: "effort",
+      name: "Reasoning",
+      category: "thought_level",
+      type: "select" as const,
+      currentValue: state.effort,
+      options: [
+        { value: "low", name: "Low" },
+        { value: "medium", name: "Medium" },
+        { value: "high", name: "High" },
+      ],
+    },
+  ];
+}
 
 const app = acp
   .agent({ name: "quartet-test-agent" })
@@ -14,11 +45,18 @@ const app = acp
   .onRequest(acp.methods.agent.session.new, () => {
     const sessionId = `session-${String(nextSession++)}`;
     turns.set(sessionId, 0);
-    return { sessionId };
+    return { sessionId, configOptions: configFor(sessionId) };
   })
   .onRequest(acp.methods.agent.session.resume, (ctx) => {
     turns.set(ctx.params.sessionId, turns.get(ctx.params.sessionId) ?? 0);
-    return {};
+    return { configOptions: configFor(ctx.params.sessionId) };
+  })
+  .onRequest(acp.methods.agent.session.setConfigOption, (ctx) => {
+    const state = config.get(ctx.params.sessionId) ?? { model: "sonnet", effort: "medium" };
+    if (ctx.params.configId === "model") state.model = String(ctx.params.value);
+    if (ctx.params.configId === "effort") state.effort = String(ctx.params.value);
+    config.set(ctx.params.sessionId, state);
+    return { configOptions: configFor(ctx.params.sessionId) };
   })
   .onNotification(acp.methods.agent.session.cancel, (ctx) => {
     cancellations.get(ctx.params.sessionId)?.();
@@ -35,6 +73,16 @@ const app = acp
       await new Promise<void>((done) => cancellations.set(ctx.params.sessionId, done));
       cancellations.delete(ctx.params.sessionId);
       return { stopReason: "cancelled" };
+    }
+
+    if (prompt.includes("FIXTURE_CONFIG_PUSH")) {
+      const state = config.get(ctx.params.sessionId) ?? { model: "sonnet", effort: "medium" };
+      state.effort = "high";
+      config.set(ctx.params.sessionId, state);
+      await ctx.client.notify(acp.methods.client.session.update, {
+        sessionId: ctx.params.sessionId,
+        update: { sessionUpdate: "config_option_update", configOptions: configFor(ctx.params.sessionId) },
+      });
     }
 
     const count = (turns.get(ctx.params.sessionId) ?? 0) + 1;

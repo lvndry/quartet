@@ -261,10 +261,36 @@ export interface JazzAgentDetail {
   readonly apiKeyProviders: readonly string[];
 }
 
+/** One selectable value of a runtime configuration option, e.g. a single model. */
+export interface RuntimeConfigValue {
+  readonly value: string;
+  readonly name: string;
+  readonly description?: string;
+}
+
+/**
+ * A configuration option an ACP runtime offers for its own sessions — a model picker, a
+ * reasoning-effort level, an agent mode. Discovered from the agent rather than hardcoded, so
+ * the app renders whatever the connected agent actually supports. `category` is the ACP
+ * semantic hint (`model`, `thought_level`, `mode`, …) and is for UX grouping only.
+ */
+export interface RuntimeConfigOption {
+  readonly configId: string;
+  readonly name: string;
+  readonly category?: string;
+  readonly currentValue: string;
+  readonly values: readonly RuntimeConfigValue[];
+}
+
 /** The local execution backend taking this identity's turns. */
 export interface RuntimeSummary {
   readonly kind: "jazz" | "acp";
   readonly label: string;
+  /**
+   * Session configuration the runtime lets you set from Quartet, when it offers any. Populated
+   * once a session exists to discover them from; empty for Jazz and before the first session.
+   */
+  readonly configOptions?: readonly RuntimeConfigOption[];
 }
 
 /**

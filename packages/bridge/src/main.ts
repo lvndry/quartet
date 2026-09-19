@@ -1136,13 +1136,19 @@ async function connect(): Promise<void> {
     const sessions = new RuntimeSessionStore(
       runtimeFingerprint({ command: runtime.command, args: runtime.args, cwd }),
     );
+    const acpRuntime = runtime;
     runner = new AcpRuntime({
-      command: runtime.command,
-      args: runtime.args,
+      command: acpRuntime.command,
+      args: acpRuntime.args,
       cwd,
-      label: `${runtime.preset} via ACP`,
+      label: `${acpRuntime.preset} via ACP`,
       loadSession: (conversationId) => sessions.get(conversationId),
       saveSession: (conversationId, sessionId) => sessions.set(conversationId, sessionId),
+      ...(acpRuntime.configOptions !== undefined ? { desiredConfig: acpRuntime.configOptions } : {}),
+      persistConfig: async (configOptions) => {
+        config = { ...config, runtime: { ...acpRuntime, configOptions } };
+        await saveIdentityConfig(config);
+      },
     });
   }
 

@@ -91,6 +91,12 @@ export type RuntimeConfig =
       readonly command: string;
       readonly args: readonly string[];
       readonly cwd?: string;
+      /**
+       * Session config the operator has chosen for this agent (configId → valueId), e.g. a
+       * model or reasoning level. Reapplied to every session the agent starts. What each id
+       * means is the agent's to define, so nothing here is validated against a fixed list.
+       */
+      readonly configOptions?: Readonly<Record<string, string>>;
     };
 
 export interface IdentityConfig {
