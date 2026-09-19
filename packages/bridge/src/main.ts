@@ -75,7 +75,8 @@ import { JazzRuntime } from "./runtime/jazz-runtime";
 import { AcpRuntime } from "./runtime/acp-runtime";
 import { RuntimeSessionStore, runtimeFingerprint } from "./runtime/session-store";
 import type { TurnRunner } from "./runtime/types";
-import { ACP_INSTALL_HINTS, chooseRuntime } from "./runtime-choice";
+import { chooseRuntime } from "./runtime-choice";
+import { loadRuntimeCatalog } from "./runtime-catalog";
 import { startTunnel } from "@quartet/tunnel";
 import QRCode from "qrcode";
 
@@ -987,6 +988,8 @@ async function connect(): Promise<void> {
   const requestedRuntime = argValue("runtime");
   const customRuntimeCommand = argValue("runtime-command");
   const customRuntimeArgs = argValues("runtime-arg");
+  const catalog = await loadRuntimeCatalog();
+  for (const note of catalog.notes) console.warn(`  ! ${note}`);
   const runtimeChoice = await chooseRuntime({
     ...(config.runtime !== undefined ? { stored: config.runtime } : {}),
     ...(requestedRuntime !== undefined ? { requested: requestedRuntime } : {}),
@@ -995,6 +998,7 @@ async function connect(): Promise<void> {
     ...(customRuntimeArgs.length > 0 ? { customArgs: customRuntimeArgs } : {}),
     interactive: process.stdin.isTTY === true,
     ask: prompt,
+    catalog: catalog.presets,
   });
   if (runtimeChoice.kind === "stop") process.exit(1);
   if (runtimeChoice.kind === "error") {
@@ -1086,7 +1090,8 @@ async function connect(): Promise<void> {
     const found = Bun.which(runtime.command);
     if (found === null) {
       console.error(`\n  ! could not find the ACP agent command "${runtime.command}" on PATH.`);
-      if (runtime.preset !== "custom") console.error(`    ${ACP_INSTALL_HINTS[runtime.preset]}`);
+      const hint = catalog.presets[runtime.preset]?.installHint;
+      if (hint !== undefined) console.error(`    ${hint}`);
       console.error("    Or use --runtime acp --runtime-command <path>.\n");
       process.exit(1);
     }
