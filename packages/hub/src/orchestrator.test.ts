@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { ServerFrame, Signature } from "@quartet/protocol";
+import { CLOSE_SENTINEL, type ServerFrame, type Signature } from "@quartet/protocol";
 import { generateKeypair } from "@quartet/identity";
 import { HubStore } from "./db";
 import { Orchestrator } from "./orchestrator";
@@ -69,6 +69,7 @@ function answer(
     text?: string;
     kind?: "agent" | "pass";
     closing?: boolean;
+    bareGoodbye?: boolean;
     costUSD?: number;
     dispatch?: string;
   } = {},
@@ -82,7 +83,15 @@ function answer(
     ...(options.costUSD !== undefined ? { costUSD: options.costUSD } : {}),
     costIncomplete: false,
     closing: options.closing ?? false,
+    bareGoodbye: options.bareGoodbye ?? false,
   });
+}
+
+/** Whether the hub is currently holding a turn for this agent. */
+function isInFlight(store: HubStore, conversationId: string, agentId: string): boolean {
+  return store
+    .allInFlight()
+    .some((row) => row.conversationId === conversationId && row.agentId === agentId);
 }
 
 describe("orchestrator write path", () => {
@@ -284,6 +293,38 @@ describe("a hub that restarts mid-turn", () => {
     revived.orchestrator.reopen(conversation.id);
     revived.orchestrator.onNudge(conversation.id, otto.id, "actually, one more thing");
     expect(revived.frames.filter((frame) => frame.t === "turn")).toHaveLength(1);
+  });
+
+  it("wakes the room for a message that carried content, even when it also said goodbye", () => {
+    // The bug this covers: @mira asks @otto a direct question and signs off in the same turn.
+    // The goodbye takes @mira out, but the question is still @otto's to answer.
+    const { store, mira, otto, conversation, orchestrator } = setup();
+    orchestrator.onNudge(conversation.id, mira.id, "last thing before you go");
+    answer(store, orchestrator, conversation.id, mira.id, {
+      text: "one last thing, @otto — what did you decide? bye",
+      closing: true,
+    });
+
+    expect(store.bowedOut(conversation.id)).toEqual([mira.id]);
+    expect(store.roomState(conversation.id)).toBe("live");
+    // @otto was dispatched a turn to answer the question, not left holding an unanswered farewell.
+    expect(isInFlight(store, conversation.id, otto.id)).toBe(true);
+  });
+
+  it("wakes nobody for a bare goodbye", () => {
+    // A goodbye with nothing to answer is silence, like a pass: it bows @mira out without
+    // spending @otto's owner on a turn that would only pass.
+    const { store, mira, otto, conversation, orchestrator } = setup();
+    orchestrator.onNudge(conversation.id, mira.id, "we're done here");
+    answer(store, orchestrator, conversation.id, mira.id, {
+      text: CLOSE_SENTINEL,
+      closing: true,
+      bareGoodbye: true,
+    });
+
+    expect(store.bowedOut(conversation.id)).toEqual([mira.id]);
+    expect(store.roomState(conversation.id)).toBe("live");
+    expect(isInFlight(store, conversation.id, otto.id)).toBe(false);
   });
 });
 

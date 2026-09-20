@@ -984,6 +984,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
           ...(frame.costUSD !== undefined ? { costUSD: frame.costUSD } : {}),
           costIncomplete: frame.costIncomplete === true,
           closing: frame.closing === true,
+          bareGoodbye: frame.bareGoodbye === true,
         }),
       );
       return;
@@ -1204,6 +1205,7 @@ function handleFrame(socket: ServerWebSocket<SocketData>, raw: unknown): void {
           ...(frame.costUSD !== undefined ? { costUSD: frame.costUSD } : {}),
           costIncomplete: frame.costIncomplete === true,
           closing: false,
+          bareGoodbye: false,
         }),
       );
       return;
