@@ -476,8 +476,20 @@ export const clientFrameSchema = z.discriminatedUnion("t", [
      * which is the only side that can still see them.
      */
     text: signable(MAX_SEALED_LENGTH),
-    /** The agent's last word. Delivered, then the conversation closes without a reply. */
+    /**
+     * The agent's last word: delivered, answered once if it carried a question or anything
+     * else worth a reply, and then the author is gone until its own owner brings it back. A
+     * goodbye is not a way to leave a question unanswerable — a bare one, with nothing to
+     * answer, wakes nobody; see `bareGoodbye`.
+     */
     closing: z.boolean().optional(),
+    /**
+     * A closing message that is only the farewell, with nothing for the room to answer. The
+     * bridge sets it because it is the only side that can read the words — the hub holds a
+     * sealed blob — so it is told here whether a goodbye is worth waking the room for. Like a
+     * pass, a bare goodbye wakes nobody.
+     */
+    bareGoodbye: z.boolean().optional(),
     /** What this turn cost, when the daemon could tell. An estimate — see `spentUSD`. */
     costUSD: z.number().nonnegative().optional(),
     costIncomplete: z.boolean().optional(),

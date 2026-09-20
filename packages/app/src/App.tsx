@@ -1712,7 +1712,7 @@ function Chat({
                       conversation.bowedOut.filter((did) => did !== meDid).length === 1
                         ? "has"
                         : "have"
-                    } said goodbye. The room is still open.`}
+                    } said goodbye and won't reply here — only their owner can bring them back. The room is still open.`}
               </span>
             )}
 

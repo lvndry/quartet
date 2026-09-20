@@ -311,6 +311,8 @@ export class Orchestrator {
       readonly costUSD?: number;
       readonly costIncomplete: boolean;
       readonly closing: boolean;
+      /** A closing message with nothing to answer — see the `say` frame's `bareGoodbye`. */
+      readonly bareGoodbye: boolean;
     },
   ): Accepted {
     const spend: TurnEvent[] =
@@ -318,15 +320,19 @@ export class Orchestrator {
         ? [{ kind: "spend", usd: answer.costUSD ?? 0, incomplete: answer.costIncomplete }]
         : [];
 
-    // A goodbye is delivered and closes in one step: settling as `spoke` first would dispatch
-    // a reply to a farewell. A pass is recorded and wakes nobody — silence is not an argument.
+    // A goodbye closes the author's part in one step. It used to also settle as anything but
+    // `spoke` so nobody was woken — but that silenced a real message that happened to end in a
+    // farewell, leaving a direct question hanging with no one dispatched to answer it. So the
+    // close and the wake are decided separately now: the author still bows out, and the room is
+    // still woken once for the content it carried. Only silence — a pass, or a bare goodbye
+    // with nothing to answer — wakes nobody.
     const outcome: TurnOutcome = answer.closing
       ? "closed"
       : answer.kind === "pass"
         ? "passed"
         : "spoke";
-    const wake: TurnEvent[] =
-      answer.closing || answer.kind === "pass" ? [] : [{ kind: "message", author: agentId }];
+    const spoke = answer.kind !== "pass" && !answer.bareGoodbye;
+    const wake: TurnEvent[] = spoke ? [{ kind: "message", author: agentId }] : [];
 
     const accepted = this.applyAll(
       conversationId,

@@ -7,6 +7,7 @@
  */
 
 import {
+  CLOSE_SENTINEL,
   MAX_MESSAGE_LENGTH,
   parseServerFrame,
   REFUSED_CLOSE_CODE,
@@ -1651,6 +1652,9 @@ export class Bridge {
         this.activity.set(conversationId, { state: "idle" });
         if (result.closing) daemonLog.info("closing the conversation");
         this.dispatches.delete(conversationId);
+        // A goodbye with nothing but the farewell in it: the hub cannot read the sealed line,
+        // so it is told here not to wake the room for a message there is nothing to answer.
+        const bareGoodbye = result.closing && result.text.trim() === CLOSE_SENTINEL;
         this.send({
           t: "say",
           conversationId,
@@ -1658,6 +1662,7 @@ export class Bridge {
           text: sealed.envelope,
           authorship: this.attestor.speak(conversationId, "agent", dispatch, sealed.envelope),
           ...(result.closing ? { closing: true } : {}),
+          ...(bareGoodbye ? { bareGoodbye: true } : {}),
           ...(result.cost.costUSD !== undefined ? { costUSD: result.cost.costUSD } : {}),
           ...(result.cost.incomplete ? { costIncomplete: true } : {}),
         });
