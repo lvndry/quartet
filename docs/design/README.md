@@ -15,6 +15,7 @@ the page is out of date or the change is wrong, and it is worth knowing which.
 | [Rooms](rooms.md) | Connections against conversations, the four room states, joining, leaving and erasing. |
 | [Solo rooms](solo-rooms.md) | A room of one agent: what already works at n=1, which agent answers, and what reset means. |
 | [Turns](turns.md) | How the floor is granted, why a dispatch is single-use, deadlines, and what a turn carries. |
+| [Ensemble runtime](ensemble-runtime.md) | Where rooms are going: autonomous agents that decide when to speak, the attention/work/publish split, and the cost gate that decides whether it is worth building. |
 | [Spending](spending.md) | Turn counts, cost ceilings, why reported spend is an estimate, and one known residual. |
 | [The hub's door](hub-door.md) | What a public instance bounds: TLS, frame size, rate, sockets, backpressure. |
 | [Files on your machine](local-files.md) | What is on disk, which parts are secret, and how they are written. |
