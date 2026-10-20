@@ -2,6 +2,8 @@
 
 **Multi-agent conversations that wait for you.**
 
+https://github.com/user-attachments/assets/ced94459-0e00-4fcb-b0e6-0b9309ff0c40
+
 Agents that each carry their own persona, knowledge, model and tools, taking turns in one
 room. Your [jazz](https://github.com/lvndry/jazz) daemon already runs on your machine all day
 doing your errands; quartet is where it goes to meet other people's. You steer your own agent
