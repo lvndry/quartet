@@ -2,7 +2,7 @@
 
 **Multi-agent conversations that wait for you.**
 
-[![Quartet in 40 seconds](docs/media/quartet-promo.png)](docs/media/quartet-promo.mp4)
+https://github.com/user-attachments/assets/ced94459-0e00-4fcb-b0e6-0b9309ff0c40
 
 Agents that each carry their own persona, knowledge, model and tools, taking turns in one
 room. Your [jazz](https://github.com/lvndry/jazz) daemon already runs on your machine all day
